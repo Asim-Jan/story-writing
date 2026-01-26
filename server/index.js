@@ -13,6 +13,7 @@ import jwt from 'jsonwebtoken';
 import session from 'express-session';
 import RedisStore from 'connect-redis';
 import cookieParser from 'cookie-parser';
+import { v4 as uuidv4 } from 'uuid';
 import epub from 'epub-gen-memory';
 import { AIBookOrchestrator } from './ai-agent-orchestrator.js';
 import { AIImportAnalyzer } from './ai-import-analyzer.js';
@@ -30,7 +31,9 @@ import { VideoAssembler } from './services/videoAssembler.js';
 import rateLimit from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
+import { encrypt, decrypt } from './utils/encryption.js';
 import {
   imageQueue,
   audioQueue,
@@ -166,6 +169,8 @@ redisClient.on('ready', () => console.log('✓ Redis ready'));
 
 try {
   await redisClient.connect();
+  // Initialize authorization middleware with Redis client
+  initializeAuthorization(redisClient);
 } catch (error) {
   console.error('❌ FATAL: Could not connect to Redis');
   console.error('Make sure Redis is running: docker-compose up -d redis');
@@ -246,10 +251,15 @@ const getUserApiKeys = async (userId) => {
     }
 
     const settings = JSON.parse(settingsData);
+
+    // SECURITY: Decrypt API keys if they exist
+    const openaiKey = settings.openaiApiKey ? decrypt(settings.openaiApiKey) : null;
+    const geminiKey = settings.geminiApiKey ? decrypt(settings.geminiApiKey) : null;
+
     return {
-      openaiKey: settings.openaiApiKey || null,
-      geminiKey: settings.geminiApiKey || null,
-      usingUserKeys: !!(settings.openaiApiKey || settings.geminiApiKey)
+      openaiKey,
+      geminiKey,
+      usingUserKeys: !!(openaiKey || geminiKey)
     };
   } catch (error) {
     console.error('Error fetching user API keys:', error);
@@ -382,8 +392,8 @@ app.post('/api/auth/register', async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
-    const userId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    // Create user with UUID (secure, non-predictable ID)
+    const userId = uuidv4();
     const user = {
       id: userId,
       email,
@@ -513,8 +523,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       return res.json({ message: 'If an account exists with this email, you will receive password reset instructions.' });
     }
 
-    // Generate reset token
-    const resetToken = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+    // Generate secure reset token with UUID
+    const resetToken = uuidv4();
 
     // Store reset token in Redis with 1 hour expiration
     await redisClient.set(getPasswordResetKey(resetToken), userId, {
@@ -627,8 +637,8 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, async (req, res
       onProgress,
     });
 
-    // Create book in database
-    const bookId = Date.now().toString();
+    // Create book in database with UUID
+    const bookId = uuidv4();
     const bookData = {
       ...result.bookData,
       createdAt: new Date().toISOString(),
@@ -724,7 +734,8 @@ app.get('/api/books/:id', authenticateToken, async (req, res) => {
 // Create a new book
 app.post('/api/books', authenticateToken, async (req, res) => {
   try {
-    const bookId = Date.now().toString();
+    // Use UUID for book ID (secure, non-predictable)
+    const bookId = uuidv4();
     const bookData = {
       ...req.body,
       ownerId: req.user.id,
@@ -804,10 +815,32 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
 app.delete('/api/books/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await redisClient.del(getBookKey(id));
 
-    if (result === 0) {
+    // SECURITY: Check if book exists and get ownership info
+    const existingData = await redisClient.get(getBookKey(id));
+
+    if (!existingData) {
       return res.status(404).json({ error: 'Book not found' });
+    }
+
+    const book = JSON.parse(existingData);
+
+    // SECURITY: Verify ownership - only owner can delete
+    if (book.ownerId !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to delete this book' });
+    }
+
+    // Delete the book
+    await redisClient.del(getBookKey(id));
+
+    // Remove book from user's book list
+    if (req.user.books && req.user.books.includes(id)) {
+      const updatedBooks = req.user.books.filter(bookId => bookId !== id);
+      const updatedUser = {
+        ...req.user,
+        books: updatedBooks
+      };
+      await redisClient.set(getUserKey(req.user.id), JSON.stringify(updatedUser));
     }
 
     res.json({ message: 'Book deleted successfully' });
@@ -1973,8 +2006,8 @@ app.post('/api/books/import/upload', authenticateToken, upload.single('file'), a
       return res.status(400).json({ error: 'Failed to extract text from file or file is too short' });
     }
 
-    // Create import record
-    const importId = `import-${Date.now()}`;
+    // Create import record with UUID
+    const importId = `import-${uuidv4()}`;
     const importData = {
       id: importId,
       userId: req.user.id,
@@ -2138,8 +2171,8 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       return res.status(400).json({ error: 'No chapters extracted yet' });
     }
 
-    // Create book from import
-    const bookId = Date.now().toString();
+    // Create book from import with UUID
+    const bookId = uuidv4();
     const bookData = {
       bookTitle: bookTitle || importRecord.filename.replace(/\.[^/.]+$/, ''),
       overview: overview || '',
@@ -2148,7 +2181,7 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       plotlines: [],
       timelines: [],
       chapters: importRecord.chapters.map((ch, idx) => ({
-        id: Date.now() + idx,
+        id: uuidv4(), // Generate UUID for each chapter
         number: ch.number || idx + 1,
         title: ch.title,
         content: ch.content,
@@ -4480,9 +4513,10 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
     const { openaiApiKey, geminiApiKey, preferences } = req.body;
     const settingsKey = `user:${userId}:settings`;
 
+    // SECURITY: Encrypt API keys before storing
     const settings = {
-      openaiApiKey: openaiApiKey || null,
-      geminiApiKey: geminiApiKey || null,
+      openaiApiKey: openaiApiKey ? encrypt(openaiApiKey) : null,
+      geminiApiKey: geminiApiKey ? encrypt(geminiApiKey) : null,
       preferences: preferences || {
         defaultModel: 'gpt-4o-mini',
         defaultVoice: 'alloy',
@@ -4495,11 +4529,12 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
 
     await redisClient.set(settingsKey, JSON.stringify(settings));
 
+    // Return masked keys for security (don't send back encrypted keys)
     res.json({
       message: 'Settings updated successfully',
       settings: {
-        openaiApiKey: settings.openaiApiKey || null,
-        geminiApiKey: settings.geminiApiKey || null,
+        openaiApiKey: openaiApiKey ? '***' + openaiApiKey.slice(-4) : null,
+        geminiApiKey: geminiApiKey ? '***' + geminiApiKey.slice(-4) : null,
         preferences: settings.preferences
       }
     });

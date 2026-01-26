@@ -1,6 +1,6 @@
 {
   "name": "story-writing-studio",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A comprehensive fiction writing studio application",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run worker\" \"npm run client\"",
@@ -33,6 +33,7 @@
     "connect-redis": "^7.1.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
+    "crypto-js": "^4.2.0",
     "docx": "^9.5.1",
     "dotenv": "^16.3.1",
     "epub-gen-memory": "^1.1.2",
@@ -58,6 +59,7 @@
     "recharts": "^3.2.1",
     "redis": "^4.6.11",
     "syllable": "^5.0.1",
+    "uuid": "^13.0.0",
     "winston": "^3.18.3"
   },
   "devDependencies": {
