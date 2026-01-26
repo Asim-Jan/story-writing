@@ -1,0 +1,67 @@
+# Environment variables
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Build outputs
+dist/
+build/
+.vite/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Uploads and temp files
+uploads/
+temp-video/
+public/images/*
+public/audio/*
+public/comics/*
+!public/images/.gitkeep
+!public/audio/.gitkeep
+!public/comics/.gitkeep
+
+# Redis dump
+dump.rdb
+appendonly.aof
+
+# MinIO data (handled by Docker volumes)
+minio-data/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Build artifacts
+*.tar.gz
+*.zip
+
+# AWS setup (archived)
+aws-setup/
+aws-setup-archive.tar.gz
+
+# Temporary files
+*.tmp
+*.bak
+*.old
