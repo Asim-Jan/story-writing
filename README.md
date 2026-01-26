@@ -342,6 +342,7 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 - **Issues:** [GitHub Issues](https://github.com/your-repo/issues)
 - **Documentation:** This README and [DEPLOYMENT.md](DEPLOYMENT.md)
+- **AWS Configuration:** See [aws/README.md](aws/README.md) for AWS-specific configs (not in version control)
 - **Security:** [SECURITY.md](SECURITY.md)
 
 ## 📚 Version History

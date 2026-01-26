@@ -57,7 +57,8 @@ coverage/
 *.tar.gz
 *.zip
 
-# AWS setup (archived)
+# AWS configuration and resources
+aws/
 aws-setup/
 aws-setup-archive.tar.gz
 
