@@ -755,7 +755,20 @@ app.get('/api/books/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    res.json(JSON.parse(data));
+    const book = JSON.parse(data);
+
+    // SECURITY: Check if user owns the book or is a collaborator
+    const isOwner = book.ownerId === req.user.id;
+    const isCollaborator = book.collaborators?.some(c => c.email === req.user.email);
+
+    if (!isOwner && !isCollaborator) {
+      return res.status(403).json({
+        error: 'Not authorized to access this book',
+        message: 'You must be the book owner or a collaborator to view this book.'
+      });
+    }
+
+    res.json(book);
   } catch (error) {
     console.error('Error fetching book:', error);
     res.status(500).json({ error: 'Failed to fetch book' });
