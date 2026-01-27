@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { createClient } from 'redis';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
+import { setMediaBookMapping } from '../../utils/mediaMapping.js';
 
 // Redis client for book data
 let redisClient;
@@ -62,15 +63,16 @@ export async function processImageGeneration(job) {
 
     await updateJobStatus(job.id, { status: 'active', progress: 70, message: 'Uploading image...' });
 
-    // Upload to MinIO
+    // Upload to MinIO with access control mapping
     const imageBuffer = Buffer.from(result.images[0].image.imageBytes);
     const filename = `${imageType}-${itemId || Date.now()}.png`;
+
     const uploadResult = await mediaStorage.upload('images', imageBuffer, filename, {
       bookId,
       userId,
       imageType,
       itemId,
-    });
+    }, setMediaBookMapping);
 
     await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });
 

@@ -34,6 +34,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
 import { encrypt, decrypt } from './utils/encryption.js';
+import { setMediaBookMapping, getMediaBookMapping } from './utils/mediaMapping.js';
 import {
   imageQueue,
   audioQueue,
@@ -137,21 +138,51 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
-// Rate limiting for AI endpoints (expensive operations)
+// SECURITY: Per-user rate limiting for AI endpoints (expensive operations)
+// Uses user ID instead of IP to prevent unfair limits in shared networks
 const aiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50, // Limit each IP to 50 requests per windowMs
   message: 'Too many AI generation requests, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
+  // SECURITY: Use user ID as rate limit key instead of IP
+  keyGenerator: (req) => {
+    // If user is authenticated, use their user ID
+    if (req.user && req.user.id) {
+      return `user:${req.user.id}`;
+    }
+    // Fall back to IP for unauthenticated requests (shouldn't happen since auth is required)
+    return `ip:${req.ip}`;
+  },
+  // Dynamic limit based on user tier (extensible for future tier system)
+  max: async (req) => {
+    if (!req.user) return 10; // Unauthenticated users get minimal access
+
+    // Future: Check user tier from database
+    // const user = await getUserById(req.user.id);
+    // switch(user.tier) {
+    //   case 'premium': return 200;
+    //   case 'basic': return 50;
+    //   default: return 10; // free tier
+    // }
+
+    // For now, all authenticated users get 50 requests per 15 minutes
+    return 50;
+  },
 });
 
-// Rate limiting for auth endpoints (prevent brute force)
+// SECURITY: Rate limiting for auth endpoints (prevent brute force)
+// Uses email + IP combination for better security
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5, // 5 login attempts per 15 minutes
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 failed login attempts per 15 minutes
   message: 'Too many login attempts, please try again later',
-  skipSuccessfulRequests: true,
+  skipSuccessfulRequests: true, // Only count failed attempts
+  // SECURITY: Use email + IP to prevent both distributed attacks and targeted attacks
+  keyGenerator: (req) => {
+    const email = req.body?.email || 'unknown';
+    return `auth:${email}:${req.ip}`;
+  },
 });
 
 // Redis client - MUST be created before session middleware
@@ -1347,7 +1378,8 @@ Respond with ONLY the enhanced prompt text, nothing else.`
         const uploadResult = await mediaStorage.upload('images', buffer, filename, {
           'x-amz-meta-type': 'generated-visual',
           'x-amz-meta-prompt': (prompt || '').substring(0, 200),
-        });
+          // Note: No bookId for standalone image generation - backward compatibility only
+        }, setMediaBookMapping);
 
         console.log('Image saved to MinIO:', uploadResult.storageKey);
 
@@ -2652,8 +2684,8 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (r
     try {
       sendProgress({ stage: 'starting', message: `Generating ${scenes.length} video scenes...` });
 
-      // Generate videos
-      const generator = new VideoGenerator();
+      // Generate videos (pass bookId for media access control)
+      const generator = new VideoGenerator(null, bookId);
       const results = await generator.generateBatch(scenes, sendProgress, options);
 
       const successCount = results.filter(r => r.status === 'completed').length;
@@ -2675,7 +2707,7 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (r
       // Assemble video
       sendProgress({ stage: 'assembling', message: 'Assembling final video...' });
 
-      const assembler = new VideoAssembler();
+      const assembler = new VideoAssembler(bookId);
       const finalVideo = await assembler.assembleFilm(results, {
         title: book.transcripts?.find(t => t.id.toString() === transcriptId)?.title || 'Animation',
         ...options,
@@ -2719,10 +2751,11 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (r
   }
 });
 
-// ============ MEDIA STORAGE ROUTES (MinIO Proxy) ============
+// ============ MEDIA STORAGE ROUTES (Authenticated Access) ============
 
-// Get media file from MinIO
-app.get('/api/media/:bucketType/:filename', async (req, res) => {
+// SECURITY: Get media file with authentication and authorization
+// Users must be authenticated and have access to the book that owns this media
+app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) => {
   try {
     const { bucketType, filename } = req.params;
 
@@ -2731,7 +2764,39 @@ app.get('/api/media/:bucketType/:filename', async (req, res) => {
       return res.status(400).json({ error: 'Invalid bucket type' });
     }
 
-    // Get file stream from MinIO
+    // SECURITY: Get the book ID that owns this media file
+    const bookId = await getMediaBookMapping(bucketType, filename);
+
+    if (!bookId) {
+      // Media file has no ownership mapping - allow for backward compatibility
+      // (existing media files uploaded before this security fix)
+      console.warn(`⚠️  Media file has no ownership mapping: ${bucketType}/${filename}`);
+    } else {
+      // SECURITY: Verify user has access to this book
+      const bookData = await redisClient.get(getBookKey(bookId));
+
+      if (!bookData) {
+        return res.status(404).json({
+          error: 'Media not found',
+          message: 'The book associated with this media no longer exists'
+        });
+      }
+
+      const book = JSON.parse(bookData);
+
+      // Check if user is owner or collaborator
+      const isOwner = book.ownerId === req.user.id;
+      const isCollaborator = book.collaborators?.some(c => c.email === req.user.email);
+
+      if (!isOwner && !isCollaborator) {
+        return res.status(403).json({
+          error: 'Not authorized to access this media',
+          message: 'You must be the book owner or a collaborator to access this media file.'
+        });
+      }
+    }
+
+    // Get file stream from storage
     const stream = await mediaStorage.getStream(
       mediaStorage.buckets[bucketType],
       filename

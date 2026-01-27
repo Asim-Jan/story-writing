@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { createClient } from 'redis';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
+import { setMediaBookMapping } from '../../utils/mediaMapping.js';
 
 let redisClient;
 
@@ -98,13 +99,13 @@ export async function processAudioGeneration(job) {
     // Combine all audio buffers
     const buffer = Buffer.concat(audioBuffers);
 
-    // Upload to MinIO
+    // Upload to MinIO with access control mapping
     const filename = `chapter-${chapterId}-${Date.now()}.mp3`;
     const uploadResult = await mediaStorage.upload('audio', buffer, filename, {
       bookId,
       userId,
       chapterId,
-    });
+    }, setMediaBookMapping);
 
     await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });
 

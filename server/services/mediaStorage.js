@@ -107,10 +107,11 @@ export class MediaStorage {
    * @param {string} bucketType - Bucket type ('images', 'audio', 'comics', 'videos')
    * @param {Buffer} buffer - File buffer
    * @param {string} filename - File name
-   * @param {Object} metadata - Optional metadata
+   * @param {Object} metadata - Optional metadata (should include bookId for access control)
+   * @param {Function} setMapping - Optional callback to store media-to-book mapping for access control
    * @returns {Promise<Object>} Upload result with storageKey and url
    */
-  async upload(bucketType, buffer, filename, metadata = {}) {
+  async upload(bucketType, buffer, filename, metadata = {}, setMapping = null) {
     await this.initialize();
 
     const bucket = this.buckets[bucketType];
@@ -151,6 +152,11 @@ export class MediaStorage {
 
         console.log(`✓ Uploaded to S3: ${storageKey}`);
 
+        // SECURITY: Store media-to-book mapping if bookId provided and setMapping callback available
+        if (metadata.bookId && setMapping) {
+          await setMapping(bucketType, filename, metadata.bookId);
+        }
+
         return {
           storageKey,
           bucket: this.s3Bucket,
@@ -168,6 +174,11 @@ export class MediaStorage {
         const storageKey = `${bucketType}/${filename}`;
 
         console.log(`✓ Uploaded to MinIO: ${storageKey}`);
+
+        // SECURITY: Store media-to-book mapping if bookId provided and setMapping callback available
+        if (metadata.bookId && setMapping) {
+          await setMapping(bucketType, filename, metadata.bookId);
+        }
 
         return {
           storageKey,

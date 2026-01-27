@@ -48,8 +48,8 @@ export async function processVideoGeneration(job) {
       message: `Parsed ${scenes.length} scenes, generating videos...`,
     });
 
-    // Generate videos for each scene
-    const generator = new VideoGenerator();
+    // Generate videos for each scene (pass bookId for media access control)
+    const generator = new VideoGenerator(null, bookId);
     const sceneVideos = [];
 
     for (let i = 0; i < scenes.length; i++) {
@@ -75,7 +75,7 @@ export async function processVideoGeneration(job) {
     // Assemble final video
     await updateJobStatus(job.id, { status: 'active', progress: 85, message: 'Assembling final video...' });
 
-    const assembler = new VideoAssembler();
+    const assembler = new VideoAssembler(bookId);
     const finalVideo = await assembler.assembleFilm(sceneVideos, {
       bookId,
       transcriptId,

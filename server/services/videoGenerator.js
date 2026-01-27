@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { mediaStorage } from './mediaStorage.js';
+import { setMediaBookMapping } from '../utils/mediaMapping.js';
 
 dotenv.config();
 
@@ -9,7 +10,7 @@ dotenv.config();
  * Generates video clips using Veo 3 (Google Gemini API)
  */
 export class VideoGenerator {
-  constructor(genaiClient = null) {
+  constructor(genaiClient = null, bookId = null) {
     // Accept provided Gemini client (user's key) or fall back to env var for backward compatibility
     if (genaiClient) {
       this.genai = genaiClient;
@@ -22,6 +23,9 @@ export class VideoGenerator {
       console.warn('⚠️ GEMINI_API_KEY not set.');
       this.genai = null;
     }
+
+    // Store bookId for media access control
+    this.bookId = bookId;
   }
 
   getGenAI() {
@@ -143,7 +147,8 @@ export class VideoGenerator {
         'x-amz-meta-scene-number': String(scene.sceneNumber),
         'x-amz-meta-title': scene.title,
         'x-amz-meta-duration': String(duration),
-      });
+        bookId: this.bookId, // For access control
+      }, setMediaBookMapping);
 
       // Cleanup temp file
       fs.unlinkSync(tempPath);

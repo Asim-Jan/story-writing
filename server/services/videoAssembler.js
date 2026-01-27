@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { mediaStorage } from './mediaStorage.js';
+import { setMediaBookMapping } from '../utils/mediaMapping.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,11 +17,13 @@ ffmpeg.setFfmpegPath(ffmpegPath);
  * Stitches video scenes together using FFmpeg
  */
 export class VideoAssembler {
-  constructor() {
+  constructor(bookId = null) {
     this.tempDir = path.join(__dirname, '..', '..', 'temp-video');
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
     }
+    // Store bookId for media access control
+    this.bookId = bookId;
   }
 
   /**
@@ -120,7 +123,8 @@ export class VideoAssembler {
         'x-amz-meta-title': title,
         'x-amz-meta-scene-count': String(scenes.length),
         'x-amz-meta-resolution': resolution,
-      });
+        bookId: this.bookId, // For access control
+      }, setMediaBookMapping);
 
       // Cleanup temp files
       this.cleanupTempFiles([...tempFiles, concatFile, outputPath]);
