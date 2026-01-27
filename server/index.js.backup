@@ -455,8 +455,8 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await getUserByEmail(email);
-    if (existingUser) {
+    const existingUserId = await redisClient.get(getUserEmailKey(email));
+    if (existingUserId) {
       return res.status(400).json({ error: 'User already exists with this email' });
     }
 
@@ -475,8 +475,10 @@ app.post('/api/auth/register', async (req, res) => {
     };
 
     // Store user data
-    await updateUser(userId, user);
-        // Generate JWT token
+    await redisClient.set(getUserKey(userId), JSON.stringify(user));
+    await redisClient.set(getUserEmailKey(email), userId);
+
+    // Generate JWT token
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
@@ -509,13 +511,23 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
 
     // Get user by email
-    const user = await getUserByEmail(email);
-    console.log('User found:', !!user);
+    const userId = await redisClient.get(getUserEmailKey(email));
+    console.log('User ID from email lookup:', userId);
 
-    if (!user) {
+    if (!userId) {
       console.log('User not found for email:', email);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+
+    const userData = await redisClient.get(getUserKey(userId));
+    console.log('User data found:', !!userData);
+
+    if (!userData) {
+      console.log('User data not found for userId:', userId);
+      return res.status(401).json({ error: 'User account corrupted. Please contact support.' });
+    }
+
+    const user = JSON.parse(userData);
 
     // Verify password
     const validPassword = await bcrypt.compare(password, user.password);
@@ -576,8 +588,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     }
 
     // Get user by email
-    const user = await getUserByEmail(email);
-    if (!user) {
+    const userId = await redisClient.get(getUserEmailKey(email));
+    if (!userId) {
       // Don't reveal if user exists
       return res.json({ message: 'If an account exists with this email, you will receive password reset instructions.' });
     }
@@ -586,7 +598,9 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const resetToken = uuidv4();
 
     // Store reset token in Redis with 1 hour expiration
-    await setPasswordResetToken(resetToken, user.id, 3600);
+    await redisClient.set(getPasswordResetKey(resetToken), userId, {
+      EX: 3600 // 1 hour
+    });
 
     // In a real app, send this via email. For now, just return it
     console.log(`Password reset token for ${email}: ${resetToken}`);
@@ -616,16 +630,18 @@ app.post('/api/auth/reset-password', async (req, res) => {
     }
 
     // Get userId from reset token
-    const userId = await getPasswordResetToken(token);
+    const userId = await redisClient.get(getPasswordResetKey(token));
     if (!userId) {
       return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
 
     // Get user data
-    const user = await getUser(userId);
-    if (!user) {
+    const userData = await redisClient.get(getUserKey(userId));
+    if (!userData) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    const user = JSON.parse(userData);
 
     // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -636,10 +652,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
       password: hashedPassword
     };
 
-    await updateUser(userId, updatedUser);
+    await redisClient.set(getUserKey(userId), JSON.stringify(updatedUser));
 
     // Delete reset token
-    await deletePasswordResetToken(token);
+    await redisClient.del(getPasswordResetKey(token));
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
@@ -713,14 +729,14 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, async (req, res
       keys: Object.keys(bookData)
     });
 
-    await updateBook(bookId, req.user.id, bookData);
+    await redisClient.set(getBookKey(bookId), JSON.stringify(bookData));
 
     // Add book to user's book list
     const updatedUser = {
       ...req.user,
       books: [...(req.user.books || []), bookId],
     };
-    await updateUser(req.user.id, updatedUser);
+    await redisClient.set(getUserKey(req.user.id), JSON.stringify(updatedUser));
 
     // Send final result
     res.write(
@@ -752,8 +768,9 @@ app.get('/api/books', authenticateToken, async (req, res) => {
     const userBooks = req.user.books || [];
     const books = await Promise.all(
       userBooks.map(async (bookId) => {
-        const book = await getBook(bookId);
-        if (!book) return null;
+        const data = await redisClient.get(getBookKey(bookId));
+        if (!data) return null;
+        const book = JSON.parse(data);
         return {
           id: bookId,
           title: book.bookTitle,
@@ -772,11 +789,13 @@ app.get('/api/books', authenticateToken, async (req, res) => {
 app.get('/api/books/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const book = await getBook(id);
+    const data = await redisClient.get(getBookKey(id));
 
-    if (!book) {
+    if (!data) {
       return res.status(404).json({ error: 'Book not found' });
     }
+
+    const book = JSON.parse(data);
 
     // SECURITY: Check if user owns the book or is a collaborator
     const isOwner = book.ownerId === req.user.id;
@@ -808,14 +827,14 @@ app.post('/api/books', authenticateToken, async (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    await updateBook(bookId, req.user.id, bookData);
+    await redisClient.set(getBookKey(bookId), JSON.stringify(bookData));
 
     // Add book to user's book list
     const updatedUser = {
       ...req.user,
       books: [...(req.user.books || []), bookId]
     };
-    await updateUser(req.user.id, updatedUser);
+    await redisClient.set(getUserKey(req.user.id), JSON.stringify(updatedUser));
 
     res.status(201).json({ id: bookId, ...bookData });
   } catch (error) {
@@ -828,9 +847,9 @@ app.post('/api/books', authenticateToken, async (req, res) => {
 app.put('/api/books/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const existing = await getBook(id);
+    const existingData = await redisClient.get(getBookKey(id));
 
-    if (!existing) {
+    if (!existingData) {
       // Create new book and associate with user
       const bookData = {
         ...req.body,
@@ -839,19 +858,19 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         ownerId: req.user.id
       };
 
-      await updateBook(id, req.user.id, bookData);
+      await redisClient.set(getBookKey(id), JSON.stringify(bookData));
 
       // Add book to user's book list
       const updatedUser = {
         ...req.user,
         books: [...(req.user.books || []), id]
       };
-      await updateUser(req.user.id, updatedUser);
+      await redisClient.set(getUserKey(req.user.id), JSON.stringify(updatedUser));
 
       res.json(bookData);
     } else {
       // Update existing book
-      
+      const existing = JSON.parse(existingData);
 
       // Check if user owns the book or is a collaborator
       if (existing.ownerId !== req.user.id) {
@@ -867,7 +886,7 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         updatedAt: new Date().toISOString()
       };
 
-      await updateBook(id, req.user.id, bookData);
+      await redisClient.set(getBookKey(id), JSON.stringify(bookData));
       res.json(bookData);
     }
   } catch (error) {
@@ -882,13 +901,13 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
 
     // SECURITY: Check if book exists and get ownership info
-    const book = await getBook(id);
+    const existingData = await redisClient.get(getBookKey(id));
 
-    if (!book) {
+    if (!existingData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(existingData);
 
     // SECURITY: Verify ownership - only owner can delete
     if (book.ownerId !== req.user.id) {
@@ -896,7 +915,7 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
     }
 
     // Delete the book
-    await deleteBook(id, req.user.id);
+    await redisClient.del(getBookKey(id));
 
     // Remove book from user's book list
     if (req.user.books && req.user.books.includes(id)) {
@@ -905,7 +924,7 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
         ...req.user,
         books: updatedBooks
       };
-      await updateUser(req.user.id, updatedUser);
+      await redisClient.set(getUserKey(req.user.id), JSON.stringify(updatedUser));
     }
 
     res.json({ message: 'Book deleted successfully' });
@@ -2086,7 +2105,7 @@ app.post('/api/books/import/upload', authenticateToken, upload.single('file'), a
       filePath, // Keep for potential re-parsing
     };
 
-    await setImportData(importId, importData);
+    await redisClient.set(`import:${importId}`, JSON.stringify(importData));
 
     res.json({
       importId,
@@ -2114,12 +2133,12 @@ app.post('/api/books/import/:importId/extract', authenticateToken, async (req, r
     const { importId } = req.params;
     const { minChapterLength, maxChapterLength, useAI } = req.body;
 
-    const importData = await getImportData(importId);
+    const importData = await redisClient.get(`import:${importId}`);
     if (!importData) {
       return res.status(404).json({ error: 'Import not found' });
     }
 
-    const importRecord = importData;
+    const importRecord = JSON.parse(importData);
 
     // Verify user owns this import
     if (importRecord.userId !== req.user.id) {
@@ -2157,7 +2176,7 @@ app.post('/api/books/import/:importId/extract', authenticateToken, async (req, r
     importRecord.extractedAt = new Date().toISOString();
     importRecord.detectionMethod = useAI ? 'ai' : 'pattern';
 
-    await setImportData(importId, importRecord);
+    await redisClient.set(`import:${importId}`, JSON.stringify(importRecord));
 
     res.json({
       importId,
@@ -2181,12 +2200,12 @@ app.put('/api/books/import/:importId/chapters', authenticateToken, async (req, r
       return res.status(400).json({ error: 'Chapters array is required' });
     }
 
-    const importData = await getImportData(importId);
+    const importData = await redisClient.get(`import:${importId}`);
     if (!importData) {
       return res.status(404).json({ error: 'Import not found' });
     }
 
-    const importRecord = importData;
+    const importRecord = JSON.parse(importData);
 
     // Verify user owns this import
     if (importRecord.userId !== req.user.id) {
@@ -2202,7 +2221,7 @@ app.put('/api/books/import/:importId/chapters', authenticateToken, async (req, r
     importRecord.status = 'reviewed';
     importRecord.reviewedAt = new Date().toISOString();
 
-    await setImportData(importId, importRecord);
+    await redisClient.set(`import:${importId}`, JSON.stringify(importRecord));
 
     res.json({
       success: true,
@@ -2221,12 +2240,12 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
     const { importId } = req.params;
     const { bookTitle, overview } = req.body;
 
-    const importData = await getImportData(importId);
+    const importData = await redisClient.get(`import:${importId}`);
     if (!importData) {
       return res.status(404).json({ error: 'Import not found' });
     }
 
-    const importRecord = importData;
+    const importRecord = JSON.parse(importData);
 
     // Verify user owns this import
     if (importRecord.userId !== req.user.id) {
@@ -2276,19 +2295,19 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       },
     };
 
-    await updateBook(bookId, req.user.id, bookData);
+    await redisClient.set(getBookKey(bookId), JSON.stringify(bookData));
 
     // Add book to user's book list
     const updatedUser = {
       ...req.user,
       books: [...(req.user.books || []), bookId],
     };
-    await updateUser(req.user.id, updatedUser);
+    await redisClient.set(getUserKey(req.user.id), JSON.stringify(updatedUser));
 
     // Update import record
     importRecord.bookId = bookId;
     importRecord.status = 'completed';
-    await setImportData(importId, importRecord);
+    await redisClient.set(`import:${importId}`, JSON.stringify(importRecord));
 
     res.json({
       success: true,
@@ -2307,12 +2326,12 @@ app.get('/api/books/import/:importId/status', authenticateToken, async (req, res
   try {
     const { importId } = req.params;
 
-    const importData = await getImportData(importId);
+    const importData = await redisClient.get(`import:${importId}`);
     if (!importData) {
       return res.status(404).json({ error: 'Import not found' });
     }
 
-    const importRecord = importData;
+    const importRecord = JSON.parse(importData);
 
     // Verify user owns this import
     if (importRecord.userId !== req.user.id) {
@@ -2344,12 +2363,12 @@ app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res
     const { bookId } = req.params;
     const { chapterIndexes } = req.body; // Optional: specific chapters to analyze
 
-    const book = await getBook(bookId);
-    if (!book) {
+    const bookData = await redisClient.get(getBookKey(bookId));
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Verify user owns this book
     if (book.ownerId !== req.user.id) {
@@ -2616,7 +2635,7 @@ app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res
       book.updatedAt = new Date().toISOString();
 
       // Save updated book
-      await updateBook(bookId, req.user.id, book);
+      await redisClient.set(getBookKey(bookId), JSON.stringify(book));
 
       // Send completion
       sendProgress('complete', 'Import analysis complete!', {
@@ -2650,12 +2669,12 @@ app.post('/api/video/parse-transcript', authenticateToken, async (req, res) => {
     }
 
     // Get book data
-    const book = await getBook(bookId);
-    if (!book) {
+    const bookData = await redisClient.get(getBookKey(bookId));
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Verify ownership
     if (book.ownerId !== req.user.id) {
@@ -2696,12 +2715,12 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (r
     }
 
     // Verify book ownership
-    const book = await getBook(bookId);
-    if (!book) {
+    const bookData = await redisClient.get(getBookKey(bookId));
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
     if (book.ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
@@ -2764,7 +2783,7 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (r
       book.animationProjects = [...(book.animationProjects || []), animationProject];
       book.updatedAt = new Date().toISOString();
 
-      await updateBook(bookId, req.user.id, book);
+      await redisClient.set(getBookKey(bookId), JSON.stringify(book));
 
       sendProgress({
         stage: 'complete',
@@ -2807,16 +2826,16 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
       console.warn(`⚠️  Media file has no ownership mapping: ${bucketType}/${filename}`);
     } else {
       // SECURITY: Verify user has access to this book
-      const book = await getBook(bookId);
+      const bookData = await redisClient.get(getBookKey(bookId));
 
-      if (!book) {
+      if (!bookData) {
         return res.status(404).json({
           error: 'Media not found',
           message: 'The book associated with this media no longer exists'
         });
       }
 
-      
+      const book = JSON.parse(bookData);
 
       // Check if user is owner or collaborator
       const isOwner = book.ownerId === req.user.id;
@@ -3124,13 +3143,13 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, a
     const userId = req.user.userId;
 
     const bookKey = `book:${userId}:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Initialize versions array if not exists
     if (!book.versions) {
@@ -3158,7 +3177,7 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, a
     }
 
     book.updatedAt = new Date().toISOString();
-    await updateBook(bookId, req.user.id, book);
+    await redisClient.set(bookKey, JSON.stringify(book));
 
     res.json({ success: true, version });
   } catch (error) {
@@ -3174,13 +3193,13 @@ app.get('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, as
     const userId = req.user.userId;
 
     const bookKey = `book:${userId}:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
     const versions = book.versions?.[chapterId] || [];
 
     res.json({ versions });
@@ -3197,13 +3216,13 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions/:versionId/restore', a
     const userId = req.user.userId;
 
     const bookKey = `book:${userId}:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
     const version = book.versions?.[chapterId]?.find(v => v.id.toString() === versionId);
 
     if (!version) {
@@ -3224,7 +3243,7 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions/:versionId/restore', a
     });
 
     book.updatedAt = new Date().toISOString();
-    await updateBook(bookId, req.user.id, book);
+    await redisClient.set(bookKey, JSON.stringify(book));
 
     res.json({ success: true, chapter: book.chapters.find(ch => ch.id.toString() === chapterId) });
   } catch (error) {
@@ -3242,7 +3261,7 @@ app.post('/api/users/stats', authenticateToken, async (req, res) => {
     const { date, wordsWritten, timeSpent, chaptersEdited } = req.body;
 
     const statsKey = `user:${userId}:stats`;
-    let statsData = await getStats(statsKey);
+    let statsData = await redisClient.get(statsKey);
     let stats = statsData ? JSON.parse(statsData) : { daily: [], goals: {} };
 
     // Find or create entry for this date
@@ -3268,7 +3287,7 @@ app.post('/api/users/stats', authenticateToken, async (req, res) => {
       stats.daily = stats.daily.slice(0, 365);
     }
 
-    await setStats(statsKey, stats);
+    await redisClient.set(statsKey, JSON.stringify(stats));
     res.json({ success: true, stats });
   } catch (error) {
     console.error('Save stats error:', error);
@@ -3282,7 +3301,7 @@ app.get('/api/users/stats', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const statsKey = `user:${userId}:stats`;
 
-    let statsData = await getStats(statsKey);
+    let statsData = await redisClient.get(statsKey);
     let stats = statsData ? JSON.parse(statsData) : { daily: [], goals: {} };
 
     res.json(stats);
@@ -3299,7 +3318,7 @@ app.put('/api/users/goals', authenticateToken, async (req, res) => {
     const { dailyWordGoal, weeklyWordGoal, monthlyWordGoal } = req.body;
 
     const statsKey = `user:${userId}:stats`;
-    let statsData = await getStats(statsKey);
+    let statsData = await redisClient.get(statsKey);
     let stats = statsData ? JSON.parse(statsData) : { daily: [], goals: {} };
 
     stats.goals = {
@@ -3308,7 +3327,7 @@ app.put('/api/users/goals', authenticateToken, async (req, res) => {
       monthlyWordGoal: monthlyWordGoal || 15000,
     };
 
-    await setStats(statsKey, stats);
+    await redisClient.set(statsKey, JSON.stringify(stats));
     res.json({ success: true, goals: stats.goals });
   } catch (error) {
     console.error('Update goals error:', error);
@@ -3339,13 +3358,13 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, async (req, res) => 
 
     // Get book data
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Verify ownership
     if (book.userId !== userId) {
@@ -3366,7 +3385,7 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, async (req, res) => 
 
     // Save RPG data
     const rpgKey = `rpg:${bookId}`;
-    await setRPGData(bookId, rpgData);
+    await redisClient.set(rpgKey, JSON.stringify(rpgData));
 
     res.json({ success: true, rpgData });
   } catch (error) {
@@ -3383,20 +3402,20 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     // Verify book ownership
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
     if (book.userId !== userId) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
     // Get RPG data
     const rpgKey = `rpg:${bookId}`;
-    const rpgDataStr = await getRPGData(bookId);
+    const rpgDataStr = await redisClient.get(rpgKey);
 
     if (!rpgDataStr) {
       return res.json({ rpgData: null });
@@ -3419,13 +3438,13 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     // Verify book ownership
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
     if (book.userId !== userId) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
@@ -3433,7 +3452,7 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     // Update RPG data
     rpgData.updatedAt = new Date().toISOString();
     const rpgKey = `rpg:${bookId}`;
-    await setRPGData(bookId, rpgData);
+    await redisClient.set(rpgKey, JSON.stringify(rpgData));
 
     res.json({ success: true, rpgData });
   } catch (error) {
@@ -3450,20 +3469,20 @@ app.delete('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     // Verify book ownership
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
     if (book.userId !== userId) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
     // Delete RPG data
     const rpgKey = `rpg:${bookId}`;
-    await deleteRPGData(bookId);
+    await redisClient.del(rpgKey);
 
     res.json({ success: true });
   } catch (error) {
@@ -4304,14 +4323,14 @@ app.post('/api/users/api-keys', authenticateToken, async (req, res) => {
       requestCount: 0
     };
 
-    await setApiKeyData(apiKey, apiKeyData);
+    await redisClient.set(`apikey:${apiKey}`, JSON.stringify(apiKeyData));
 
     // Store reference in user's key list
     const userKeysKey = `user:${userId}:apikeys`;
-    const userKeys = await getRedisValue(userKeysKey);
+    const userKeys = await redisClient.get(userKeysKey);
     const keys = userKeys ? JSON.parse(userKeys) : [];
     keys.push(apiKey);
-    await setRedisValue(userKeysKey, keys);
+    await redisClient.set(userKeysKey, JSON.stringify(keys));
 
     res.json({ success: true, apiKey, ...apiKeyData });
   } catch (error) {
@@ -4325,7 +4344,7 @@ app.get('/api/users/api-keys', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const userKeysKey = `user:${userId}:apikeys`;
-    const userKeys = await getRedisValue(userKeysKey);
+    const userKeys = await redisClient.get(userKeysKey);
 
     if (!userKeys) {
       return res.json({ keys: [] });
@@ -4334,8 +4353,9 @@ app.get('/api/users/api-keys', authenticateToken, async (req, res) => {
     const keys = JSON.parse(userKeys);
     const keyDetails = await Promise.all(
       keys.map(async (key) => {
-        const keyInfo = await getApiKeyData();
-        if (keyInfo) {
+        const data = await redisClient.get(`apikey:${key}`);
+        if (data) {
+          const keyInfo = JSON.parse(data);
           return {
             key: key.substring(0, 12) + '...' + key.substring(key.length - 4), // Masked
             name: keyInfo.name,
@@ -4360,7 +4380,7 @@ app.get('/api/users/api-keys', authenticateToken, async (req, res) => {
 app.delete('/api/users/api-keys/:key', authenticateToken, async (req, res) => {
   try {
     const apiKey = req.params.key;
-    await deleteApiKeyData(apiKey);
+    await redisClient.del(`apikey:${apiKey}`);
     res.json({ success: true });
   } catch (error) {
     console.error('Revoke API key error:', error);
@@ -4376,13 +4396,13 @@ app.get('/api/external/books/:bookId/chapters', authenticateApiKey, async (req, 
 
     // Get book
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Verify ownership
     if (book.userId !== req.user.userId) {
@@ -4431,13 +4451,13 @@ app.get('/api/external/books/:bookId/plotlines', authenticateApiKey, async (req,
 
     // Get book
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Verify ownership
     if (book.userId !== req.user.userId) {
@@ -4483,13 +4503,13 @@ app.get('/api/external/books/:bookId', authenticateApiKey, async (req, res) => {
 
     // Get book
     const bookKey = `book:${bookId}`;
-    const book = await getBook(bookId);
+    const bookData = await redisClient.get(bookKey);
 
-    if (!book) {
+    if (!bookData) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    
+    const book = JSON.parse(bookData);
 
     // Verify ownership
     if (book.userId !== req.user.userId) {
@@ -4523,16 +4543,21 @@ app.get('/api/external/books/:bookId', authenticateApiKey, async (req, res) => {
 app.get('/api/external/books', authenticateApiKey, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const user = await getUser(userId);
-    if (!user) {
+    const userKey = `user:${userId}`;
+    const userData = await redisClient.get(userKey);
+
+    if (!userData) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    const user = JSON.parse(userData);
     const bookIds = user.books || [];
 
     const books = await Promise.all(
       bookIds.map(async (id) => {
-        const book = await getBook(id);
-        if (book) {
+        const bookData = await redisClient.get(`book:${id}`);
+        if (bookData) {
+          const book = JSON.parse(bookData);
           return {
             id,
             title: book.bookTitle,
@@ -4565,7 +4590,7 @@ app.get('/api/users/settings', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const settingsKey = `user:${userId}:settings`;
-    const settingsData = await getRedisValue(settingsKey);
+    const settingsData = await redisClient.get(settingsKey);
 
     if (!settingsData) {
       return res.json({
@@ -4620,7 +4645,7 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    await setRedisValue(settingsKey, settings);
+    await redisClient.set(settingsKey, JSON.stringify(settings));
 
     // Return masked keys for security (don't send back encrypted keys)
     res.json({

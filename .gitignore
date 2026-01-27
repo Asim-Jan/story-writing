@@ -66,3 +66,4 @@ aws-setup-archive.tar.gz
 *.tmp
 *.bak
 *.old
+RDS_CREDENTIALS.txt
