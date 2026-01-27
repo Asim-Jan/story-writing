@@ -7,7 +7,7 @@
 
 import { features } from '../config/features.js';
 import { UserRepository, BookRepository, ChapterRepository, JobRepository } from './repositories/index.js';
-import { getRedisClient } from '../services/redis.js';
+import { getRedisClient } from '../services/dataAdapter.js';
 
 /**
  * Helper to get Redis book key
