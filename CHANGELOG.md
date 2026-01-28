@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-01-28
+
+### Fixed
+- **CRITICAL**: Fixed JSON parsing errors in login/registration endpoints
+  - Added null checks before `JSON.parse()` in `UserDataService.findByEmail()`
+  - Added try-catch blocks around all Redis data parsing in scanning loops
+  - Added error logging for corrupted Redis data (continues processing instead of crashing)
+- Fixed similar JSON parsing issues in `BookDataService.findByUser()`
+
+### Added
+- PostgreSQL dual-write mode fully operational (Phase 2 of migration)
+- Complete PostgreSQL connection configuration in ECS task definition
+  - Added all required environment variables (host, port, database, user, max connections)
+  - Added PostgreSQL password secret to AWS Secrets Manager
+  - Updated IAM execution role with secret access permissions
+- Deployment automation scripts:
+  - `scripts/enable-dual-write.sh` - Enable dual-write mode
+  - `scripts/enable-postgres-complete.sh` - Complete PostgreSQL configuration
+  - `scripts/enable-postgres-reads.sh` - Ready for Phase 3
+
+### Changed
+- Migrated from Redis-only to dual-write mode (writes to both Redis and PostgreSQL)
+- All write operations now persist to both databases simultaneously
+- Read operations continue from Redis (Phase 2 behavior)
+
+### Infrastructure
+- AWS ECS Task Definition: story-writing-backend:5 (active)
+- AWS Secrets Manager: Added `story-writing/postgres-password`
+- IAM Role: Updated `ecsTaskExecutionRole` policy
+
+### Documentation
+- Added [AWS_DEPLOYMENT_REFERENCE.md](AWS_DEPLOYMENT_REFERENCE.md) - Complete AWS deployment guide
+- Added [DUAL_WRITE_STATUS.md](DUAL_WRITE_STATUS.md) - Current migration status and monitoring
+
 ## [1.0.4] - 2026-01-26
 
 ### Fixed

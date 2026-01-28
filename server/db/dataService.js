@@ -91,9 +91,18 @@ export class UserDataService {
 
       for await (const key of redis.scanIterator({ MATCH: 'user:*', COUNT: 100 })) {
         const data = await redis.get(key);
-        const user = JSON.parse(data);
-        if (user.email === email) {
-          return user;
+
+        // Skip if no data or invalid JSON
+        if (!data) continue;
+
+        try {
+          const user = JSON.parse(data);
+          if (user && user.email === email) {
+            return user;
+          }
+        } catch (err) {
+          console.error(`Failed to parse user data for key ${key}:`, err.message);
+          continue;
         }
       }
     }
@@ -232,10 +241,18 @@ export class BookDataService {
 
       for await (const key of redis.scanIterator({ MATCH: 'book:*', COUNT: 100 })) {
         const data = await redis.get(key);
-        const book = JSON.parse(data);
 
-        if (book.ownerId === userId) {
-          books.push(book);
+        // Skip if no data or invalid JSON
+        if (!data) continue;
+
+        try {
+          const book = JSON.parse(data);
+          if (book && book.ownerId === userId) {
+            books.push(book);
+          }
+        } catch (err) {
+          console.error(`Failed to parse book data for key ${key}:`, err.message);
+          continue;
         }
       }
 
