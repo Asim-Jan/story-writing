@@ -326,8 +326,13 @@ const getUserApiKeysHelper = async (userId) => {
     const aiConfig = user.ai_config || {};
 
     // SECURITY: Decrypt API keys if they exist (already encrypted in DB)
-    const openaiKey = aiConfig.openaiApiKey ? decrypt(aiConfig.openaiApiKey) : null;
-    const geminiKey = aiConfig.geminiApiKey ? decrypt(aiConfig.geminiApiKey) : null;
+    // Support both camelCase (old) and snake_case (new) field names
+    const openaiKey = (aiConfig.openai_api_key || aiConfig.openaiApiKey)
+      ? decrypt(aiConfig.openai_api_key || aiConfig.openaiApiKey)
+      : null;
+    const geminiKey = (aiConfig.gemini_api_key || aiConfig.geminiApiKey)
+      ? decrypt(aiConfig.gemini_api_key || aiConfig.geminiApiKey)
+      : null;
 
     return {
       openaiKey,
@@ -346,7 +351,7 @@ const getUserApiKeysHelper = async (userId) => {
 
 // Helper to validate and get OpenAI client with user's key
 const getUserOpenAI = async (userId) => {
-  const apiKeys = await getUserApiKeys(userId);
+  const apiKeys = await getUserApiKeysHelper(userId);
   if (!apiKeys.openaiKey) {
     throw new Error('MISSING_OPENAI_KEY');
   }
@@ -355,7 +360,7 @@ const getUserOpenAI = async (userId) => {
 
 // Helper to validate and get Gemini client with user's key
 const getUserGemini = async (userId) => {
-  const apiKeys = await getUserApiKeys(userId);
+  const apiKeys = await getUserApiKeysHelper(userId);
   if (!apiKeys.geminiKey) {
     throw new Error('MISSING_GEMINI_KEY');
   }
@@ -4630,10 +4635,11 @@ app.get('/api/external/books', authenticateApiKey, async (req, res) => {
 app.get('/api/users/settings', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const settingsKey = `user:${userId}:settings`;
-    const settingsData = await getRedisValue(settingsKey);
 
-    if (!settingsData) {
+    // Get user settings from PostgreSQL
+    const user = await getUserSettings(userId);
+
+    if (!user || !user.ai_config) {
       return res.json({
         openaiApiKey: null,
         geminiApiKey: null,
@@ -4647,16 +4653,22 @@ app.get('/api/users/settings', authenticateToken, async (req, res) => {
       });
     }
 
-    const settings = JSON.parse(settingsData);
+    const aiConfig = user.ai_config || {};
+    const preferences = user.preferences || {};
+
+    // SECURITY: Decrypt API keys for display (mask all but last 4 chars)
+    const openaiKey = aiConfig.openai_api_key ? decrypt(aiConfig.openai_api_key) : null;
+    const geminiKey = aiConfig.gemini_api_key ? decrypt(aiConfig.gemini_api_key) : null;
+
     res.json({
-      openaiApiKey: settings.openaiApiKey || null,
-      geminiApiKey: settings.geminiApiKey || null,
-      preferences: settings.preferences || {
-        defaultModel: 'gpt-4o-mini',
-        defaultVoice: 'alloy',
-        autoSave: true,
-        enableNotifications: true,
-        theme: 'light'
+      openaiApiKey: openaiKey ? '***' + openaiKey.slice(-4) : null,
+      geminiApiKey: geminiKey ? '***' + geminiKey.slice(-4) : null,
+      preferences: {
+        defaultModel: preferences.defaultModel || 'gpt-4o-mini',
+        defaultVoice: preferences.defaultVoice || 'alloy',
+        autoSave: preferences.autoSave !== undefined ? preferences.autoSave : true,
+        enableNotifications: preferences.enableNotifications !== undefined ? preferences.enableNotifications : true,
+        theme: preferences.theme || 'light'
       }
     });
   } catch (error) {
