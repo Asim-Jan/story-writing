@@ -378,7 +378,11 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    req.user = user;
+    // Attach user with both id and userId for compatibility
+    req.user = {
+      ...user,
+      userId: user.id
+    };
     next();
   } catch (error) {
     return res.status(403).json({ error: 'Invalid or expired token' });
@@ -475,7 +479,7 @@ app.post('/api/auth/register', async (req, res) => {
     };
 
     // Store user data
-    await updateUser(userId, user);
+    await createUser(user);
         // Generate JWT token
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '7d' });
 
@@ -749,19 +753,17 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, async (req, res
 // Get all books for the authenticated user
 app.get('/api/books', authenticateToken, async (req, res) => {
   try {
-    const userBooks = req.user.books || [];
-    const books = await Promise.all(
-      userBooks.map(async (bookId) => {
-        const book = await getBook(bookId);
-        if (!book) return null;
-        return {
-          id: bookId,
-          title: book.bookTitle,
-          updatedAt: book.updatedAt
-        };
-      })
-    );
-    res.json(books.filter(b => b !== null).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+    const userId = req.user.userId;
+    const books = await getUserBooks(userId);
+
+    // Map to frontend format
+    const mappedBooks = books.map(book => ({
+      id: book.id,
+      title: book.title || book.bookTitle,
+      updatedAt: book.updated_at || book.updatedAt
+    }));
+
+    res.json(mappedBooks);
   } catch (error) {
     console.error('Error fetching books:', error);
     res.status(500).json({ error: 'Failed to fetch books' });
@@ -779,7 +781,8 @@ app.get('/api/books/:id', authenticateToken, async (req, res) => {
     }
 
     // SECURITY: Check if user owns the book or is a collaborator
-    const isOwner = book.ownerId === req.user.id;
+    const ownerId = book.owner_id || book.ownerId;
+    const isOwner = ownerId === req.user.userId || ownerId === req.user.id;
     const isCollaborator = book.collaborators?.some(c => c.email === req.user.email);
 
     if (!isOwner && !isCollaborator) {
@@ -788,6 +791,14 @@ app.get('/api/books/:id', authenticateToken, async (req, res) => {
         message: 'You must be the book owner or a collaborator to view this book.'
       });
     }
+
+    // Enhanced debug logging to identify which field is undefined
+    console.log('Book GET response - all array fields:', {
+      chapters: { type: typeof book?.chapters, isArray: Array.isArray(book?.chapters), length: book?.chapters?.length },
+      characters: { type: typeof book?.characters, isArray: Array.isArray(book?.characters), length: book?.characters?.length },
+      locations: { type: typeof book?.locations, isArray: Array.isArray(book?.locations), length: book?.locations?.length },
+      plotlines: { type: typeof book?.plotlines, isArray: Array.isArray(book?.plotlines), length: book?.plotlines?.length }
+    });
 
     res.json(book);
   } catch (error) {
@@ -799,25 +810,32 @@ app.get('/api/books/:id', authenticateToken, async (req, res) => {
 // Create a new book
 app.post('/api/books', authenticateToken, async (req, res) => {
   try {
-    // Use UUID for book ID (secure, non-predictable)
-    const bookId = uuidv4();
     const bookData = {
-      ...req.body,
-      ownerId: req.user.id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      owner_id: req.user.userId,
+      title: req.body.bookTitle || req.body.title || 'Untitled',
+      description: req.body.description || req.body.overview || '',
+      genre: req.body.genre || '',
+      target_audience: req.body.targetAudience || req.body.target_audience || '',
+      characters: req.body.characters || [],
+      locations: req.body.locations || [],
+      plotlines: req.body.plotlines || [],
+      world_building: req.body.worldBuilding || req.body.world_building || {},
+      settings: req.body.settings || {},
+      notes: req.body.notes || [],
+      timelines: req.body.timelines || [],
+      visuals: req.body.visuals || [],
+      audio_files: req.body.audioFiles || {},
+      comic_pages: req.body.comicPages || [],
+      character_refs: req.body.characterRefs || {},
+      animation_projects: req.body.animationProjects || [],
+      metadata: req.body.metadata || {},
+      chapters: req.body.chapters || [],
+      status: req.body.status || 'draft'
     };
 
-    await updateBook(bookId, req.user.id, bookData);
+    const book = await createBook(bookData);
 
-    // Add book to user's book list
-    const updatedUser = {
-      ...req.user,
-      books: [...(req.user.books || []), bookId]
-    };
-    await updateUser(req.user.id, updatedUser);
-
-    res.status(201).json({ id: bookId, ...bookData });
+    res.status(201).json(book);
   } catch (error) {
     console.error('Error creating book:', error);
     res.status(500).json({ error: 'Failed to create book' });
@@ -831,44 +849,92 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
     const existing = await getBook(id);
 
     if (!existing) {
-      // Create new book and associate with user
+      // Create new book with the provided ID
       const bookData = {
-        ...req.body,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        ownerId: req.user.id
+        id: id,
+        owner_id: req.user.userId,
+        title: req.body.bookTitle || req.body.title || 'Untitled',
+        description: req.body.description || req.body.overview || '',
+        genre: req.body.genre || '',
+        target_audience: req.body.targetAudience || req.body.target_audience || '',
+        characters: req.body.characters || [],
+        locations: req.body.locations || [],
+        plotlines: req.body.plotlines || [],
+        world_building: req.body.worldBuilding || req.body.world_building || {},
+        settings: req.body.settings || {},
+        notes: req.body.notes || [],
+        timelines: req.body.timelines || [],
+        visuals: req.body.visuals || [],
+        audio_files: req.body.audioFiles || {},
+        comic_pages: req.body.comicPages || [],
+        character_refs: req.body.characterRefs || {},
+        animation_projects: req.body.animationProjects || [],
+        metadata: req.body.metadata || {},
+        chapters: req.body.chapters || [],
+        status: req.body.status || 'draft'
       };
 
-      await updateBook(id, req.user.id, bookData);
-
-      // Add book to user's book list
-      const updatedUser = {
-        ...req.user,
-        books: [...(req.user.books || []), id]
-      };
-      await updateUser(req.user.id, updatedUser);
-
-      res.json(bookData);
+      const book = await createBook(bookData);
+      res.json(book);
     } else {
       // Update existing book
-      
 
       // Check if user owns the book or is a collaborator
-      if (existing.ownerId !== req.user.id) {
+      const ownerId = existing.owner_id || existing.ownerId;
+      const isOwner = ownerId === req.user.userId || ownerId === req.user.id;
+      if (!isOwner) {
         const collaborator = existing.collaborators?.find(c => c.email === req.user.email);
         if (!collaborator || collaborator.role === 'viewer') {
           return res.status(403).json({ error: 'You do not have permission to edit this book' });
         }
       }
 
-      const bookData = {
-        ...existing,
-        ...req.body,
-        updatedAt: new Date().toISOString()
+      // Map frontend fields to PostgreSQL fields
+      const updates = {
+        title: req.body.bookTitle || req.body.title,
+        description: req.body.description || req.body.overview,
+        genre: req.body.genre,
+        target_audience: req.body.targetAudience || req.body.target_audience,
+        characters: req.body.characters,
+        locations: req.body.locations,
+        plotlines: req.body.plotlines,
+        world_building: req.body.worldBuilding || req.body.world_building,
+        settings: req.body.settings,
+        notes: req.body.notes,
+        timelines: req.body.timelines,
+        visuals: req.body.visuals,
+        audio_files: req.body.audioFiles,
+        comic_pages: req.body.comicPages,
+        character_refs: req.body.characterRefs,
+        animation_projects: req.body.animationProjects,
+        metadata: req.body.metadata,
+        chapters: req.body.chapters,  // Add chapters to be synced
+        status: req.body.status,
+        word_count: req.body.wordCount || req.body.word_count,
+        chapter_count: req.body.chapterCount || req.body.chapter_count
       };
 
-      await updateBook(id, req.user.id, bookData);
-      res.json(bookData);
+      // Remove undefined fields
+      Object.keys(updates).forEach(key => {
+        if (updates[key] === undefined) {
+          delete updates[key];
+        }
+      });
+
+      // Always use the current database version for optimistic locking
+      const expectedVersion = existing.version;
+
+      const book = await updateBook(id, req.user.userId, updates, expectedVersion);
+
+      // Enhanced debug logging to identify which field is undefined
+      console.log('Book PUT response - all array fields:', {
+        chapters: { type: typeof book?.chapters, isArray: Array.isArray(book?.chapters), length: book?.chapters?.length },
+        characters: { type: typeof book?.characters, isArray: Array.isArray(book?.characters), length: book?.characters?.length },
+        locations: { type: typeof book?.locations, isArray: Array.isArray(book?.locations), length: book?.locations?.length },
+        plotlines: { type: typeof book?.plotlines, isArray: Array.isArray(book?.plotlines), length: book?.plotlines?.length }
+      });
+
+      res.json(book);
     }
   } catch (error) {
     console.error('Error updating book:', error);
@@ -4604,23 +4670,24 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { openaiApiKey, geminiApiKey, preferences } = req.body;
-    const settingsKey = `user:${userId}:settings`;
 
     // SECURITY: Encrypt API keys before storing
     const settings = {
-      openaiApiKey: openaiApiKey ? encrypt(openaiApiKey) : null,
-      geminiApiKey: geminiApiKey ? encrypt(geminiApiKey) : null,
+      ai_config: {
+        openai_api_key: openaiApiKey ? encrypt(openaiApiKey) : null,
+        gemini_api_key: geminiApiKey ? encrypt(geminiApiKey) : null
+      },
       preferences: preferences || {
         defaultModel: 'gpt-4o-mini',
         defaultVoice: 'alloy',
         autoSave: true,
         enableNotifications: true,
         theme: 'light'
-      },
-      updatedAt: new Date().toISOString()
+      }
     };
 
-    await setRedisValue(settingsKey, settings);
+    // Use updateUserSettings from dataAdapter to handle both PostgreSQL and Redis
+    await updateUserSettings(userId, settings);
 
     // Return masked keys for security (don't send back encrypted keys)
     res.json({

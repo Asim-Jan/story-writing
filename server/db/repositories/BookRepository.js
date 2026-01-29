@@ -8,6 +8,7 @@ export class BookRepository {
    */
   static async create(bookData) {
     const {
+      id,
       owner_id,
       title,
       description = '',
@@ -18,15 +19,61 @@ export class BookRepository {
       plotlines = [],
       world_building = {},
       settings = {},
+      notes = [],
+      timelines = [],
+      visuals = [],
+      audio_files = {},
+      comic_pages = [],
+      character_refs = {},
+      animation_projects = [],
+      metadata = {},
       status = 'draft'
     } = bookData;
 
+    // If ID is provided, include it in the INSERT
+    if (id) {
+      const result = await query(
+        `INSERT INTO books (
+          id, owner_id, title, description, genre, target_audience,
+          characters, locations, plotlines, world_building, settings, notes, timelines, visuals,
+          audio_files, comic_pages, character_refs, animation_projects, metadata, status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        RETURNING *`,
+        [
+          id,
+          owner_id,
+          title,
+          description,
+          genre,
+          target_audience,
+          JSON.stringify(characters),
+          JSON.stringify(locations),
+          JSON.stringify(plotlines),
+          JSON.stringify(world_building),
+          JSON.stringify(settings),
+          JSON.stringify(notes),
+          JSON.stringify(timelines),
+          JSON.stringify(visuals),
+          JSON.stringify(audio_files),
+          JSON.stringify(comic_pages),
+          JSON.stringify(character_refs),
+          JSON.stringify(animation_projects),
+          JSON.stringify(metadata),
+          status
+        ]
+      );
+      return result.rows[0];
+    }
+
+    // Otherwise, let PostgreSQL generate the ID
     const result = await query(
       `INSERT INTO books (
         owner_id, title, description, genre, target_audience,
-        characters, locations, plotlines, world_building, settings, status
+        characters, locations, plotlines, world_building, settings, notes, timelines, visuals,
+        audio_files, comic_pages, character_refs, animation_projects, metadata, status
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       RETURNING *`,
       [
         owner_id,
@@ -39,6 +86,14 @@ export class BookRepository {
         JSON.stringify(plotlines),
         JSON.stringify(world_building),
         JSON.stringify(settings),
+        JSON.stringify(notes),
+        JSON.stringify(timelines),
+        JSON.stringify(visuals),
+        JSON.stringify(audio_files),
+        JSON.stringify(comic_pages),
+        JSON.stringify(character_refs),
+        JSON.stringify(animation_projects),
+        JSON.stringify(metadata),
         status
       ]
     );
@@ -140,13 +195,17 @@ export class BookRepository {
     const allowedFields = [
       'title', 'description', 'genre', 'target_audience',
       'characters', 'locations', 'plotlines', 'world_building',
-      'settings', 'status', 'word_count', 'chapter_count'
+      'settings', 'notes', 'timelines', 'visuals',
+      'audio_files', 'comic_pages', 'character_refs', 'animation_projects', 'metadata',
+      'status', 'word_count', 'chapter_count'
     ];
 
     Object.keys(updates).forEach(key => {
       if (allowedFields.includes(key)) {
         // JSON fields need to be stringified
-        if (['characters', 'locations', 'plotlines', 'world_building', 'settings'].includes(key)) {
+        if (['characters', 'locations', 'plotlines', 'world_building', 'settings',
+             'notes', 'timelines', 'visuals',
+             'audio_files', 'comic_pages', 'character_refs', 'animation_projects', 'metadata'].includes(key)) {
           fields.push(`${key} = $${paramCount}`);
           values.push(JSON.stringify(updates[key]));
         } else {

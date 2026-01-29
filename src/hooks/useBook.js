@@ -46,7 +46,25 @@ export const useBook = (bookId) => {
         });
         if (response.ok) {
           const bookData = await response.json();
-          setData(bookData);
+          // Merge with default state to ensure all expected fields exist
+          setData(prev => ({
+            ...prev,
+            ...bookData,
+            // Ensure arrays exist
+            characters: bookData.characters || [],
+            locations: bookData.locations || [],
+            plotlines: bookData.plotlines || [],
+            timelines: bookData.timelines || [],
+            chapters: bookData.chapters || [],
+            notes: bookData.notes || [],
+            visuals: bookData.visuals || [],
+            comicPages: bookData.comicPages || [],
+            animationProjects: bookData.animationProjects || [],
+            collaborators: bookData.collaborators || [],
+            // Ensure objects exist
+            audioFiles: bookData.audioFiles || {},
+            characterRefs: bookData.characterRefs || {},
+          }));
         } else if (response.status === 404) {
           // Book not found, use default data
           console.log('Book not found, using default data');
