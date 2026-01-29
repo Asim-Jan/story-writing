@@ -3,7 +3,7 @@
 **Project**: Story Writing Studio
 **Last Updated**: 2026-01-28
 **Current Version**: 2.0.3
-**Current Phase**: Dual-Write Mode Active (Phase 2)
+**Current Phase**: Phase 3 - Reading from PostgreSQL
 
 ---
 
@@ -22,7 +22,8 @@ TASK_FAMILY="story-writing-backend"
 - **story-writing-backend:2** - Failed dual-write attempt (env vars not added)
 - **story-writing-backend:3** - Incomplete (missing PostgreSQL connection details)
 - **story-writing-backend:4** - Failed (attempted Phase 3 prematurely)
-- **story-writing-backend:5** - ✅ Current active (dual-write mode with complete PostgreSQL config)
+- **story-writing-backend:5** - Phase 2 (dual-write, read from Redis)
+- **story-writing-backend:6** - ✅ Current active (Phase 3: dual-write, read from PostgreSQL)
 
 ### Task Definitions Available
 ```

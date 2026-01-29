@@ -35,7 +35,8 @@ export class UserDataService {
 
     // Write to PostgreSQL if enabled
     if (features.shouldWriteToPostgres()) {
-      user = await UserRepository.create(userData);
+      const pgUserData = this.mapUserFieldsToPostgres(userData);
+      user = await UserRepository.create(pgUserData);
     }
 
     // Write to Redis if needed
@@ -63,7 +64,8 @@ export class UserDataService {
   static async findById(userId) {
     // Read from PostgreSQL if enabled
     if (features.shouldReadFromPostgres()) {
-      return await UserRepository.findByIdWithSettings(userId);
+      const user = await UserRepository.findByIdWithSettings(userId);
+      return user ? this.mapUserFieldsFromPostgres(user) : null;
     }
 
     // Read from Redis
@@ -82,7 +84,8 @@ export class UserDataService {
   static async findByEmail(email) {
     // Read from PostgreSQL if enabled
     if (features.shouldReadFromPostgres()) {
-      return await UserRepository.findByEmail(email);
+      const user = await UserRepository.findByEmail(email);
+      return user ? this.mapUserFieldsFromPostgres(user) : null;
     }
 
     // Read from Redis (scan all users)
@@ -111,6 +114,87 @@ export class UserDataService {
   }
 
   /**
+   * Map Redis field names to PostgreSQL field names
+   */
+  static mapUserFieldsToPostgres(updates) {
+    const mapped = { ...updates };
+
+    // Map password to password_hash
+    if (mapped.password) {
+      mapped.password_hash = mapped.password;
+      delete mapped.password;
+    }
+
+    // Remove Redis-specific fields that don't exist in PostgreSQL users table
+    delete mapped.books; // Books are in separate table
+    delete mapped.createdAt; // PostgreSQL uses created_at (set automatically)
+    delete mapped.updatedAt; // PostgreSQL uses updated_at (set automatically)
+    delete mapped.deletedAt; // PostgreSQL uses deleted_at (set automatically)
+
+    // Remove fields that belong in user_settings table (not users table)
+    delete mapped.ai_config;
+    delete mapped.aiConfig;
+    delete mapped.preferences;
+
+    // Remove fields that belong in api_keys table
+    delete mapped.apiKeys;
+    delete mapped.api_keys;
+
+    // Only keep valid users table columns:
+    // id, email, name, password_hash, tier, created_at, updated_at, deleted_at, version
+    const validUserFields = ['id', 'email', 'name', 'password_hash', 'tier', 'version'];
+    const filtered = {};
+
+    for (const key of validUserFields) {
+      if (mapped[key] !== undefined) {
+        filtered[key] = mapped[key];
+      }
+    }
+
+    return filtered;
+  }
+
+  /**
+   * Map PostgreSQL field names back to Redis/application field names
+   */
+  static mapUserFieldsFromPostgres(user) {
+    if (!user) return null;
+
+    const mapped = { ...user };
+
+    // Map password_hash back to password
+    if (mapped.password_hash) {
+      mapped.password = mapped.password_hash;
+      delete mapped.password_hash;
+    }
+
+    // Map created_at to createdAt
+    if (mapped.created_at) {
+      mapped.createdAt = mapped.created_at;
+      delete mapped.created_at;
+    }
+
+    // Map updated_at to updatedAt
+    if (mapped.updated_at) {
+      mapped.updatedAt = mapped.updated_at;
+      delete mapped.updated_at;
+    }
+
+    // Map deleted_at to deletedAt
+    if (mapped.deleted_at) {
+      mapped.deletedAt = mapped.deleted_at;
+      delete mapped.deleted_at;
+    }
+
+    // Initialize books array if not present
+    if (!mapped.books) {
+      mapped.books = [];
+    }
+
+    return mapped;
+  }
+
+  /**
    * Update user
    */
   static async update(userId, updates) {
@@ -118,7 +202,8 @@ export class UserDataService {
 
     // Update PostgreSQL if enabled
     if (features.shouldWriteToPostgres()) {
-      user = await UserRepository.update(userId, updates);
+      const pgUpdates = this.mapUserFieldsToPostgres(updates);
+      user = await UserRepository.update(userId, pgUpdates);
     }
 
     // Update Redis if needed
@@ -169,14 +254,155 @@ export class UserDataService {
  */
 export class BookDataService {
   /**
+   * Map PostgreSQL book fields to frontend format
+   */
+  static mapBookFieldsFromPostgres(book) {
+    if (!book) return null;
+
+    const mapped = { ...book };
+
+    // Parse JSON fields (they're stored as JSON strings in PostgreSQL)
+    if (typeof mapped.characters === 'string') {
+      mapped.characters = JSON.parse(mapped.characters);
+    }
+    if (typeof mapped.locations === 'string') {
+      mapped.locations = JSON.parse(mapped.locations);
+    }
+    if (typeof mapped.plotlines === 'string') {
+      mapped.plotlines = JSON.parse(mapped.plotlines);
+    }
+    if (typeof mapped.world_building === 'string') {
+      mapped.world_building = JSON.parse(mapped.world_building);
+    }
+    if (typeof mapped.settings === 'string') {
+      mapped.settings = JSON.parse(mapped.settings);
+    }
+    if (typeof mapped.notes === 'string') {
+      mapped.notes = JSON.parse(mapped.notes);
+    }
+    if (typeof mapped.timelines === 'string') {
+      mapped.timelines = JSON.parse(mapped.timelines);
+    }
+    if (typeof mapped.visuals === 'string') {
+      mapped.visuals = JSON.parse(mapped.visuals);
+    }
+    if (typeof mapped.audio_files === 'string') {
+      mapped.audio_files = JSON.parse(mapped.audio_files);
+    }
+    if (typeof mapped.comic_pages === 'string') {
+      mapped.comic_pages = JSON.parse(mapped.comic_pages);
+    }
+    if (typeof mapped.character_refs === 'string') {
+      mapped.character_refs = JSON.parse(mapped.character_refs);
+    }
+    if (typeof mapped.animation_projects === 'string') {
+      mapped.animation_projects = JSON.parse(mapped.animation_projects);
+    }
+    if (typeof mapped.metadata === 'string') {
+      mapped.metadata = JSON.parse(mapped.metadata);
+    }
+
+    // Map snake_case to camelCase for frontend compatibility
+    if (mapped.owner_id) {
+      mapped.ownerId = mapped.owner_id;
+    }
+    if (mapped.target_audience) {
+      mapped.targetAudience = mapped.target_audience;
+    }
+    if (mapped.world_building) {
+      mapped.worldBuilding = mapped.world_building;
+    }
+    if (mapped.word_count !== undefined) {
+      mapped.wordCount = mapped.word_count;
+    }
+    if (mapped.chapter_count !== undefined) {
+      mapped.chapterCount = mapped.chapter_count;
+    }
+    if (mapped.created_at) {
+      mapped.createdAt = mapped.created_at;
+    }
+    if (mapped.updated_at) {
+      mapped.updatedAt = mapped.updated_at;
+    }
+    if (mapped.audio_files) {
+      mapped.audioFiles = mapped.audio_files;
+    }
+    if (mapped.comic_pages) {
+      mapped.comicPages = mapped.comic_pages;
+    }
+    if (mapped.character_refs) {
+      mapped.characterRefs = mapped.character_refs;
+    }
+    if (mapped.animation_projects) {
+      mapped.animationProjects = mapped.animation_projects;
+    }
+
+    // Map title to bookTitle for frontend
+    if (mapped.title) {
+      mapped.bookTitle = mapped.title;
+    }
+
+    // Ensure arrays exist and are valid arrays (PostgreSQL auto-parses JSONB)
+    if (!Array.isArray(mapped.characters)) mapped.characters = [];
+    if (!Array.isArray(mapped.locations)) mapped.locations = [];
+    if (!Array.isArray(mapped.plotlines)) mapped.plotlines = [];
+    if (!Array.isArray(mapped.chapters)) mapped.chapters = [];
+    if (!Array.isArray(mapped.notes)) mapped.notes = [];
+    if (!Array.isArray(mapped.timelines)) mapped.timelines = [];
+    if (!Array.isArray(mapped.visuals)) mapped.visuals = [];
+    if (!Array.isArray(mapped.comicPages)) mapped.comicPages = [];
+    if (!Array.isArray(mapped.animationProjects)) mapped.animationProjects = [];
+
+    // Ensure objects exist
+    if (!mapped.audioFiles && !mapped.audio_files) {
+      mapped.audioFiles = {};
+      mapped.audio_files = {};
+    }
+    if (!mapped.characterRefs && !mapped.character_refs) {
+      mapped.characterRefs = {};
+      mapped.character_refs = {};
+    }
+    if (!mapped.worldBuilding && !mapped.world_building) {
+      mapped.worldBuilding = {};
+      mapped.world_building = {};
+    }
+    if (!mapped.settings || typeof mapped.settings !== 'object') {
+      mapped.settings = {};
+    }
+    if (!mapped.metadata || typeof mapped.metadata !== 'object') {
+      mapped.metadata = {};
+    }
+
+    return mapped;
+  }
+
+  /**
    * Create a new book
    */
   static async create(bookData) {
     let book = null;
 
+    // Extract chapters from bookData if present
+    const chapters = bookData.chapters;
+    const bookDataWithoutChapters = { ...bookData };
+    delete bookDataWithoutChapters.chapters;
+
     // Write to PostgreSQL if enabled
     if (features.shouldWriteToPostgres()) {
-      book = await BookRepository.create(bookData);
+      book = await BookRepository.create(bookDataWithoutChapters);
+      if (book) {
+        book = this.mapBookFieldsFromPostgres(book);
+
+        // Create chapters if provided
+        if (chapters && Array.isArray(chapters) && chapters.length > 0) {
+          await this.syncChapters(book.id, chapters);
+          // Reload chapters
+          const createdChapters = await ChapterRepository.findByBookId(book.id);
+          book.chapters = createdChapters || [];
+        } else {
+          book.chapters = [];
+        }
+      }
     }
 
     // Write to Redis if needed
@@ -188,7 +414,7 @@ export class BookDataService {
         book = {
           id: Date.now().toString(),
           ...bookData,
-          chapters: [],
+          chapters: chapters || [],
           createdAt: Date.now(),
           updatedAt: Date.now()
         };
@@ -211,8 +437,11 @@ export class BookDataService {
         // Also fetch chapters
         const chapters = await ChapterRepository.findByBookId(bookId);
         book.chapters = chapters || [];
+
+        // Map to frontend format
+        return this.mapBookFieldsFromPostgres(book);
       }
-      return book;
+      return null;
     }
 
     // Read from Redis
@@ -271,10 +500,28 @@ export class BookDataService {
   static async update(bookId, userId, updates, expectedVersion = null) {
     let book = null;
 
+    // Extract chapters from updates if present (they need special handling)
+    const chapters = updates.chapters;
+    const bookUpdates = { ...updates };
+    delete bookUpdates.chapters; // Remove chapters from book updates
+
     // Update PostgreSQL if enabled
-    if (features.shouldWriteToPostgres() && expectedVersion !== null) {
+    if (features.shouldWriteToPostgres()) {
       try {
-        book = await BookRepository.update(bookId, userId, updates, expectedVersion);
+        book = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1);
+        if (book) {
+          book = this.mapBookFieldsFromPostgres(book);
+        }
+
+        // Sync chapters to chapters table if provided
+        if (chapters && Array.isArray(chapters)) {
+          await this.syncChapters(bookId, chapters);
+          // Reload chapters to return updated book with chapters
+          const updatedChapters = await ChapterRepository.findByBookId(bookId);
+          if (book) {
+            book.chapters = updatedChapters || [];
+          }
+        }
       } catch (error) {
         if (error.message.includes('CONFLICT')) {
           throw error; // Propagate conflict error
@@ -296,7 +543,7 @@ export class BookDataService {
           throw new Error('Not authorized to update this book');
         }
 
-        // Apply updates
+        // Apply updates (including chapters for Redis)
         const updated = { ...bookData, ...updates, updatedAt: Date.now() };
         await redis.set(getBookKey(bookId), JSON.stringify(updated));
 
@@ -307,6 +554,65 @@ export class BookDataService {
     }
 
     return book;
+  }
+
+  /**
+   * Sync chapters from frontend array to chapters table
+   * This handles the migration from Redis-style (chapters as array) to PostgreSQL-style (chapters table)
+   */
+  static async syncChapters(bookId, chaptersArray) {
+    if (!features.shouldWriteToPostgres()) return;
+
+    console.log(`Syncing ${chaptersArray.length} chapters for book ${bookId}`);
+
+    // Get existing chapters from database
+    const existingChapters = await ChapterRepository.findByBookId(bookId);
+    const existingChapterMap = new Map(existingChapters.map(ch => [ch.id, ch]));
+
+    for (const chapter of chaptersArray) {
+      const chapterData = {
+        book_id: bookId,
+        chapter_number: chapter.chapterNumber || chapter.chapter_number || chapter.number || 0,
+        title: chapter.title || '',
+        content: chapter.content || '',
+        scenes: chapter.scenes || [],
+        notes: chapter.notes || chapter.summary || '',
+        status: chapter.status || 'draft'
+      };
+
+      if (chapter.id && existingChapterMap.has(chapter.id)) {
+        // Update existing chapter
+        try {
+          const existing = existingChapterMap.get(chapter.id);
+          await ChapterRepository.update(
+            chapter.id,
+            {
+              title: chapterData.title,
+              content: chapterData.content,
+              scenes: chapterData.scenes,
+              notes: chapterData.notes,
+              status: chapterData.status
+            },
+            existing.version,
+            null // userId for version history (optional)
+          );
+          console.log(`  ✓ Updated chapter ${chapter.id}`);
+        } catch (error) {
+          console.error(`  ✗ Failed to update chapter ${chapter.id}:`, error.message);
+        }
+      } else {
+        // Create new chapter
+        try {
+          const newChapter = await ChapterRepository.create(chapterData);
+          console.log(`  ✓ Created chapter ${newChapter.id}`);
+        } catch (error) {
+          console.error(`  ✗ Failed to create chapter:`, error.message);
+        }
+      }
+    }
+
+    // Update book statistics
+    await BookRepository.updateStats(bookId);
   }
 
   /**

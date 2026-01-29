@@ -1,11 +1,11 @@
-# Phase 2: PostgreSQL Migration - Dual-Write Mode ACTIVE
+# Phase 3: PostgreSQL Migration - Reading from PostgreSQL
 
-**Date Enabled**: 2026-01-28 12:13 UTC (Fixed and Re-deployed)
-**Status**: ✅ **DUAL-WRITE MODE ACTIVE** (Complete PostgreSQL Configuration)
-**Version**: 2.0.3 (Bug fixes applied)
-**Task Definition**: story-writing-backend:5
+**Date Enabled**: 2026-01-28 12:50 UTC
+**Status**: ✅ **PHASE 3 ACTIVE** - Reading from PostgreSQL, Writing to Both
+**Version**: 2.0.3
+**Task Definition**: story-writing-backend:6
 
-> **Latest Update (v2.0.3 - 12:21 UTC)**: Fixed JSON parsing errors in login/registration. All features working correctly.
+> **Phase 3 Update (12:50 UTC)**: Successfully enabled PostgreSQL reads. Application now reads from PostgreSQL while maintaining dual-write to both databases.
 
 ---
 
@@ -15,22 +15,22 @@
 ```bash
 USE_POSTGRES=true
 DUAL_WRITE=true
-READ_FROM_POSTGRES=false
+READ_FROM_POSTGRES=true  ⭐ (CHANGED in Phase 3)
 ```
 
 ### Migration Phase
 ```
-Phase: DUAL_WRITE_READ_REDIS
+Phase: DUAL_WRITE_READ_POSTGRES
 PostgreSQL: Enabled
 Dual-Write: Active
-Reading from: Redis
+Reading from: PostgreSQL  ⭐ (CHANGED)
 ```
 
 ### What This Means
 - All write operations (create, update, delete) go to **BOTH Redis AND PostgreSQL**
-- All read operations come from **Redis** (for backward compatibility)
+- All read operations come from **PostgreSQL** ⭐ (Phase 3)
 - Data is synchronized between both databases
-- Application continues to work exactly as before
+- Application performance validated with PostgreSQL reads
 - Zero downtime migration in progress
 
 ---
@@ -40,19 +40,19 @@ Reading from: Redis
 ### ECS Service
 - **Cluster**: story-writing-cluster-sai
 - **Service**: story-writing-backend
-- **Task Definition**: story-writing-backend:5 ⭐ (Complete PostgreSQL Config)
+- **Task Definition**: story-writing-backend:6 ⭐ (Phase 3: PostgreSQL Reads)
 - **Running Tasks**: 1
 - **Deployment Status**: COMPLETED
 
 ### Current Task
-- **Task ID**: d0a8732985774215b323a3f8833a612a
+- **Task ID**: 8b5017064f5c4bd3bdf8d90eb063042b
 - **Status**: RUNNING
 - **Health**: HEALTHY
-- **Started**: 2026-01-28 12:11:54 UTC
+- **Started**: 2026-01-28 12:50:50 UTC
 
 ### Log Stream
 - **Group**: /ecs/story-writing-backend
-- **Stream**: ecs/backend/7fae2f7fb0d64b85a87eaba41a7439c9
+- **Stream**: ecs/backend/8b5017064f5c4bd3bdf8d90eb063042b
 
 ---
 

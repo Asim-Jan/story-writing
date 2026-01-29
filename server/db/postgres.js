@@ -22,10 +22,10 @@ const poolConfig = {
   // Statement timeout (30 seconds)
   statement_timeout: 30000,
 
-  // SSL configuration
-  ssl: process.env.POSTGRES_SSL === 'true' ? {
+  // SSL configuration (required for AWS RDS)
+  ssl: process.env.POSTGRES_SSL === 'false' ? false : {
     rejectUnauthorized: false
-  } : false
+  }
 };
 
 // Create connection pool
