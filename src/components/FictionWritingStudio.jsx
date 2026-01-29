@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords } from 'lucide-react';
+import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User, Settings } from 'lucide-react';
 import { useBook } from '../hooks/useBook';
 import { getMediaUrl } from '../utils/mediaUrl';
 import AISuggestionBox from './AISuggestionBox';
@@ -23,10 +23,14 @@ import AnimationStudioTab from './AnimationStudioTab';
 import JobsTab from './JobsTab';
 import RPGGameTab from './RPGGameTab';
 import ErrorBoundary from './ErrorBoundary';
+import ProfilePage from './ProfilePage';
+import SettingsModal from './SettingsModal';
 
 const FictionWritingStudio = ({ bookId, onBack }) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const { data, setData, loading, saving, error, saveBook, autosave } = useBook(bookId);
 
@@ -485,6 +489,10 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     { id: 'ai-tools', icon: Wand2, label: 'AI Tools' }
   ];
 
+  if (showProfile) {
+    return <ProfilePage onBack={() => setShowProfile(false)} />;
+  }
+
   return (
     <div className="flex h-screen bg-gray-50 font-serif overflow-hidden">
       {/* Mobile overlay */}
@@ -597,6 +605,20 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                 </span>
               )}
             </div>
+            <button
+              onClick={() => setShowProfile(true)}
+              className="p-2 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
+              title="Profile"
+            >
+              <User size={20} />
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="p-2 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+              title="Settings"
+            >
+              <Settings size={20} />
+            </button>
             <button
               onClick={saveBook}
               disabled={saving}
@@ -1102,6 +1124,11 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         description={selectedImage?.description}
         onClose={() => setSelectedImage(null)}
       />
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} />
+      )}
     </div>
   );
 };
