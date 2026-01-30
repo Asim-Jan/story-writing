@@ -269,13 +269,13 @@ export async function updateQuotaUsage(userId) {
   await pool.query(
     `UPDATE quotas q
      SET
-       current_books = (SELECT COUNT(*) FROM books WHERE user_id = $1 AND deleted_at IS NULL),
-       current_chapters = (SELECT COUNT(*) FROM chapters c JOIN books b ON b.id = c.book_id WHERE b.user_id = $1 AND b.deleted_at IS NULL),
+       current_books = (SELECT COUNT(*) FROM books WHERE owner_id = $1 AND deleted_at IS NULL),
+       current_chapters = (SELECT COUNT(*) FROM chapters c JOIN books b ON b.id = c.book_id WHERE b.owner_id = $1 AND b.deleted_at IS NULL),
        current_words = (
          SELECT COALESCE(SUM(array_length(string_to_array(c.content, ' '), 1)), 0)
          FROM chapters c
          JOIN books b ON b.id = c.book_id
-         WHERE b.user_id = $1 AND b.deleted_at IS NULL
+         WHERE b.owner_id = $1 AND b.deleted_at IS NULL
        ),
        updated_at = NOW()
      WHERE q.user_id = $1`,
