@@ -567,7 +567,15 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     console.log('Login successful for:', email);
     res.json({
-      user: { id: user.id, email: user.email, name: user.name, books: user.books || [] },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role || 'user',
+        tier: user.tier || 'free',
+        status: user.status || 'active',
+        books: user.books || []
+      },
       token
     });
   } catch (error) {
@@ -589,6 +597,9 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
       id: req.user.userId || req.user.id,
       email: req.user.email,
       name: req.user.name,
+      role: req.user.role || 'user',
+      tier: req.user.tier || 'free',
+      status: req.user.status || 'active',
       books: req.user.books,
       createdAt: req.user.createdAt
     }
