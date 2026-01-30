@@ -59,7 +59,9 @@ This document contains important context and guidelines for working on this proj
    - `chore:` - Build/tooling changes
 
 5. **Pull Request workflow**:
-   - Create PR from feature branch to `main`
+   - **IMPORTANT**: Deploy and test in production BEFORE creating PR
+   - User must confirm features work correctly in production
+   - Only after user confirmation, create PR from feature branch to `main`
    - Include description of changes
    - Reference any related issues
    - Wait for user approval before merging
@@ -105,6 +107,88 @@ Added metadata field to store book information (author, genre, tagline, etc.)
 git checkout main
 git pull origin main
 git branch -d feature/add-metadata-field
+```
+
+---
+
+## 🚀 Deploy-Then-PR Workflow - CRITICAL
+
+### Why This Matters
+
+**NEVER create a PR before testing in production!**
+
+The proper workflow is:
+1. ✅ Deploy changes to production on feature branch
+2. ✅ User tests and confirms features work correctly
+3. ✅ Only then create PR for code review
+4. ✅ User merges PR after review
+
+### The Complete Workflow
+
+**Step 1: Develop on Feature Branch**
+```bash
+git checkout -b feature/add-new-feature
+# Make changes
+git add .
+git commit -m "feat: Add new feature
+
+Details...
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+git push -u origin feature/add-new-feature
+```
+
+**Step 2: Deploy to Production**
+```bash
+# Deploy from the feature branch (still on feature branch!)
+./deploy.sh all patch
+# Wait 60 seconds for ECS to stabilize
+```
+
+**Step 3: User Testing**
+- User tests the features at https://story-writing.com
+- User confirms everything works correctly
+- **CRITICAL**: Do NOT proceed until user confirms!
+
+**Step 4: Create PR (Only After Confirmation)**
+```bash
+# Only after user says "it works!"
+gh pr create --title "feat: Add new feature" --body "
+## Summary
+Description of what was added
+
+## Testing
+- [x] Deployed to production
+- [x] User confirmed features work correctly
+- [x] No errors in production logs
+
+## Changes
+- List of changes
+"
+```
+
+**Step 5: User Reviews and Merges**
+- User reviews the PR
+- User merges when satisfied
+- Feature branch is deleted
+
+### Why This Workflow?
+
+1. **Prevents broken code in main**: If feature doesn't work in production, we fix it on the feature branch before merging
+2. **Real testing**: Production is the real test - staging can't catch everything
+3. **Clean history**: Only working, tested code gets merged to main
+4. **Easy rollback**: If something breaks, we just don't merge the PR
+
+### Common Mistake to Avoid
+
+**❌ WRONG WORKFLOW**:
+```
+Develop → Create PR → Deploy → Test → Fix → Update PR → Deploy → Test...
+```
+
+**✅ CORRECT WORKFLOW**:
+```
+Develop → Deploy → Test → Fix (if needed) → Deploy → Test → Confirm → Create PR → Merge
 ```
 
 ---
@@ -241,7 +325,9 @@ const bookData = {
 3. ✅ Run deployment
 4. ✅ Wait 45-60 seconds for ECS to stabilize
 5. ✅ Test the changes in production
-6. ✅ Create PR if not already created
+6. ✅ **WAIT for user confirmation that features work correctly**
+7. ✅ Create PR only AFTER user confirms features work
+8. ✅ Wait for user to review and merge PR
 
 ---
 
@@ -502,10 +588,11 @@ node scripts/clear-postgres-data.js
 3. Test locally if possible
 4. Commit: `git commit -m "type: description\n\ndetails\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"`
 5. Push: `git push -u origin feature/task-name`
-6. Create PR: `gh pr create`
-7. Deploy: `./deploy.sh backend patch`
-8. Test in production
-9. Ask user to review/merge PR
+6. Deploy: `./deploy.sh backend patch` (or `all patch` if frontend changed)
+7. Test in production
+8. **WAIT for user to confirm features work correctly**
+9. Create PR only after user confirmation: `gh pr create`
+10. User will review and merge the PR
 
 ### When Debugging
 
@@ -537,11 +624,13 @@ node scripts/clear-postgres-data.js
 
 **A task is complete when**:
 1. ✅ Code committed to feature branch (NOT main)
-2. ✅ Tests pass locally
+2. ✅ Tests pass locally (if applicable)
 3. ✅ Deployed to production
 4. ✅ Tested in production UI
-5. ✅ Database verified
-6. ✅ PR created for user review
-7. ✅ No errors in logs
+5. ✅ Database verified (if applicable)
+6. ✅ **User confirms features work correctly in production**
+7. ✅ PR created for user review (only after user confirmation)
+8. ✅ No errors in logs
+9. ✅ User approves and merges PR
 
 **Remember**: Quality over speed. Take time to follow the proper workflow!
