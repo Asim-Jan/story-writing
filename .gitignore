@@ -67,3 +67,6 @@ aws-setup-archive.tar.gz
 *.bak
 *.old
 RDS_CREDENTIALS.txt
+
+# Security-sensitive admin scripts
+scripts/create-admin.js
