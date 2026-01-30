@@ -517,7 +517,8 @@ app.post('/api/auth/register', async (req, res) => {
 
     // Store user data
     await createUser(user);
-        // Generate JWT token
+
+    // Generate JWT token
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
@@ -529,7 +530,15 @@ app.post('/api/auth/register', async (req, res) => {
     });
 
     res.json({
-      user: { id: user.id, email: user.email, name: user.name },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: 'user',
+        tier: 'free',
+        status: 'active',
+        books: []
+      },
       token
     });
   } catch (error) {
