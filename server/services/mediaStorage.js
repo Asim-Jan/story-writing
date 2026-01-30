@@ -209,14 +209,28 @@ export class MediaStorage {
   }
 
   /**
-   * Get file stream from MinIO
+   * Get file stream from storage (S3 or MinIO)
    * @param {string} bucket - Bucket name
    * @param {string} objectName - Object name
    * @returns {Promise<Stream>} File stream
    */
   async getStream(bucket, objectName) {
     await this.initialize();
-    return await this.client.getObject(bucket, objectName);
+
+    if (this.useS3) {
+      // AWS S3 Get Stream
+      const key = `${bucket}/${objectName}`;
+      const command = new GetObjectCommand({
+        Bucket: this.s3Bucket,
+        Key: key,
+      });
+
+      const response = await this.s3Client.send(command);
+      return response.Body;
+    } else {
+      // MinIO Get Stream
+      return await this.client.getObject(bucket, objectName);
+    }
   }
 
   /**
