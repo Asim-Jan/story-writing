@@ -677,6 +677,52 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
+// Change password (authenticated user)
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user.userId;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+
+    // Get user data
+    const user = await getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Verify current password
+    const validPassword = await bcrypt.compare(currentPassword, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update user password
+    const updatedUser = {
+      ...user,
+      password: hashedPassword
+    };
+
+    await updateUser(userId, updatedUser);
+
+    console.log(`Password changed successfully for user ${user.email}`);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Password change error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
 // ============ ADMIN ROUTES (Protected) ============
 // Note: All admin routes require authenticateToken + requireAdmin middleware
 

@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle } from 'lucide-react';
+import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle, Lock, LogOut } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
 const ProfilePage = ({ onBack }) => {
+  const { logout } = useAuth();
   const [activeTab, setActiveTab] = useState('account');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -29,6 +31,13 @@ const ProfilePage = ({ onBack }) => {
     autoSave: true,
     enableNotifications: true,
     theme: 'light'
+  });
+
+  // Password change
+  const [passwordData, setPasswordData] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
   });
 
   useEffect(() => {
@@ -121,6 +130,66 @@ const ProfilePage = ({ onBack }) => {
     }
   };
 
+  const handleChangePassword = async () => {
+    setSaving(true);
+    setMessage(null);
+
+    // Validate passwords
+    if (!passwordData.currentPassword || !passwordData.newPassword || !passwordData.confirmPassword) {
+      setMessage({ type: 'error', text: 'All password fields are required' });
+      setSaving(false);
+      return;
+    }
+
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      setMessage({ type: 'error', text: 'New passwords do not match' });
+      setSaving(false);
+      return;
+    }
+
+    if (passwordData.newPassword.length < 8) {
+      setMessage({ type: 'error', text: 'New password must be at least 8 characters long' });
+      setSaving(false);
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/auth/change-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          currentPassword: passwordData.currentPassword,
+          newPassword: passwordData.newPassword
+        })
+      });
+
+      if (response.ok) {
+        setMessage({ type: 'success', text: 'Password changed successfully!' });
+        setPasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
+        setTimeout(() => setMessage(null), 3000);
+      } else {
+        const data = await response.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to change password' });
+      }
+    } catch (error) {
+      console.error('Error changing password:', error);
+      setMessage({ type: 'error', text: 'Failed to change password' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (confirm('Are you sure you want to logout?')) {
+      await logout();
+    }
+  };
+
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -207,6 +276,17 @@ const ProfilePage = ({ onBack }) => {
                 >
                   <Palette className="w-5 h-5" />
                   Preferences
+                </button>
+                <button
+                  onClick={() => setActiveTab('security')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                    activeTab === 'security'
+                      ? 'bg-purple-600 text-white'
+                      : 'text-gray-700 hover:bg-purple-50'
+                  }`}
+                >
+                  <Lock className="w-5 h-5" />
+                  Security
                 </button>
               </nav>
             </div>
@@ -442,6 +522,99 @@ const ProfilePage = ({ onBack }) => {
                         <Save className="w-5 h-5" />
                         {saving ? 'Saving...' : 'Save Preferences'}
                       </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Security Tab */}
+              {activeTab === 'security' && (
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-2">
+                    <Lock className="w-6 h-6" />
+                    Security
+                  </h2>
+
+                  <div className="space-y-8">
+                    {/* Change Password Section */}
+                    <div className="border-b pb-8">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-4">Change Password</h3>
+
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Current Password
+                          </label>
+                          <input
+                            type="password"
+                            value={passwordData.currentPassword}
+                            onChange={(e) => setPasswordData({ ...passwordData, currentPassword: e.target.value })}
+                            placeholder="Enter current password"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            New Password
+                          </label>
+                          <input
+                            type="password"
+                            value={passwordData.newPassword}
+                            onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
+                            placeholder="Enter new password (min. 8 characters)"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Confirm New Password
+                          </label>
+                          <input
+                            type="password"
+                            value={passwordData.confirmPassword}
+                            onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
+                            placeholder="Confirm new password"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        <div className="flex justify-end pt-4">
+                          <button
+                            onClick={handleChangePassword}
+                            disabled={saving}
+                            className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Lock className="w-5 h-5" />
+                            {saving ? 'Changing Password...' : 'Change Password'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Logout Section */}
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-4">Session Management</h3>
+
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h4 className="font-semibold text-gray-900 mb-2">Logout from Account</h4>
+                            <p className="text-sm text-gray-600 mb-4">
+                              This will end your current session and you'll need to login again.
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={handleLogout}
+                          className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center gap-2"
+                        >
+                          <LogOut className="w-5 h-5" />
+                          Logout
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
