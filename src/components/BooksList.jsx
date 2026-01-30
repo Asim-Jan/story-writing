@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User } from 'lucide-react';
+import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User, Shield } from 'lucide-react';
 import AIBookGeneratorModal from './AIBookGeneratorModal';
 import ImportBookModal from './ImportBookModal';
 import ChapterReviewModal from './ChapterReviewModal';
@@ -9,7 +9,7 @@ import ProfilePage from './ProfilePage';
 // Use relative URLs to work with Vite proxy for both localhost and ngrok
 const API_URL = '';
 
-const BooksList = ({ onSelectBook, onNewBook }) => {
+const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   const [books, setBooks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -105,6 +105,15 @@ const BooksList = ({ onSelectBook, onNewBook }) => {
             <Book className="w-12 h-12 text-amber-700" />
             <h1 className="text-5xl font-bold text-gray-900">Book Writing Studio</h1>
             <div className="absolute right-0 flex gap-2">
+              {onOpenAdmin && (
+                <button
+                  onClick={onOpenAdmin}
+                  className="p-3 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  title="Admin Dashboard"
+                >
+                  <Shield className="w-6 h-6" />
+                </button>
+              )}
               <button
                 onClick={() => setShowProfile(true)}
                 className="p-3 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"

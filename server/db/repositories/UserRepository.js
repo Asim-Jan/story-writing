@@ -265,6 +265,197 @@ export class UserRepository {
     );
     return result.rowCount;
   }
+
+  // ============ ADMIN METHODS ============
+
+  /**
+   * Find all users with pagination and filters (admin only)
+   * @param {object} options - Query options (limit, offset, tier, status, search)
+   * @returns {Promise<{users: Array, total: number}>} Users and total count
+   */
+  static async findAll(options = {}) {
+    const {
+      limit = 50,
+      offset = 0,
+      tier = null,
+      status = null,
+      search = null
+    } = options;
+
+    const conditions = ['deleted_at IS NULL'];
+    const params = [];
+    let paramCount = 1;
+
+    if (tier) {
+      conditions.push(`tier = $${paramCount}`);
+      params.push(tier);
+      paramCount++;
+    }
+
+    if (status) {
+      conditions.push(`status = $${paramCount}`);
+      params.push(status);
+      paramCount++;
+    }
+
+    if (search) {
+      conditions.push(`(email ILIKE $${paramCount} OR name ILIKE $${paramCount})`);
+      params.push(`%${search}%`);
+      paramCount++;
+    }
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(*) FROM users WHERE ${conditions.join(' AND ')}`,
+      params
+    );
+
+    // Get paginated users with quota info
+    const usersResult = await query(
+      `SELECT
+        u.*,
+        q.current_books,
+        q.current_words,
+        q.current_chapters,
+        q.ai_requests_today,
+        q.max_books,
+        q.max_words,
+        q.max_chapters,
+        q.max_ai_requests_per_day,
+        (SELECT COUNT(*) FROM books WHERE owner_id = u.id AND deleted_at IS NULL) as book_count
+       FROM users u
+       LEFT JOIN quotas q ON u.id = q.user_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY u.created_at DESC
+       LIMIT $${paramCount} OFFSET $${paramCount + 1}`,
+      [...params, limit, offset]
+    );
+
+    return {
+      users: usersResult.rows,
+      total: parseInt(countResult.rows[0].count)
+    };
+  }
+
+  /**
+   * Update user tier and quotas (admin only)
+   * @param {string} userId - User UUID
+   * @param {string} newTier - New tier (free, basic, premium)
+   * @param {string} adminId - Admin user ID performing the action
+   * @returns {Promise<object>} Updated user
+   */
+  static async updateTier(userId, newTier, adminId) {
+    const result = await query(
+      'SELECT update_user_tier($1, $2, $3)',
+      [userId, newTier, adminId]
+    );
+
+    // Return updated user
+    return await this.findByIdWithSettings(userId);
+  }
+
+  /**
+   * Update user status (admin only)
+   * @param {string} userId - User UUID
+   * @param {string} status - New status (active, suspended, banned)
+   * @param {string} adminId - Admin user ID
+   * @param {string} reason - Reason for status change
+   * @returns {Promise<object>} Updated user
+   */
+  static async updateStatus(userId, status, adminId, reason = null) {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    const result = await query(
+      `UPDATE users SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, userId]
+    );
+
+    // Log the action
+    await query(
+      `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        adminId,
+        'status_change',
+        userId,
+        JSON.stringify({ old_status: user.status || 'active', new_status: status, reason })
+      ]
+    );
+
+    return result.rows[0];
+  }
+
+  /**
+   * Get system statistics for admin dashboard
+   * @returns {Promise<object>} System stats
+   */
+  static async getSystemStats() {
+    const result = await query('SELECT * FROM system_stats');
+    return result.rows[0];
+  }
+
+  /**
+   * Get audit log entries (admin only)
+   * @param {object} options - Query options (limit, offset, adminId, targetUserId)
+   * @returns {Promise<{logs: Array, total: number}>} Audit logs
+   */
+  static async getAuditLog(options = {}) {
+    const {
+      limit = 100,
+      offset = 0,
+      adminId = null,
+      targetUserId = null
+    } = options;
+
+    const conditions = [];
+    const params = [];
+    let paramCount = 1;
+
+    if (adminId) {
+      conditions.push(`admin_id = $${paramCount}`);
+      params.push(adminId);
+      paramCount++;
+    }
+
+    if (targetUserId) {
+      conditions.push(`target_user_id = $${paramCount}`);
+      params.push(targetUserId);
+      paramCount++;
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(*) FROM admin_audit_log ${whereClause}`,
+      params
+    );
+
+    // Get logs with user details
+    const logsResult = await query(
+      `SELECT
+        al.*,
+        au.name as admin_name,
+        au.email as admin_email,
+        tu.name as target_user_name,
+        tu.email as target_user_email
+       FROM admin_audit_log al
+       LEFT JOIN users au ON al.admin_id = au.id
+       LEFT JOIN users tu ON al.target_user_id = tu.id
+       ${whereClause}
+       ORDER BY al.created_at DESC
+       LIMIT $${paramCount} OFFSET $${paramCount + 1}`,
+      [...params, limit, offset]
+    );
+
+    return {
+      logs: logsResult.rows,
+      total: parseInt(countResult.rows[0].count)
+    };
+  }
 }
 
 export default UserRepository;
