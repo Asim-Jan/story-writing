@@ -1408,7 +1408,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 
 // ==================== LEGACY SYNCHRONOUS ENDPOINTS (kept for backward compatibility) ====================
 
-// Image Generation endpoint using Google Gemini
+// Image Generation endpoint using OpenAI DALL-E
 app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, async (req, res) => {
   try {
     const { prompt, context } = req.body;
@@ -1417,11 +1417,10 @@ app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, asyn
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    // Get user's API clients (validates keys exist)
+    // Get user's OpenAI client (validates key exists)
     const userOpenai = await getUserOpenAI(req.user.userId);
-    const userGenai = await getUserGemini(req.user.userId);
 
-    // Step 1: Use OpenAI to enhance the prompt with book context
+    // Step 1: Optionally enhance the prompt with book context
     let enhancedPrompt = prompt;
 
     if (context) {
@@ -1442,14 +1441,14 @@ app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, asyn
         messages: [
           {
             role: 'system',
-            content: `You are helping enhance image generation prompts. Given a user's basic image request and their book context, create a detailed, vivid image prompt that incorporates relevant context details.
+            content: `You are helping enhance image generation prompts for DALL-E. Given a user's basic image request and their book context, create a detailed, vivid image prompt that incorporates relevant context details.
 
-Your enhanced prompt should be clear, descriptive, and optimized for image generation. Include:
+Your enhanced prompt should be clear, descriptive, and optimized for DALL-E image generation. Include:
 - Visual details (colors, lighting, composition)
 - Style references if appropriate
 - Relevant context from the book (character appearances, location details, atmosphere)
 
-Respond with ONLY the enhanced prompt text, nothing else.`
+Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt text, nothing else.`
           },
           {
             role: 'user',
@@ -1464,42 +1463,39 @@ Respond with ONLY the enhanced prompt text, nothing else.`
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
-    // Step 2: Generate image with Gemini using enhanced prompt
-    console.log('Generating image with Gemini...');
+    // Step 2: Generate image with DALL-E 3
+    console.log('Generating image with DALL-E 3...');
 
-    const response = await userGenai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: enhancedPrompt,
+    const response = await userOpenai.images.generate({
+      model: 'dall-e-3',
+      prompt: enhancedPrompt,
+      n: 1,
+      size: '1024x1024',
+      quality: 'standard',
+      response_format: 'b64_json'
     });
 
     // Extract image data from response
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        const imageData = part.inlineData.data;
-        const buffer = Buffer.from(imageData, 'base64');
+    const imageData = response.data[0].b64_json;
+    const buffer = Buffer.from(imageData, 'base64');
 
-        // Upload to MinIO
-        const filename = `visual-${Date.now()}.png`;
-        const uploadResult = await mediaStorage.upload('images', buffer, filename, {
-          'x-amz-meta-type': 'generated-visual',
-          'x-amz-meta-prompt': (prompt || '').substring(0, 200),
-          // Note: No bookId for standalone image generation - backward compatibility only
-        }, setMediaBookMapping);
+    // Upload to MinIO
+    const filename = `visual-${Date.now()}.png`;
+    const uploadResult = await mediaStorage.upload('images', buffer, filename, {
+      'x-amz-meta-type': 'generated-visual',
+      'x-amz-meta-prompt': (prompt || '').substring(0, 200),
+      // Note: No bookId for standalone image generation - backward compatibility only
+    }, setMediaBookMapping);
 
-        console.log('Image saved to MinIO:', uploadResult.storageKey);
+    console.log('Image saved to MinIO:', uploadResult.storageKey);
 
-        // Return storage key and proxy URL (portable across devices)
-        res.json({
-          imageUrl: `/api/media/images/${filename}`,
-          filename,
-          storageKey: uploadResult.storageKey,
-          bucket: uploadResult.bucket,
-        });
-        return;
-      }
-    }
-
-    res.status(500).json({ error: 'No image data in response' });
+    // Return storage key and proxy URL (portable across devices)
+    res.json({
+      imageUrl: `/api/media/images/${filename}`,
+      filename,
+      storageKey: uploadResult.storageKey,
+      bucket: uploadResult.bucket,
+    });
   } catch (error) {
     console.error('Error generating image:', error);
 
@@ -1507,13 +1503,6 @@ Respond with ONLY the enhanced prompt text, nothing else.`
       return res.status(403).json({
         error: 'API key required',
         message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
-      });
-    }
-
-    if (error.message === 'MISSING_GEMINI_KEY') {
-      return res.status(403).json({
-        error: 'API key required',
-        message: 'Please add your Google Gemini API key in Profile > API Keys to generate images.'
       });
     }
 
