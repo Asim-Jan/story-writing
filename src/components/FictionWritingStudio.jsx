@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User, Settings } from 'lucide-react';
+import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User } from 'lucide-react';
 import { useBook } from '../hooks/useBook';
 import { getMediaUrl } from '../utils/mediaUrl';
 import AISuggestionBox from './AISuggestionBox';
@@ -24,13 +24,11 @@ import JobsTab from './JobsTab';
 import RPGGameTab from './RPGGameTab';
 import ErrorBoundary from './ErrorBoundary';
 import ProfilePage from './ProfilePage';
-import SettingsModal from './SettingsModal';
 
 const FictionWritingStudio = ({ bookId, onBack }) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showProfile, setShowProfile] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
 
   const { data, setData, loading, saving, error, saveBook, autosave } = useBook(bookId);
 
@@ -613,13 +611,6 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               <User size={20} />
             </button>
             <button
-              onClick={() => setShowSettings(true)}
-              className="p-2 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-              title="Settings"
-            >
-              <Settings size={20} />
-            </button>
-            <button
               onClick={saveBook}
               disabled={saving}
               className="px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 text-sm sm:text-base"
@@ -1124,11 +1115,6 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         description={selectedImage?.description}
         onClose={() => setSelectedImage(null)}
       />
-
-      {/* Settings Modal */}
-      {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} />
-      )}
     </div>
   );
 };
