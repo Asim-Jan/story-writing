@@ -35,6 +35,9 @@ import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
 import { encrypt, decrypt } from './utils/encryption.js';
 import { setMediaBookMapping, getMediaBookMapping } from './utils/mediaMapping.js';
+import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
+import UserRepository from './db/repositories/UserRepository.js';
+import BookRepository from './db/repositories/BookRepository.js';
 import {
   imageQueue,
   audioQueue,
@@ -383,10 +386,27 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
+    // Check if user account is suspended or banned
+    if (user.status === 'suspended') {
+      return res.status(403).json({
+        error: 'Account suspended',
+        message: 'Your account has been suspended. Please contact support.'
+      });
+    }
+
+    if (user.status === 'banned') {
+      return res.status(403).json({
+        error: 'Account banned',
+        message: 'Your account has been permanently banned.'
+      });
+    }
+
     // Attach user with both id and userId for compatibility
     req.user = {
       ...user,
-      userId: user.id
+      userId: user.id,
+      role: user.role || 'user', // Default to 'user' if not set
+      status: user.status || 'active' // Default to 'active' if not set
     };
     next();
   } catch (error) {
@@ -656,6 +676,223 @@ app.post('/api/auth/reset-password', async (req, res) => {
     res.status(500).json({ error: 'Failed to reset password' });
   }
 });
+
+// ============ ADMIN ROUTES (Protected) ============
+// Note: All admin routes require authenticateToken + requireAdmin middleware
+
+// Admin-specific rate limiter
+const adminRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each admin to 100 requests per windowMs
+  message: 'Too many admin requests, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `admin:${req.user?.id || req.ip}`
+});
+
+// Apply rate limiter to all admin routes
+app.use('/api/admin', adminRateLimiter);
+
+// Get all users (paginated with filters)
+app.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      tier,
+      status,
+      search
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const result = await UserRepository.findAll({
+      limit: parseInt(limit),
+      offset,
+      tier,
+      status,
+      search
+    });
+
+    res.json({
+      users: result.users.map(user => ({
+        ...user,
+        password_hash: undefined // Never send password hash
+      })),
+      pagination: {
+        total: result.total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(result.total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Get user details by ID
+app.get('/api/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await UserRepository.findByIdWithSettings(req.params.userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get user's books
+    const books = await BookRepository.findByOwnerId(req.params.userId);
+
+    res.json({
+      ...user,
+      password_hash: undefined,
+      books
+    });
+  } catch (error) {
+    console.error('Error fetching user details:', error);
+    res.status(500).json({ error: 'Failed to fetch user details' });
+  }
+});
+
+// Update user tier
+app.put('/api/admin/users/:userId/tier',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { tier } = req.body;
+
+      if (!['free', 'basic', 'premium'].includes(tier)) {
+        return res.status(400).json({ error: 'Invalid tier. Must be free, basic, or premium.' });
+      }
+
+      const updatedUser = await UserRepository.updateTier(
+        req.params.userId,
+        tier,
+        req.user.id
+      );
+
+      res.json({
+        message: 'User tier updated successfully',
+        user: {
+          ...updatedUser,
+          password_hash: undefined
+        }
+      });
+    } catch (error) {
+      console.error('Error updating user tier:', error);
+      res.status(500).json({ error: 'Failed to update user tier' });
+    }
+  }
+);
+
+// Update user status (suspend/ban/activate)
+app.put('/api/admin/users/:userId/status',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { status, reason } = req.body;
+
+      if (!['active', 'suspended', 'banned'].includes(status)) {
+        return res.status(400).json({
+          error: 'Invalid status. Must be active, suspended, or banned.'
+        });
+      }
+
+      const updatedUser = await UserRepository.updateStatus(
+        req.params.userId,
+        status,
+        req.user.id,
+        reason
+      );
+
+      res.json({
+        message: `User ${status === 'active' ? 'activated' : status} successfully`,
+        user: {
+          ...updatedUser,
+          password_hash: undefined
+        }
+      });
+    } catch (error) {
+      console.error('Error updating user status:', error);
+      res.status(500).json({ error: 'Failed to update user status' });
+    }
+  }
+);
+
+// Get system statistics
+app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const stats = await UserRepository.getSystemStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching system stats:', error);
+    res.status(500).json({ error: 'Failed to fetch system statistics' });
+  }
+});
+
+// Get audit log
+app.get('/api/admin/audit-log', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 100,
+      adminId,
+      targetUserId
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const result = await UserRepository.getAuditLog({
+      limit: parseInt(limit),
+      offset,
+      adminId,
+      targetUserId
+    });
+
+    res.json({
+      logs: result.logs,
+      pagination: {
+        total: result.total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(result.total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching audit log:', error);
+    res.status(500).json({ error: 'Failed to fetch audit log' });
+  }
+});
+
+// Delete user (admin only, soft delete)
+app.delete('/api/admin/users/:userId',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      await UserRepository.delete(req.params.userId);
+
+      // Log the action
+      const { query } = await import('./db/postgres.js');
+      await query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.id, 'user_deleted', req.params.userId, JSON.stringify({})]
+      );
+
+      res.json({ message: 'User deleted successfully' });
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      res.status(500).json({ error: 'Failed to delete user' });
+    }
+  }
+);
 
 // ============ AI AGENT ROUTES (Protected) ============
 

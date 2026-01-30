@@ -6,23 +6,28 @@ import FictionWritingStudio from './components/FictionWritingStudio';
 import BooksList from './components/BooksList';
 import AuthPage from './components/AuthPage';
 import GlobalAudioPlayer from './components/GlobalAudioPlayer';
+import AdminDashboard from './components/AdminDashboard';
 
 function AppContent() {
   const { user, loading, login, isAuthenticated } = useAuth();
-  const [currentView, setCurrentView] = useState('list'); // 'list' or 'editor'
+  const [currentView, setCurrentView] = useState('list'); // 'list', 'editor', or 'admin'
   const [selectedBookId, setSelectedBookId] = useState(null);
 
-  // Check URL on mount to see if we should open a specific book
+  // Check URL on mount to see if we should open a specific book or admin panel
   useEffect(() => {
     if (isAuthenticated) {
       const urlParams = new URLSearchParams(window.location.search);
       const bookId = urlParams.get('book');
-      if (bookId) {
+      const admin = urlParams.get('admin');
+
+      if (admin === 'true' && user?.role === 'admin') {
+        setCurrentView('admin');
+      } else if (bookId) {
         setSelectedBookId(bookId);
         setCurrentView('editor');
       }
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, user]);
 
   const handleSelectBook = (bookId) => {
     setSelectedBookId(bookId);
@@ -40,6 +45,11 @@ function AppContent() {
     setCurrentView('list');
     setSelectedBookId(null);
     window.history.pushState({}, '', '/');
+  };
+
+  const handleOpenAdmin = () => {
+    setCurrentView('admin');
+    window.history.pushState({}, '', '?admin=true');
   };
 
   // Show loading spinner while checking auth
@@ -63,7 +73,21 @@ function AppContent() {
   return (
     <>
       {currentView === 'list' ? (
-        <BooksList onSelectBook={handleSelectBook} onNewBook={handleNewBook} />
+        <BooksList
+          onSelectBook={handleSelectBook}
+          onNewBook={handleNewBook}
+          onOpenAdmin={user?.role === 'admin' ? handleOpenAdmin : null}
+        />
+      ) : currentView === 'admin' ? (
+        user?.role === 'admin' ? (
+          <AdminDashboard onBack={handleBackToList} />
+        ) : (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+            <div className="text-center">
+              <p className="text-xl text-red-600">Admin access required</p>
+            </div>
+          </div>
+        )
       ) : (
         <FictionWritingStudio bookId={selectedBookId} onBack={handleBackToList} />
       )}
