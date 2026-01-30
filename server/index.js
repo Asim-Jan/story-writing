@@ -36,6 +36,18 @@ import { ApiResponse } from './utils/responses.js';
 import { encrypt, decrypt } from './utils/encryption.js';
 import { setMediaBookMapping, getMediaBookMapping } from './utils/mediaMapping.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
+import {
+  getUserQuotas,
+  checkBookQuota,
+  checkWordQuota,
+  checkChapterQuota,
+  checkAIQuota,
+  checkJobQuota,
+  requireFeature,
+  incrementAICounter,
+  updateQuotaUsage
+} from './middleware/quotaEnforcement.js';
+import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
 import {
@@ -4985,6 +4997,31 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error updating user settings:', error);
     res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// Get user quotas and limits
+app.get('/api/users/quotas', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId || req.user.id;
+    const quotas = await getUserQuotas(userId);
+
+    // Get display-friendly limits
+    const limitsDisplay = getTierLimitsDisplay(quotas.tier);
+
+    res.json({
+      tier: quotas.tier,
+      limits: quotas.limits,
+      limitsDisplay,
+      usage: quotas.usage,
+      features: quotas.features,
+      remainingToday: {
+        ai_requests: quotas.limits.max_ai_requests_per_day - quotas.usage.ai_requests_today
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching quotas:', error);
+    res.status(500).json({ error: 'Failed to fetch quotas' });
   }
 });
 
