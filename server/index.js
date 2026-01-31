@@ -990,46 +990,53 @@ app.get('/api/admin/login-history', authenticateToken, requireAdmin, async (req,
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    // Build query
-    let query = `
+    // Build WHERE clause conditions
+    let whereConditions = '';
+    const params = [];
+    let paramCount = 1;
+
+    if (userId) {
+      whereConditions += ` AND lh.user_id = $${paramCount}`;
+      params.push(userId);
+      paramCount++;
+    }
+
+    if (success !== undefined) {
+      whereConditions += ` AND lh.success = $${paramCount}`;
+      params.push(success === 'true');
+      paramCount++;
+    }
+
+    if (email) {
+      whereConditions += ` AND lh.email ILIKE $${paramCount}`;
+      params.push(`%${email}%`);
+      paramCount++;
+    }
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*)
+      FROM login_history lh
+      LEFT JOIN users u ON lh.user_id = u.id
+      WHERE 1=1${whereConditions}
+    `;
+    const countResult = await getPool().query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Build main query
+    const query = `
       SELECT
         lh.*,
         u.name as user_name,
         u.email as user_email
       FROM login_history lh
       LEFT JOIN users u ON lh.user_id = u.id
-      WHERE 1=1
+      WHERE 1=1${whereConditions}
+      ORDER BY lh.login_at DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
     `;
-    const params = [];
-    let paramCount = 1;
 
-    if (userId) {
-      query += ` AND lh.user_id = $${paramCount}`;
-      params.push(userId);
-      paramCount++;
-    }
-
-    if (success !== undefined) {
-      query += ` AND lh.success = $${paramCount}`;
-      params.push(success === 'true');
-      paramCount++;
-    }
-
-    if (email) {
-      query += ` AND lh.email ILIKE $${paramCount}`;
-      params.push(`%${email}%`);
-      paramCount++;
-    }
-
-    query += ` ORDER BY lh.login_at DESC`;
-
-    // Get total count
-    const countQuery = query.replace('lh.*, u.name as user_name, u.email as user_email', 'COUNT(*)');
-    const countResult = await getPool().query(countQuery, params);
-    const total = parseInt(countResult.rows[0].count);
-
-    // Get paginated results
-    query += ` LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    // Add pagination params
     params.push(parseInt(limit), offset);
 
     const result = await getPool().query(query, params);
