@@ -548,6 +548,23 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // Login
+// Helper function to log login attempts
+async function logLoginAttempt(email, userId, success, failureReason, req) {
+  try {
+    const ip = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent');
+
+    await pool.query(
+      `INSERT INTO login_history (user_id, email, success, failure_reason, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, email, success, failureReason, ip, userAgent]
+    );
+  } catch (error) {
+    console.error('Error logging login attempt:', error);
+    // Don't fail the login if logging fails
+  }
+}
+
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     console.log('Login attempt for:', req.body?.email);
@@ -555,6 +572,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     if (!email || !password) {
       console.log('Missing email or password');
+      await logLoginAttempt(email, null, false, 'missing_credentials', req);
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
@@ -564,6 +582,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     if (!user) {
       console.log('User not found for email:', email);
+      await logLoginAttempt(email, null, false, 'user_not_found', req);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
@@ -572,7 +591,14 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     console.log('Password valid:', validPassword);
 
     if (!validPassword) {
+      await logLoginAttempt(email, user.id, false, 'invalid_password', req);
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check if user is suspended or banned
+    if (user.status === 'suspended' || user.status === 'banned') {
+      await logLoginAttempt(email, user.id, false, `account_${user.status}`, req);
+      return res.status(403).json({ error: `Account is ${user.status}` });
     }
 
     // Generate JWT token
@@ -585,6 +611,9 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
+
+    // Log successful login
+    await logLoginAttempt(email, user.id, true, null, req);
 
     console.log('Login successful for:', email);
     res.json({
@@ -944,6 +973,99 @@ app.get('/api/admin/audit-log', authenticateToken, requireAdmin, async (req, res
   } catch (error) {
     console.error('Error fetching audit log:', error);
     res.status(500).json({ error: 'Failed to fetch audit log' });
+  }
+});
+
+// Get login history (admin only)
+app.get('/api/admin/login-history', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      userId,
+      success,
+      email
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build query
+    let query = `
+      SELECT
+        lh.*,
+        u.name as user_name,
+        u.email as user_email
+      FROM login_history lh
+      LEFT JOIN users u ON lh.user_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (userId) {
+      query += ` AND lh.user_id = $${paramCount}`;
+      params.push(userId);
+      paramCount++;
+    }
+
+    if (success !== undefined) {
+      query += ` AND lh.success = $${paramCount}`;
+      params.push(success === 'true');
+      paramCount++;
+    }
+
+    if (email) {
+      query += ` AND lh.email ILIKE $${paramCount}`;
+      params.push(`%${email}%`);
+      paramCount++;
+    }
+
+    query += ` ORDER BY lh.login_at DESC`;
+
+    // Get total count
+    const countQuery = query.replace('lh.*, u.name as user_name, u.email as user_email', 'COUNT(*)');
+    const countResult = await pool.query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Get paginated results
+    query += ` LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    params.push(parseInt(limit), offset);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      loginHistory: result.rows,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching login history:', error);
+    res.status(500).json({ error: 'Failed to fetch login history' });
+  }
+});
+
+// Get login history for a specific user (admin only)
+app.get('/api/admin/users/:userId/login-history', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+
+    const result = await pool.query(
+      `SELECT * FROM login_history
+       WHERE user_id = $1
+       ORDER BY login_at DESC
+       LIMIT $2`,
+      [userId, parseInt(limit)]
+    );
+
+    res.json({ loginHistory: result.rows });
+  } catch (error) {
+    console.error('Error fetching user login history:', error);
+    res.status(500).json({ error: 'Failed to fetch login history' });
   }
 });
 
