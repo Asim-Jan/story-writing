@@ -141,8 +141,8 @@ export class UserDataService {
     delete mapped.api_keys;
 
     // Only keep valid users table columns:
-    // id, email, name, password_hash, tier, created_at, updated_at, deleted_at, version
-    const validUserFields = ['id', 'email', 'name', 'password_hash', 'tier', 'version'];
+    // id, email, name, password_hash, tier, role, status, created_at, updated_at, deleted_at, version
+    const validUserFields = ['id', 'email', 'name', 'password_hash', 'tier', 'role', 'status', 'version'];
     const filtered = {};
 
     for (const key of validUserFields) {
@@ -184,6 +184,18 @@ export class UserDataService {
     if (mapped.deleted_at) {
       mapped.deletedAt = mapped.deleted_at;
       delete mapped.deleted_at;
+    }
+
+    // Ensure role, tier, and status are included (already using correct names)
+    // These fields come directly from PostgreSQL with the same names
+    if (!mapped.role) {
+      mapped.role = 'user';
+    }
+    if (!mapped.tier) {
+      mapped.tier = 'free';
+    }
+    if (!mapped.status) {
+      mapped.status = 'active';
     }
 
     // Initialize books array if not present
