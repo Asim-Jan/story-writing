@@ -566,6 +566,23 @@ async function logLoginAttempt(email, userId, success, failureReason, req) {
   }
 }
 
+// Helper function to log user activities
+async function logUserActivity(userId, activityType, details = {}, req) {
+  try {
+    const ip = req?.ip || req?.connection?.remoteAddress || null;
+    const userAgent = req?.get?.('user-agent') || null;
+
+    await getPool().query(
+      `INSERT INTO user_activity_log (user_id, activity_type, details, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, activityType, JSON.stringify(details), ip, userAgent]
+    );
+  } catch (error) {
+    console.error('Error logging user activity:', error);
+    // Don't fail the operation if logging fails
+  }
+}
+
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     console.log('Login attempt for:', req.body?.email);
@@ -1077,6 +1094,93 @@ app.get('/api/admin/users/:userId/login-history', authenticateToken, requireAdmi
   }
 });
 
+// Get user activity log (admin only, paginated)
+app.get('/api/admin/user-activity', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, userId, activityType } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build WHERE clause conditions
+    let whereConditions = '';
+    const params = [];
+    let paramCount = 1;
+
+    if (userId) {
+      whereConditions += ` AND ual.user_id = $${paramCount}`;
+      params.push(userId);
+      paramCount++;
+    }
+
+    if (activityType) {
+      whereConditions += ` AND ual.activity_type = $${paramCount}`;
+      params.push(activityType);
+      paramCount++;
+    }
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*)
+      FROM user_activity_log ual
+      LEFT JOIN users u ON ual.user_id = u.id
+      WHERE 1=1${whereConditions}
+    `;
+    const countResult = await getPool().query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Build main query
+    const query = `
+      SELECT
+        ual.*,
+        u.name as user_name,
+        u.email as user_email
+      FROM user_activity_log ual
+      LEFT JOIN users u ON ual.user_id = u.id
+      WHERE 1=1${whereConditions}
+      ORDER BY ual.created_at DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `;
+
+    // Add pagination params
+    params.push(parseInt(limit), offset);
+
+    const result = await getPool().query(query, params);
+
+    res.json({
+      activities: result.rows,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user activity:', error);
+    res.status(500).json({ error: 'Failed to fetch user activity' });
+  }
+});
+
+// Get user activity for a specific user (admin only)
+app.get('/api/admin/users/:userId/activity', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+
+    const result = await getPool().query(
+      `SELECT * FROM user_activity_log
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [userId, parseInt(limit)]
+    );
+
+    res.json({ activities: result.rows });
+  } catch (error) {
+    console.error('Error fetching user activity:', error);
+    res.status(500).json({ error: 'Failed to fetch user activity' });
+  }
+});
+
 // Delete user (admin only, soft delete)
 app.delete('/api/admin/users/:userId',
   authenticateToken,
@@ -1290,6 +1394,13 @@ app.post('/api/books', authenticateToken, checkBookQuota, async (req, res) => {
 
     // Update quota usage after successful book creation
     await updateQuotaUsage(req.user.userId);
+
+    // Log activity
+    await logUserActivity(req.user.userId, 'book_created', {
+      book_id: book.id,
+      title: book.title,
+      genre: book.genre
+    }, req);
 
     res.status(201).json(book);
   } catch (error) {
@@ -1745,6 +1856,14 @@ app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, r
       context
     );
 
+    // Log activity
+    await logUserActivity(req.user.userId, 'ai_request', {
+      job_id: jobId,
+      type: 'image_generation',
+      book_id: bookId,
+      image_type: imageType
+    }, req);
+
     res.json({ jobId, message: 'Image generation queued' });
   } catch (error) {
     console.error('Queue image error:', error);
@@ -1768,6 +1887,14 @@ app.post('/api/jobs/queue/audio', authenticateToken, aiLimiter, checkJobQuota, r
       text,
       voice
     );
+
+    // Log activity
+    await logUserActivity(req.user.userId, 'ai_request', {
+      job_id: jobId,
+      type: 'audio_generation',
+      book_id: bookId,
+      chapter_id: chapterId
+    }, req);
 
     res.json({ jobId, message: 'Audio generation queued' });
   } catch (error) {
