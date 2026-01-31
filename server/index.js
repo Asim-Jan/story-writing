@@ -50,6 +50,7 @@ import {
 import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
+import { getPool } from './db/postgres.js';
 import {
   imageQueue,
   audioQueue,
@@ -554,7 +555,7 @@ async function logLoginAttempt(email, userId, success, failureReason, req) {
     const ip = req.ip || req.connection.remoteAddress;
     const userAgent = req.get('user-agent');
 
-    await pool.query(
+    await getPool().query(
       `INSERT INTO login_history (user_id, email, success, failure_reason, ip_address, user_agent)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [userId, email, success, failureReason, ip, userAgent]
@@ -1024,14 +1025,14 @@ app.get('/api/admin/login-history', authenticateToken, requireAdmin, async (req,
 
     // Get total count
     const countQuery = query.replace('lh.*, u.name as user_name, u.email as user_email', 'COUNT(*)');
-    const countResult = await pool.query(countQuery, params);
+    const countResult = await getPool().query(countQuery, params);
     const total = parseInt(countResult.rows[0].count);
 
     // Get paginated results
     query += ` LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
     params.push(parseInt(limit), offset);
 
-    const result = await pool.query(query, params);
+    const result = await getPool().query(query, params);
 
     res.json({
       loginHistory: result.rows,
@@ -1054,7 +1055,7 @@ app.get('/api/admin/users/:userId/login-history', authenticateToken, requireAdmi
     const { userId } = req.params;
     const { limit = 20 } = req.query;
 
-    const result = await pool.query(
+    const result = await getPool().query(
       `SELECT * FROM login_history
        WHERE user_id = $1
        ORDER BY login_at DESC
