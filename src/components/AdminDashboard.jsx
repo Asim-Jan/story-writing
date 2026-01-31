@@ -12,10 +12,12 @@ const AdminDashboard = ({ onBack }) => {
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [loginHistory, setLoginHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterTier, setFilterTier] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterSuccess, setFilterSuccess] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
@@ -25,8 +27,10 @@ const AdminDashboard = ({ onBack }) => {
       fetchUsers();
     } else if (activeTab === 'audit') {
       fetchAuditLogs();
+    } else if (activeTab === 'security') {
+      fetchLoginHistory();
     }
-  }, [activeTab, currentPage, filterTier, filterStatus, searchTerm]);
+  }, [activeTab, currentPage, filterTier, filterStatus, filterSuccess, searchTerm]);
 
   const fetchStats = async () => {
     try {
@@ -93,6 +97,32 @@ const AdminDashboard = ({ onBack }) => {
       }
     } catch (error) {
       console.error('Error fetching audit logs:', error);
+    }
+  };
+
+  const fetchLoginHistory = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams({
+        page: currentPage,
+        limit: 50
+      });
+
+      if (searchTerm) params.append('email', searchTerm);
+      if (filterSuccess) params.append('success', filterSuccess);
+
+      const response = await fetch(`${API_URL}/api/admin/login-history?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setLoginHistory(data.loginHistory);
+        setTotalPages(data.pagination.pages);
+      }
+    } catch (error) {
+      console.error('Error fetching login history:', error);
     }
   };
 
@@ -220,6 +250,17 @@ const AdminDashboard = ({ onBack }) => {
             >
               <FileText className="w-5 h-5 inline mr-2" />
               Audit Log
+            </button>
+            <button
+              onClick={() => { setActiveTab('security'); setCurrentPage(1); setSearchTerm(''); setFilterSuccess(''); }}
+              className={`pb-4 px-2 font-medium transition-colors ${
+                activeTab === 'security'
+                  ? 'border-b-2 border-purple-600 text-purple-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Shield className="w-5 h-5 inline mr-2" />
+              Security
             </button>
           </nav>
         </div>
@@ -482,6 +523,142 @@ const AdminDashboard = ({ onBack }) => {
               >
                 Next
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Security Tab */}
+        {activeTab === 'security' && (
+          <div>
+            {/* Filters */}
+            <div className="mb-6 flex gap-4">
+              <input
+                type="text"
+                placeholder="Search by email..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+              />
+              <select
+                value={filterSuccess}
+                onChange={(e) => setFilterSuccess(e.target.value)}
+                className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+              >
+                <option value="">All Attempts</option>
+                <option value="true">Success Only</option>
+                <option value="false">Failed Only</option>
+              </select>
+              <button
+                onClick={() => { setSearchTerm(''); setFilterSuccess(''); setCurrentPage(1); }}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+              >
+                Clear Filters
+              </button>
+            </div>
+
+            {/* Login History Table */}
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Timestamp
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Email
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      User
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      IP Address
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      User Agent
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Failure Reason
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {loginHistory.map((entry) => (
+                    <tr key={entry.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {new Date(entry.login_at).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {entry.email}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {entry.user_name || <span className="text-gray-400 italic">Unknown</span>}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {entry.ip_address || '-'}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600 max-w-xs truncate" title={entry.user_agent}>
+                        {entry.user_agent || '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {entry.success ? (
+                          <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
+                            Success
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                            Failed
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {entry.failure_reason ? (
+                          <span className="text-red-600">
+                            {entry.failure_reason.replace(/_/g, ' ')}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {loginHistory.length === 0 && (
+                <div className="text-center py-12">
+                  <Shield className="mx-auto h-12 w-12 text-gray-400" />
+                  <h3 className="mt-2 text-sm font-medium text-gray-900">No login history</h3>
+                  <p className="mt-1 text-sm text-gray-500">
+                    {searchTerm || filterSuccess ? 'Try adjusting your filters' : 'Login attempts will appear here'}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Pagination */}
+            <div className="mt-6 flex justify-between items-center">
+              <p className="text-sm text-gray-700">
+                Page {currentPage} of {totalPages}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-4 py-2 border rounded disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-4 py-2 border rounded disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </div>
         )}
