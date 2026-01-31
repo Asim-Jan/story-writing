@@ -329,6 +329,61 @@ const bookData = {
 7. ✅ Create PR only AFTER user confirms features work
 8. ✅ Wait for user to review and merge PR
 
+### Manual Build & Deploy Process
+
+**IMPORTANT**: Always use the `--platform linux/amd64` flag and `--push` flag when building for AWS ECS!
+
+**Quick Deploy (Recommended)**:
+```bash
+# Uses the deploy.sh script which handles everything automatically
+./deploy.sh backend patch
+```
+
+**Manual Deploy Process** (if needed):
+```bash
+# 1. Login to ECR
+aws ecr get-login-password --region eu-west-2 | \
+  docker login --username AWS --password-stdin \
+  220065406343.dkr.ecr.eu-west-2.amazonaws.com/story-writing
+
+# 2. Build and push backend (MUST use --platform linux/amd64 and --push)
+VERSION=$(cat VERSION)
+docker buildx build --platform linux/amd64 \
+  -t 220065406343.dkr.ecr.eu-west-2.amazonaws.com/story-writing/story-writing-backend:$VERSION \
+  -t 220065406343.dkr.ecr.eu-west-2.amazonaws.com/story-writing/story-writing-backend:latest \
+  -f Dockerfile.backend . --push
+
+# 3. Force ECS to deploy new image
+aws ecs update-service \
+  --cluster story-writing-cluster-sai \
+  --service story-writing-backend \
+  --force-new-deployment \
+  --region eu-west-2
+
+# 4. Monitor deployment (wait 60-90 seconds for health checks)
+aws ecs describe-services \
+  --cluster story-writing-cluster-sai \
+  --services story-writing-backend \
+  --region eu-west-2 \
+  --query 'services[0].deployments[*].{status:status,rolloutState:rolloutState,runningCount:runningCount}'
+```
+
+**Common Build Issues**:
+
+1. **"Manifest does not contain descriptor matching platform 'linux/amd64'"**
+   - ❌ WRONG: `docker build` or `docker buildx build` without `--platform`
+   - ✅ RIGHT: `docker buildx build --platform linux/amd64 ... --push`
+
+2. **Image not updating in ECS**
+   - Make sure to use `--push` flag to push directly to ECR
+   - Wait 60-90 seconds for ECS health checks to pass
+   - Check deployment status with `aws ecs describe-services`
+
+3. **Task failing to start**
+   - Check ECS service events: `aws ecs describe-services ... --query 'services[0].events[0:5]'`
+   - Check CloudWatch logs: `aws logs tail /ecs/story-writing-backend --since 5m`
+   - Verify environment variables in task definition
+
 ---
 
 ## 🔐 Security Guidelines
