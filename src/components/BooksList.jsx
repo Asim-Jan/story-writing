@@ -20,9 +20,11 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   const [showChapterReview, setShowChapterReview] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [quotas, setQuotas] = useState(null);
 
   useEffect(() => {
     loadBooks();
+    loadQuotas();
   }, []);
 
   const loadBooks = async () => {
@@ -44,6 +46,20 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
     }
   };
 
+  const loadQuotas = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/quotas`, {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setQuotas(data);
+      }
+    } catch (err) {
+      console.error('Error loading quotas:', err);
+    }
+  };
+
   const deleteBook = async (bookId, e) => {
     e.stopPropagation();
     if (!confirm('Are you sure you want to delete this book? This action cannot be undone.')) {
@@ -57,6 +73,8 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
 
       if (response.ok) {
         setBooks(books.filter(book => book.id !== bookId));
+        // Reload quotas after deletion to update the count
+        loadQuotas();
       } else {
         throw new Error('Failed to delete book');
       }
@@ -101,7 +119,7 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
       <div className="container mx-auto px-4 py-12">
         {/* Header */}
         <div className="text-center mb-12">
-          <div className="flex items-center justify-center gap-3 mb-4 relative">
+          <div className="flex items-center justify-center gap-3 mb-2 relative">
             <Book className="w-12 h-12 text-amber-700" />
             <h1 className="text-5xl font-bold text-gray-900">Book Writing Studio</h1>
             <div className="absolute right-0 flex gap-2">
@@ -130,6 +148,19 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
               </button>
             </div>
           </div>
+          {quotas && (
+            <div className="mb-2 text-sm text-gray-600">
+              <span className={`font-semibold ${quotas.usage.current_books >= quotas.limits.max_books ? 'text-red-600' : 'text-amber-700'}`}>
+                {quotas.usage.current_books} / {quotas.limits.max_books}
+              </span>
+              {' '}books used
+              {quotas.usage.current_books >= quotas.limits.max_books && (
+                <span className="ml-2 text-red-600 font-medium">
+                  (Limit reached - delete a book or upgrade to create more)
+                </span>
+              )}
+            </div>
+          )}
           <p className="text-xl text-gray-600">Create and manage your fiction writing projects</p>
         </div>
 
@@ -155,14 +186,26 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
             </button>
             <button
               onClick={() => setShowAIGenerator(true)}
-              className="px-8 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+              disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
+              className={`px-8 py-4 ${
+                quotas && quotas.usage.current_books >= quotas.limits.max_books
+                  ? 'bg-gray-400 cursor-not-allowed opacity-60'
+                  : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
+              } text-white rounded-xl transition-all flex items-center gap-3 text-lg font-semibold`}
+              title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Generate book with AI'}
             >
               <Wand2 size={24} />
               AI Generate
             </button>
             <button
               onClick={onNewBook}
-              className="px-8 py-4 bg-amber-600 text-white rounded-xl hover:bg-amber-700 transition-colors flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+              disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
+              className={`px-8 py-4 ${
+                quotas && quotas.usage.current_books >= quotas.limits.max_books
+                  ? 'bg-gray-400 cursor-not-allowed opacity-60'
+                  : 'bg-amber-600 hover:bg-amber-700 shadow-lg hover:shadow-xl'
+              } text-white rounded-xl transition-colors flex items-center gap-3 text-lg font-semibold`}
+              title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Create a new book'}
             >
               <Plus size={24} />
               New Book
@@ -200,14 +243,24 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
                 </button>
                 <button
                   onClick={() => setShowAIGenerator(true)}
-                  className="px-8 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl hover:from-indigo-700 hover:to-purple-700 transition-all inline-flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+                  disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
+                  className={`px-8 py-4 ${
+                    quotas && quotas.usage.current_books >= quotas.limits.max_books
+                      ? 'bg-gray-400 cursor-not-allowed opacity-60'
+                      : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
+                  } text-white rounded-xl transition-all inline-flex items-center gap-3 text-lg font-semibold`}
                 >
                   <Wand2 size={24} />
                   AI Generate Book
                 </button>
                 <button
                   onClick={onNewBook}
-                  className="px-8 py-4 bg-amber-600 text-white rounded-xl hover:bg-amber-700 transition-colors inline-flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+                  disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
+                  className={`px-8 py-4 ${
+                    quotas && quotas.usage.current_books >= quotas.limits.max_books
+                      ? 'bg-gray-400 cursor-not-allowed opacity-60'
+                      : 'bg-amber-600 hover:bg-amber-700 shadow-lg hover:shadow-xl'
+                  } text-white rounded-xl transition-colors inline-flex items-center gap-3 text-lg font-semibold`}
                 >
                   <Plus size={24} />
                   Create Manually

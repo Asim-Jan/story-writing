@@ -674,6 +674,18 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   });
 });
 
+// Get user quotas
+app.get('/api/quotas', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId || req.user.id;
+    const quotas = await getUserQuotas(userId);
+    res.json(quotas);
+  } catch (error) {
+    console.error('Error fetching quotas:', error);
+    res.status(500).json({ error: 'Failed to fetch quotas' });
+  }
+});
+
 // Request password reset
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
@@ -945,6 +957,405 @@ app.put('/api/admin/users/:userId/status',
     } catch (error) {
       console.error('Error updating user status:', error);
       res.status(500).json({ error: 'Failed to update user status' });
+    }
+  }
+);
+
+// Bulk update user status
+app.post('/api/admin/users/bulk/status',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userIds, status, reason } = req.body;
+
+      // Validate inputs
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({ error: 'userIds array required' });
+      }
+
+      if (!['active', 'suspended', 'banned'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const userId of userIds) {
+        try {
+          await UserRepository.updateStatus(userId, status, req.user.userId, reason);
+          results.push({ userId, success: true });
+        } catch (error) {
+          errors.push({ userId, error: error.message });
+        }
+      }
+
+      res.json({
+        message: `Bulk status update completed`,
+        results,
+        errors,
+        summary: {
+          total: userIds.length,
+          successful: results.length,
+          failed: errors.length
+        }
+      });
+    } catch (error) {
+      console.error('Bulk status update error:', error);
+      res.status(500).json({ error: 'Bulk operation failed' });
+    }
+  }
+);
+
+// Bulk update user tier
+app.post('/api/admin/users/bulk/tier',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userIds, tier } = req.body;
+
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({ error: 'userIds array required' });
+      }
+
+      if (!['free', 'basic', 'premium'].includes(tier)) {
+        return res.status(400).json({ error: 'Invalid tier' });
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const userId of userIds) {
+        try {
+          await UserRepository.updateTier(userId, tier, req.user.userId);
+          results.push({ userId, success: true });
+        } catch (error) {
+          errors.push({ userId, error: error.message });
+        }
+      }
+
+      res.json({
+        message: `Bulk tier update completed`,
+        results,
+        errors,
+        summary: {
+          total: userIds.length,
+          successful: results.length,
+          failed: errors.length
+        }
+      });
+    } catch (error) {
+      console.error('Bulk tier update error:', error);
+      res.status(500).json({ error: 'Bulk operation failed' });
+    }
+  }
+);
+
+// Get user quotas for editing
+app.get('/api/admin/users/:userId/quotas',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const quotas = await getUserQuotas(userId);
+      res.json(quotas);
+    } catch (error) {
+      console.error('Error fetching user quotas:', error);
+      res.status(500).json({ error: 'Failed to fetch quotas' });
+    }
+  }
+);
+
+// Update custom quotas for a user
+app.put('/api/admin/users/:userId/quotas',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const {
+        max_books,
+        max_words,
+        max_chapters,
+        max_ai_requests_per_day,
+        max_concurrent_jobs
+      } = req.body;
+
+      // Validate all are positive integers
+      const values = [max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs];
+      if (values.some(v => typeof v !== 'number' || v < 0)) {
+        return res.status(400).json({ error: 'All quota values must be positive numbers' });
+      }
+
+      const result = await getPool().query(
+        `UPDATE quotas
+         SET max_books = $1, max_words = $2, max_chapters = $3,
+             max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+             custom_quotas = true, updated_at = NOW()
+         WHERE user_id = $6
+         RETURNING *`,
+        [max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs, userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Log admin action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'quota_change', userId, JSON.stringify({
+          max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs
+        })]
+      );
+
+      res.json({
+        message: 'Custom quotas updated',
+        quotas: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error updating quotas:', error);
+      res.status(500).json({ error: 'Failed to update quotas' });
+    }
+  }
+);
+
+// Reset quotas to tier defaults
+app.delete('/api/admin/users/:userId/quotas',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      // Get user's tier
+      const userResult = await getPool().query(
+        `SELECT tier FROM users WHERE id = $1`,
+        [userId]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const tier = userResult.rows[0].tier;
+      const tierQuotas = getTierQuotas(tier);
+
+      // Reset to tier defaults
+      const result = await getPool().query(
+        `UPDATE quotas
+         SET max_books = $1, max_words = $2, max_chapters = $3,
+             max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+             custom_quotas = false, updated_at = NOW()
+         WHERE user_id = $6
+         RETURNING *`,
+        [
+          tierQuotas.max_books,
+          tierQuotas.max_words,
+          tierQuotas.max_chapters,
+          tierQuotas.max_ai_requests_per_day,
+          tierQuotas.max_concurrent_jobs,
+          userId
+        ]
+      );
+
+      // Log admin action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'quota_reset', userId, JSON.stringify({ tier })]
+      );
+
+      res.json({
+        message: 'Quotas reset to tier defaults',
+        quotas: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error resetting quotas:', error);
+      res.status(500).json({ error: 'Failed to reset quotas' });
+    }
+  }
+);
+
+// User-facing: Flag content for moderation
+app.post('/api/content/flag',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { content_type, content_id, reason } = req.body;
+
+      if (!['book', 'chapter'].includes(content_type)) {
+        return res.status(400).json({ error: 'Invalid content type' });
+      }
+
+      if (!content_id || !reason) {
+        return res.status(400).json({ error: 'content_id and reason required' });
+      }
+
+      // Check if content exists
+      let exists;
+      if (content_type === 'book') {
+        const result = await getPool().query(
+          `SELECT id FROM books WHERE id = $1 AND deleted_at IS NULL`,
+          [content_id]
+        );
+        exists = result.rows.length > 0;
+      } else {
+        const result = await getPool().query(
+          `SELECT id FROM chapters WHERE id = $1`,
+          [content_id]
+        );
+        exists = result.rows.length > 0;
+      }
+
+      if (!exists) {
+        return res.status(404).json({ error: 'Content not found' });
+      }
+
+      // Check if user already flagged this content
+      const existingFlag = await getPool().query(
+        `SELECT id FROM content_flags
+         WHERE content_type = $1 AND content_id = $2 AND flagged_by_user_id = $3`,
+        [content_type, content_id, req.user.userId]
+      );
+
+      if (existingFlag.rows.length > 0) {
+        return res.status(400).json({ error: 'You have already flagged this content' });
+      }
+
+      // Create flag
+      const result = await getPool().query(
+        `INSERT INTO content_flags (content_type, content_id, flagged_by_user_id, reason, status)
+         VALUES ($1, $2, $3, $4, 'pending')
+         RETURNING *`,
+        [content_type, content_id, req.user.userId, reason]
+      );
+
+      res.json({
+        message: 'Content flagged for review',
+        flag: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error flagging content:', error);
+      res.status(500).json({ error: 'Failed to flag content' });
+    }
+  }
+);
+
+// Admin: Get flagged content
+app.get('/api/admin/content-flags',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50, status, content_type } = req.query;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let whereConditions = '';
+      const params = [];
+      let paramCount = 1;
+
+      if (status) {
+        whereConditions += ` AND cf.status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (content_type) {
+        whereConditions += ` AND cf.content_type = $${paramCount}`;
+        params.push(content_type);
+        paramCount++;
+      }
+
+      // Get total count
+      const countQuery = `
+        SELECT COUNT(*)
+        FROM content_flags cf
+        WHERE 1=1${whereConditions}
+      `;
+      const countResult = await getPool().query(countQuery, params);
+      const total = parseInt(countResult.rows[0].count);
+
+      // Get flags with user and content details
+      const query = `
+        SELECT
+          cf.*,
+          fu.name as flagged_by_name,
+          fu.email as flagged_by_email,
+          ru.name as reviewed_by_name,
+          ru.email as reviewed_by_email,
+          CASE
+            WHEN cf.content_type = 'book' THEN b.title
+            WHEN cf.content_type = 'chapter' THEN c.title
+          END as content_title
+        FROM content_flags cf
+        LEFT JOIN users fu ON cf.flagged_by_user_id = fu.id
+        LEFT JOIN users ru ON cf.reviewed_by_admin_id = ru.id
+        LEFT JOIN books b ON cf.content_type = 'book' AND cf.content_id = b.id
+        LEFT JOIN chapters c ON cf.content_type = 'chapter' AND cf.content_id = c.id
+        WHERE 1=1${whereConditions}
+        ORDER BY cf.created_at DESC
+        LIMIT $${paramCount} OFFSET $${paramCount + 1}
+      `;
+
+      params.push(parseInt(limit), offset);
+      const result = await getPool().query(query, params);
+
+      res.json({
+        flags: result.rows,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching content flags:', error);
+      res.status(500).json({ error: 'Failed to fetch content flags' });
+    }
+  }
+);
+
+// Admin: Review flagged content
+app.put('/api/admin/content-flags/:flagId',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { flagId } = req.params;
+      const { status, admin_notes } = req.body;
+
+      if (!['reviewed', 'dismissed', 'action_taken'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+      }
+
+      const result = await getPool().query(
+        `UPDATE content_flags
+         SET status = $1, admin_notes = $2, reviewed_by_admin_id = $3, reviewed_at = NOW()
+         WHERE id = $4
+         RETURNING *`,
+        [status, admin_notes, req.user.userId, flagId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Flag not found' });
+      }
+
+      res.json({
+        message: 'Flag reviewed',
+        flag: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error reviewing flag:', error);
+      res.status(500).json({ error: 'Failed to review flag' });
     }
   }
 );
@@ -1528,6 +1939,13 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to delete this book' });
     }
 
+    // Log activity before deleting
+    await logUserActivity(req.user.userId || req.user.id, 'book_deleted', {
+      book_id: id,
+      title: book.title,
+      genre: book.genre
+    }, req);
+
     // Delete the book
     await deleteBook(id, req.user.id);
 
@@ -1540,6 +1958,9 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
       };
       await updateUser(req.user.id, updatedUser);
     }
+
+    // Update quota usage after book deletion
+    await updateQuotaUsage(req.user.userId || req.user.id);
 
     res.json({ message: 'Book deleted successfully' });
   } catch (error) {

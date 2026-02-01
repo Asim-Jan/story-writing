@@ -29,7 +29,8 @@ export async function getUserQuotas(userId) {
       max_words: data.max_words,
       max_chapters: data.max_chapters,
       max_ai_requests_per_day: data.max_ai_requests_per_day,
-      max_concurrent_jobs: data.max_concurrent_jobs
+      max_concurrent_jobs: data.max_concurrent_jobs,
+      custom_quotas: data.custom_quotas || false
     },
     usage: {
       current_books: data.current_books,
