@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import {
   Users, Shield, Activity, BookOpen, TrendingUp,
   Search, ChevronDown, CheckCircle, XCircle,
-  AlertCircle, ArrowLeft, FileText, RefreshCw, Settings
+  AlertCircle, ArrowLeft, FileText, RefreshCw, Settings,
+  CreditCard, DollarSign, TrendingDown, Download
 } from 'lucide-react';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -31,6 +33,16 @@ const AdminDashboard = ({ onBack }) => {
   const [contentFlags, setContentFlags] = useState([]);
   const [filterFlagStatus, setFilterFlagStatus] = useState('pending');
   const [filterContentType, setFilterContentType] = useState('');
+  const [subscriptions, setSubscriptions] = useState([]);
+  const [filterSubStatus, setFilterSubStatus] = useState('');
+  const [filterSubTier, setFilterSubTier] = useState('');
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [selectedSubscription, setSelectedSubscription] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelImmediately, setCancelImmediately] = useState(false);
+  const [revenueData, setRevenueData] = useState(null);
+  const [dateRange, setDateRange] = useState('30d');
+  const [engagementData, setEngagementData] = useState(null);
 
   useEffect(() => {
     fetchStats();
@@ -46,8 +58,14 @@ const AdminDashboard = ({ onBack }) => {
       }
     } else if (activeTab === 'moderation') {
       fetchContentFlags();
+    } else if (activeTab === 'subscriptions') {
+      fetchSubscriptions();
+    } else if (activeTab === 'revenue') {
+      fetchRevenueAnalytics();
+    } else if (activeTab === 'analytics') {
+      fetchEngagementAnalytics();
     }
-  }, [activeTab, securitySubtab, currentPage, filterTier, filterStatus, filterSuccess, filterActivityType, filterFlagStatus, filterContentType, searchTerm]);
+  }, [activeTab, securitySubtab, currentPage, filterTier, filterStatus, filterSuccess, filterActivityType, filterFlagStatus, filterContentType, filterSubStatus, filterSubTier, searchTerm, dateRange]);
 
   const fetchStats = async () => {
     try {
@@ -241,6 +259,12 @@ const AdminDashboard = ({ onBack }) => {
       }
     } else if (activeTab === 'moderation') {
       fetchContentFlags();
+    } else if (activeTab === 'subscriptions') {
+      fetchSubscriptions();
+    } else if (activeTab === 'revenue') {
+      fetchRevenueAnalytics();
+    } else if (activeTab === 'analytics') {
+      fetchEngagementAnalytics();
     }
   };
 
@@ -437,6 +461,229 @@ const AdminDashboard = ({ onBack }) => {
     }
   };
 
+  const fetchSubscriptions = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams({
+        page: currentPage,
+        limit: 20
+      });
+
+      if (filterSubStatus) params.append('status', filterSubStatus);
+      if (filterSubTier) params.append('tier', filterSubTier);
+      if (searchTerm) params.append('search', searchTerm);
+
+      const response = await fetch(`${API_URL}/api/admin/subscriptions?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setSubscriptions(data.subscriptions);
+        setTotalPages(data.pagination.pages);
+      }
+    } catch (error) {
+      console.error('Error fetching subscriptions:', error);
+    }
+  };
+
+  const fetchRevenueAnalytics = async () => {
+    try {
+      const token = localStorage.getItem('token');
+
+      // Calculate date range
+      const endDate = new Date();
+      const startDate = new Date();
+
+      switch (dateRange) {
+        case '7d':
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case '30d':
+          startDate.setDate(startDate.getDate() - 30);
+          break;
+        case '90d':
+          startDate.setDate(startDate.getDate() - 90);
+          break;
+        case '1y':
+          startDate.setFullYear(startDate.getFullYear() - 1);
+          break;
+        default:
+          startDate.setDate(startDate.getDate() - 30);
+      }
+
+      const params = new URLSearchParams({
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString(),
+        granularity: 'day'
+      });
+
+      const response = await fetch(`${API_URL}/api/admin/analytics/revenue?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setRevenueData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching revenue analytics:', error);
+    }
+  };
+
+  const fetchEngagementAnalytics = async () => {
+    try {
+      const token = localStorage.getItem('token');
+
+      // Calculate date range
+      const endDate = new Date();
+      const startDate = new Date();
+
+      switch (dateRange) {
+        case '7d':
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case '30d':
+          startDate.setDate(startDate.getDate() - 30);
+          break;
+        case '90d':
+          startDate.setDate(startDate.getDate() - 90);
+          break;
+        case '1y':
+          startDate.setFullYear(startDate.getFullYear() - 1);
+          break;
+        default:
+          startDate.setDate(startDate.getDate() - 30);
+      }
+
+      const params = new URLSearchParams({
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString(),
+        granularity: 'day'
+      });
+
+      const response = await fetch(`${API_URL}/api/admin/analytics/engagement?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setEngagementData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching engagement analytics:', error);
+    }
+  };
+
+  const handleCancelSubscription = (subscription) => {
+    setSelectedSubscription(subscription);
+    setCancelReason('');
+    setCancelImmediately(false);
+    setShowCancelModal(true);
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!cancelReason.trim()) {
+      alert('Please enter a cancellation reason');
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/admin/subscriptions/${selectedSubscription.id}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          immediately: cancelImmediately,
+          reason: cancelReason
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        alert(data.message);
+        setShowCancelModal(false);
+        fetchSubscriptions();
+      } else {
+        const error = await response.json();
+        alert(`Failed: ${error.message || error.error}`);
+      }
+    } catch (error) {
+      console.error('Error canceling subscription:', error);
+      alert('Failed to cancel subscription');
+    }
+  };
+
+  const handleExport = async (exportType) => {
+    try {
+      const token = localStorage.getItem('token');
+      let url = `${API_URL}/api/admin/export/${exportType}?`;
+
+      // Add current filters to export URL
+      const params = new URLSearchParams();
+
+      if (exportType === 'users') {
+        if (filterTier) params.append('tier', filterTier);
+        if (filterStatus) params.append('status', filterStatus);
+        if (searchTerm) params.append('search', searchTerm);
+      } else if (exportType === 'subscriptions') {
+        if (filterSubStatus) params.append('status', filterSubStatus);
+        if (filterSubTier) params.append('tier', filterSubTier);
+      } else if (exportType === 'activity') {
+        if (filterActivityType) params.append('activity_type', filterActivityType);
+        // Add date range for activity export
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 30); // Last 30 days
+        params.append('start_date', startDate.toISOString());
+        params.append('end_date', endDate.toISOString());
+      }
+
+      url += params.toString();
+
+      const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        // Get the CSV data
+        const blob = await response.blob();
+
+        // Create download link
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+
+        // Get filename from Content-Disposition header or use default
+        const contentDisposition = response.headers.get('Content-Disposition');
+        const filename = contentDisposition
+          ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+          : `${exportType}-export-${new Date().toISOString().split('T')[0]}.csv`;
+
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+
+        alert(`${exportType.charAt(0).toUpperCase() + exportType.slice(1)} exported successfully!`);
+      } else {
+        throw new Error('Export failed');
+      }
+    } catch (error) {
+      console.error(`Export ${exportType} error:`, error);
+      alert(`Failed to export ${exportType}`);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -524,6 +771,39 @@ const AdminDashboard = ({ onBack }) => {
             >
               <AlertCircle className="w-5 h-5 inline mr-2" />
               Content Moderation
+            </button>
+            <button
+              onClick={() => { setActiveTab('subscriptions'); setCurrentPage(1); }}
+              className={`pb-4 px-2 font-medium transition-colors ${
+                activeTab === 'subscriptions'
+                  ? 'border-b-2 border-purple-600 text-purple-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <CreditCard className="w-5 h-5 inline mr-2" />
+              Subscriptions
+            </button>
+            <button
+              onClick={() => { setActiveTab('revenue'); setCurrentPage(1); }}
+              className={`pb-4 px-2 font-medium transition-colors ${
+                activeTab === 'revenue'
+                  ? 'border-b-2 border-purple-600 text-purple-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <DollarSign className="w-5 h-5 inline mr-2" />
+              Revenue
+            </button>
+            <button
+              onClick={() => { setActiveTab('analytics'); setCurrentPage(1); }}
+              className={`pb-4 px-2 font-medium transition-colors ${
+                activeTab === 'analytics'
+                  ? 'border-b-2 border-purple-600 text-purple-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Activity className="w-5 h-5 inline mr-2" />
+              Analytics
             </button>
           </nav>
         </div>
@@ -640,6 +920,14 @@ const AdminDashboard = ({ onBack }) => {
                 title="Refresh users"
               >
                 <RefreshCw className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => handleExport('users')}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 transition-colors"
+                title="Export users to CSV"
+              >
+                <Download className="w-4 h-4" />
+                Export CSV
               </button>
             </div>
 
@@ -1094,6 +1382,14 @@ const AdminDashboard = ({ onBack }) => {
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
+              <button
+                onClick={() => handleExport('activity')}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 transition-colors"
+                title="Export activity logs to CSV"
+              >
+                <Download className="w-4 h-4" />
+                Export CSV
+              </button>
             </div>
 
             {/* User Activity Table */}
@@ -1318,6 +1614,468 @@ const AdminDashboard = ({ onBack }) => {
               >
                 Next
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Quota Management Modal */}
+        {/* Subscriptions Tab */}
+        {activeTab === 'subscriptions' && (
+          <div className="bg-white rounded-lg shadow">
+            <div className="p-4 border-b">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold">Subscription Management</h3>
+                <button
+                  onClick={() => handleExport('subscriptions')}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  Export CSV
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <select
+                  value={filterSubStatus}
+                  onChange={(e) => { setFilterSubStatus(e.target.value); setCurrentPage(1); }}
+                  className="border rounded px-3 py-2 focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="canceled">Canceled</option>
+                  <option value="past_due">Past Due</option>
+                  <option value="unpaid">Unpaid</option>
+                  <option value="trialing">Trialing</option>
+                </select>
+
+                <select
+                  value={filterSubTier}
+                  onChange={(e) => { setFilterSubTier(e.target.value); setCurrentPage(1); }}
+                  className="border rounded px-3 py-2 focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="">All Tiers</option>
+                  <option value="basic">Basic</option>
+                  <option value="premium">Premium</option>
+                </select>
+
+                <input
+                  type="text"
+                  placeholder="Search by user email..."
+                  value={searchTerm}
+                  onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
+                  className="border rounded px-3 py-2 focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tier</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Current Period End</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {subscriptions.map(sub => (
+                    <tr key={sub.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 text-sm">
+                        <div className="font-medium">{sub.user_name}</div>
+                        <div className="text-gray-500">{sub.user_email}</div>
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          sub.tier === 'premium'
+                            ? 'bg-purple-100 text-purple-800'
+                            : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {sub.tier}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          sub.status === 'active' ? 'bg-green-100 text-green-800' :
+                          sub.status === 'canceled' ? 'bg-red-100 text-red-800' :
+                          'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {sub.status}
+                          {sub.cancel_at_period_end && ' (ending)'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-500">
+                        {new Date(sub.current_period_end).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 text-sm font-medium">
+                        ${(sub.amount / 100).toFixed(2)}/mo
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        {sub.status === 'active' && !sub.cancel_at_period_end && (
+                          <button
+                            onClick={() => handleCancelSubscription(sub)}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination */}
+            <div className="p-4 border-t flex justify-between items-center">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-4 py-2 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-gray-600">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-4 py-2 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Revenue Tab */}
+        {activeTab === 'revenue' && revenueData && (
+          <div className="space-y-6">
+            {/* Date Range Selector */}
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Revenue Analytics</h3>
+                <div className="flex gap-2">
+                  {['7d', '30d', '90d', '1y'].map(range => (
+                    <button
+                      key={range}
+                      onClick={() => setDateRange(range)}
+                      className={`px-4 py-2 rounded transition-colors ${
+                        dateRange === range
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {range === '1y' ? '1 Year' : range.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">MRR</h4>
+                  <DollarSign className="w-5 h-5 text-green-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  ${(revenueData.summary.mrr / 100).toFixed(2)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Monthly Recurring Revenue</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">Active Subscribers</h4>
+                  <Users className="w-5 h-5 text-blue-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {revenueData.summary.active_subscribers}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Paying customers</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">Churn Rate</h4>
+                  <TrendingDown className="w-5 h-5 text-red-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {revenueData.summary.churn_rate.toFixed(2)}%
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Monthly churn</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">LTV</h4>
+                  <TrendingUp className="w-5 h-5 text-purple-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  ${(revenueData.summary.ltv / 100).toFixed(2)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Customer Lifetime Value</p>
+              </div>
+            </div>
+
+            {/* Revenue Trends Chart */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h4 className="text-lg font-semibold mb-4">Revenue Trends</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={revenueData.time_series.map(t => ({
+                  date: new Date(t.date).toLocaleDateString(),
+                  revenue: t.revenue / 100,
+                  payments: t.payment_count
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis />
+                  <Tooltip formatter={(value) => typeof value === 'number' ? `$${value.toFixed(2)}` : value} />
+                  <Legend />
+                  <Line type="monotone" dataKey="revenue" stroke="#8b5cf6" name="Revenue ($)" />
+                  <Line type="monotone" dataKey="payments" stroke="#3b82f6" name="Payments" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* MRR Breakdown by Tier */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <h4 className="text-lg font-semibold mb-4">MRR by Tier</h4>
+                <div className="space-y-4">
+                  {revenueData.summary.mrr_by_tier.map(tier => (
+                    <div key={tier.tier} className="flex justify-between items-center">
+                      <div>
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          tier.tier === 'premium'
+                            ? 'bg-purple-100 text-purple-800'
+                            : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {tier.tier}
+                        </span>
+                        <p className="text-sm text-gray-500 mt-1">{tier.count} subscribers</p>
+                      </div>
+                      <p className="text-xl font-bold">${(tier.mrr / 100).toFixed(2)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Period Stats */}
+              <div className="bg-white rounded-lg shadow p-6">
+                <h4 className="text-lg font-semibold mb-4">Period Activity</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-4 bg-green-50 rounded-lg">
+                    <p className="text-sm text-gray-600">New Subscriptions</p>
+                    <p className="text-2xl font-bold text-green-600">{revenueData.new_subscriptions}</p>
+                  </div>
+                  <div className="p-4 bg-red-50 rounded-lg">
+                    <p className="text-sm text-gray-600">Cancellations</p>
+                    <p className="text-2xl font-bold text-red-600">{revenueData.canceled_subscriptions}</p>
+                  </div>
+                  <div className="p-4 bg-blue-50 rounded-lg">
+                    <p className="text-sm text-gray-600">Upgrades</p>
+                    <p className="text-2xl font-bold text-blue-600">{revenueData.upgrades}</p>
+                  </div>
+                  <div className="p-4 bg-orange-50 rounded-lg">
+                    <p className="text-sm text-gray-600">Downgrades</p>
+                    <p className="text-2xl font-bold text-orange-600">{revenueData.downgrades}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Analytics Tab */}
+        {activeTab === 'analytics' && engagementData && (
+          <div className="space-y-6">
+            {/* Date Range Selector */}
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">User Engagement Analytics</h3>
+                <div className="flex gap-2">
+                  {['7d', '30d', '90d', '1y'].map(range => (
+                    <button
+                      key={range}
+                      onClick={() => setDateRange(range)}
+                      className={`px-4 py-2 rounded transition-colors ${
+                        dateRange === range
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {range === '1y' ? '1 Year' : range.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">DAU</h4>
+                  <Activity className="w-5 h-5 text-green-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {engagementData.summary.dau}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Daily Active Users</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">MAU</h4>
+                  <Users className="w-5 h-5 text-blue-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {engagementData.summary.mau}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Monthly Active Users</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">DAU/MAU Ratio</h4>
+                  <TrendingUp className="w-5 h-5 text-purple-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {engagementData.summary.dau_mau_ratio}%
+                </p>
+                <p className="text-xs text-gray-500 mt-1">User stickiness</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-gray-600">Avg Sessions</h4>
+                  <Activity className="w-5 h-5 text-orange-600" />
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {engagementData.summary.avg_sessions_per_user}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Per user (30d)</p>
+              </div>
+            </div>
+
+            {/* Activity Trends Chart */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h4 className="text-lg font-semibold mb-4">User Activity Trends</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={engagementData.time_series.map(t => ({
+                  date: new Date(t.date).toLocaleDateString(),
+                  active_users: t.active_users,
+                  new_users: t.new_users,
+                  total_actions: t.total_actions
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="active_users" stroke="#8b5cf6" name="Active Users" />
+                  <Line type="monotone" dataKey="new_users" stroke="#10b981" name="New Users" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Activity Breakdown */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h4 className="text-lg font-semibold mb-4">Activity Breakdown</h4>
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={engagementData.activity_breakdown.slice(0, 10).map(item => ({
+                  activity: item.activity_type.replace(/_/g, ' '),
+                  count: item.count,
+                  users: item.unique_users
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="activity" angle={-45} textAnchor="end" height={100} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="count" fill="#8b5cf6" name="Total Actions" />
+                  <Bar dataKey="users" fill="#3b82f6" name="Unique Users" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Additional Metrics */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <h4 className="text-sm font-medium text-gray-600 mb-2">Total Users</h4>
+                <p className="text-3xl font-bold text-gray-900">{engagementData.summary.total_users}</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <h4 className="text-sm font-medium text-gray-600 mb-2">Active Last 7 Days</h4>
+                <p className="text-3xl font-bold text-green-600">{engagementData.summary.active_last_7d}</p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <h4 className="text-sm font-medium text-gray-600 mb-2">Active Last 30 Days</h4>
+                <p className="text-3xl font-bold text-blue-600">{engagementData.summary.active_last_30d}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Cancel Subscription Modal */}
+        {showCancelModal && selectedSubscription && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+              <h3 className="text-lg font-semibold mb-4">Cancel Subscription</h3>
+              <p className="text-gray-600 mb-4">
+                Cancel subscription for {selectedSubscription.user_email}?
+              </p>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Cancellation Type</label>
+                <select
+                  value={cancelImmediately ? 'immediately' : 'end_of_period'}
+                  onChange={(e) => setCancelImmediately(e.target.value === 'immediately')}
+                  className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="end_of_period">Cancel at period end</option>
+                  <option value="immediately">Cancel immediately</option>
+                </select>
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Reason (required)</label>
+                <textarea
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
+                  rows="3"
+                  placeholder="Reason for cancellation..."
+                />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => {
+                    setShowCancelModal(false);
+                    setSelectedSubscription(null);
+                    setCancelReason('');
+                  }}
+                  className="px-4 py-2 border rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmCancel}
+                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                  disabled={!cancelReason.trim()}
+                >
+                  Confirm Cancellation
+                </button>
+              </div>
             </div>
           </div>
         )}
