@@ -353,14 +353,29 @@ docker buildx build --platform linux/amd64 \
   -t 220065406343.dkr.ecr.eu-west-2.amazonaws.com/story-writing/story-writing-backend:latest \
   -f Dockerfile.backend . --push
 
-# 3. Force ECS to deploy new image
+# 3. Build and push frontend (MUST use --build-arg for VITE_API_URL)
+# IMPORTANT: Always set VITE_API_URL to production domain
+VERSION=$(cat VERSION)
+docker buildx build --platform linux/amd64 \
+  --build-arg VITE_API_URL="https://story-writing.com" \
+  -t 220065406343.dkr.ecr.eu-west-2.amazonaws.com/story-writing/story-writing-frontend:$VERSION \
+  -t 220065406343.dkr.ecr.eu-west-2.amazonaws.com/story-writing/story-writing-frontend:latest \
+  -f Dockerfile.frontend . --push
+
+# 4. Force ECS to deploy new images
 aws ecs update-service \
   --cluster story-writing-cluster-sai \
   --service story-writing-backend \
   --force-new-deployment \
   --region eu-west-2
 
-# 4. Monitor deployment (wait 60-90 seconds for health checks)
+aws ecs update-service \
+  --cluster story-writing-cluster-sai \
+  --service story-writing-frontend \
+  --force-new-deployment \
+  --region eu-west-2
+
+# 5. Monitor deployment (wait 60-90 seconds for health checks)
 aws ecs describe-services \
   --cluster story-writing-cluster-sai \
   --services story-writing-backend \
@@ -374,12 +389,18 @@ aws ecs describe-services \
    - ❌ WRONG: `docker build` or `docker buildx build` without `--platform`
    - ✅ RIGHT: `docker buildx build --platform linux/amd64 ... --push`
 
-2. **Image not updating in ECS**
+2. **Frontend API calls going to localhost instead of production**
+   - ❌ WRONG: Building frontend without `--build-arg VITE_API_URL`
+   - ✅ RIGHT: Always use `--build-arg VITE_API_URL="https://story-writing.com"`
+   - **CRITICAL**: VITE environment variables are baked in at build time, not runtime!
+   - The fallback in code (`import.meta.env.VITE_API_URL || 'https://story-writing.com'`) is for safety, but build arg should always be set
+
+3. **Image not updating in ECS**
    - Make sure to use `--push` flag to push directly to ECR
    - Wait 60-90 seconds for ECS health checks to pass
    - Check deployment status with `aws ecs describe-services`
 
-3. **Task failing to start**
+4. **Task failing to start**
    - Check ECS service events: `aws ecs describe-services ... --query 'services[0].events[0:5]'`
    - Check CloudWatch logs: `aws logs tail /ecs/story-writing-backend --since 5m`
    - Verify environment variables in task definition

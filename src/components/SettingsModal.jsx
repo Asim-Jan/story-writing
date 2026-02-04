@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, Key, AlertCircle } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
 const SettingsModal = ({ isOpen, onClose }) => {
   const [openaiKey, setOpenaiKey] = useState('');

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle, Lock, LogOut, TrendingUp, Database, Cpu, Image, FileText } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
 const ProfilePage = ({ onBack }) => {
   const { logout } = useAuth();
@@ -43,10 +43,15 @@ const ProfilePage = ({ onBack }) => {
   // Quotas
   const [quotas, setQuotas] = useState(null);
 
+  // Subscription
+  const [subscription, setSubscription] = useState(null);
+  const [loadingSubscription, setLoadingSubscription] = useState(false);
+
   useEffect(() => {
     fetchUserData();
     fetchSettings();
     fetchQuotas();
+    fetchSubscription();
   }, []);
 
   const fetchUserData = async () => {
@@ -116,6 +121,83 @@ const ProfilePage = ({ onBack }) => {
       }
     } catch (error) {
       console.error('Error fetching quotas:', error);
+    }
+  };
+
+  const fetchSubscription = async () => {
+    try {
+      setLoadingSubscription(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/subscriptions/my`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setSubscription(data);
+      }
+    } catch (error) {
+      console.error('Error fetching subscription:', error);
+    } finally {
+      setLoadingSubscription(false);
+    }
+  };
+
+  const handleCheckout = async (tier) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/subscriptions/checkout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include',
+        body: JSON.stringify({ tier })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Redirect to Stripe Checkout
+        window.location.href = data.url;
+      } else {
+        const error = await response.json();
+        setMessage({ type: 'error', text: error.error || 'Failed to start checkout' });
+      }
+    } catch (error) {
+      console.error('Error starting checkout:', error);
+      setMessage({ type: 'error', text: 'Failed to start checkout' });
+    }
+  };
+
+  const handleCancelSubscription = async () => {
+    if (!window.confirm('Are you sure you want to cancel your subscription? It will remain active until the end of your billing period.')) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/subscriptions/cancel`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        setMessage({ type: 'success', text: 'Subscription canceled. It will remain active until the end of your billing period.' });
+        fetchSubscription(); // Refresh subscription data
+      } else {
+        const error = await response.json();
+        setMessage({ type: 'error', text: error.error || 'Failed to cancel subscription' });
+      }
+    } catch (error) {
+      console.error('Error canceling subscription:', error);
+      setMessage({ type: 'error', text: 'Failed to cancel subscription' });
     }
   };
 
@@ -664,6 +746,145 @@ const ProfilePage = ({ onBack }) => {
 
                   {quotas ? (
                     <div className="space-y-6">
+                      {/* Subscription Management */}
+                      {subscription && subscription.has_subscription && subscription.subscription ? (
+                        <div className="bg-white border border-gray-200 rounded-lg p-6">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-4">Current Subscription</h3>
+
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-sm text-gray-600">Plan</p>
+                                <p className="text-lg font-semibold capitalize">{subscription.subscription.tier}</p>
+                              </div>
+                              <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                subscription.subscription.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                              }`}>
+                                {subscription.subscription.status}
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <p className="text-sm text-gray-600">Billing Period</p>
+                                <p className="text-sm font-medium">
+                                  {new Date(subscription.subscription.current_period_start).toLocaleDateString()} - {new Date(subscription.subscription.current_period_end).toLocaleDateString()}
+                                </p>
+                              </div>
+                              {subscription.subscription.cancel_at_period_end && (
+                                <div className="col-span-2 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                                  <p className="text-sm text-yellow-800">
+                                    Your subscription will be canceled on {new Date(subscription.subscription.current_period_end).toLocaleDateString()}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+
+                            {subscription.subscription.status === 'active' && !subscription.subscription.cancel_at_period_end && (
+                              <div className="pt-4 border-t">
+                                <button
+                                  onClick={handleCancelSubscription}
+                                  className="px-4 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors text-sm font-medium"
+                                >
+                                  Cancel Subscription
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : !loadingSubscription && (
+                        <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-4">Upgrade Your Plan</h3>
+                          <p className="text-sm text-gray-600 mb-6">
+                            Choose a plan that fits your writing needs and unlock more features.
+                          </p>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Basic Plan */}
+                            <div className="bg-white rounded-lg p-6 border-2 border-gray-200 hover:border-purple-400 transition-colors">
+                              <div className="mb-4">
+                                <h4 className="text-xl font-bold text-gray-900">Basic</h4>
+                                <div className="mt-2">
+                                  <span className="text-3xl font-bold">$9.99</span>
+                                  <span className="text-gray-600">/month</span>
+                                </div>
+                              </div>
+
+                              <ul className="space-y-2 mb-6">
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>10 books</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>100,000 words</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>100 chapters per book</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>100 AI requests/day</span>
+                                </li>
+                              </ul>
+
+                              <button
+                                onClick={() => handleCheckout('basic')}
+                                className="w-full px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium"
+                              >
+                                Subscribe to Basic
+                              </button>
+                            </div>
+
+                            {/* Premium Plan */}
+                            <div className="bg-white rounded-lg p-6 border-2 border-purple-400 hover:border-purple-600 transition-colors relative">
+                              <div className="absolute -top-3 right-4 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-medium">
+                                Popular
+                              </div>
+
+                              <div className="mb-4">
+                                <h4 className="text-xl font-bold text-gray-900">Premium</h4>
+                                <div className="mt-2">
+                                  <span className="text-3xl font-bold">$19.99</span>
+                                  <span className="text-gray-600">/month</span>
+                                </div>
+                              </div>
+
+                              <ul className="space-y-2 mb-6">
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>Unlimited books</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>Unlimited words</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>Unlimited chapters</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>Unlimited AI requests</span>
+                                </li>
+                                <li className="flex items-center gap-2 text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                  <span>Priority support</span>
+                                </li>
+                              </ul>
+
+                              <button
+                                onClick={() => handleCheckout('premium')}
+                                className="w-full px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium"
+                              >
+                                Subscribe to Premium
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Tier Badge */}
                       <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
                         <div className="flex items-center justify-between">
@@ -677,11 +898,6 @@ const ProfilePage = ({ onBack }) => {
                               {quotas.tier === 'premium' && 'Unlimited creative power'}
                             </p>
                           </div>
-                          {quotas.tier !== 'premium' && (
-                            <button className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors text-sm font-medium">
-                              Upgrade Plan
-                            </button>
-                          )}
                         </div>
                       </div>
 
@@ -788,18 +1004,6 @@ const ProfilePage = ({ onBack }) => {
                         </div>
                       </div>
 
-                      {/* Upgrade CTA */}
-                      {quotas.tier !== 'premium' && (
-                        <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg p-6 text-white">
-                          <h3 className="text-xl font-bold mb-2">Need More?</h3>
-                          <p className="text-purple-100 mb-4">
-                            Upgrade to {quotas.tier === 'free' ? 'Basic or Premium' : 'Premium'} for higher limits and more features.
-                          </p>
-                          <button className="px-6 py-2 bg-white text-purple-600 rounded-lg font-medium hover:bg-purple-50 transition-colors">
-                            View Plans
-                          </button>
-                        </div>
-                      )}
                     </div>
                   ) : (
                     <div className="text-center py-12">

@@ -50,6 +50,11 @@ import {
 import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
+import { getPool } from './db/postgres.js';
+import * as stripeService from './services/stripeService.js';
+import * as revenueAnalytics from './services/revenueAnalytics.js';
+import * as engagementAnalytics from './services/engagementAnalytics.js';
+import { toCSV, setCSVHeaders, formatDateForCSV } from './utils/csvExporter.js';
 import {
   imageQueue,
   audioQueue,
@@ -193,6 +198,281 @@ app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true
 }));
+
+// Stripe webhook handler (MUST be before express.json() to get raw body)
+app.post('/api/webhooks/stripe',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+
+    try {
+      // Verify webhook signature
+      const event = stripeService.constructWebhookEvent(req.body, sig);
+
+      // Log webhook event to database
+      await getPool().query(
+        `INSERT INTO stripe_webhook_events (event_id, event_type, payload)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (event_id) DO NOTHING`,
+        [event.id, event.type, JSON.stringify(event)]
+      );
+
+      // Process event asynchronously (don't block webhook response)
+      processStripeWebhook(event).catch(err => {
+        console.error('Webhook processing error:', err);
+        // Update event record with error
+        getPool().query(
+          `UPDATE stripe_webhook_events
+           SET error = $1, processed = false
+           WHERE event_id = $2`,
+          [err.message, event.id]
+        ).catch(console.error);
+      });
+
+      // Return 200 OK immediately
+      res.json({ received: true });
+    } catch (err) {
+      console.error('Webhook signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+  }
+);
+
+/**
+ * Process Stripe webhook events
+ */
+async function processStripeWebhook(event) {
+  const pool = getPool();
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        const metadata = session.metadata || {};
+        const subscriptionId = session.subscription;
+
+        // Get customer email
+        const customerEmail = session.customer_details?.email || session.customer_email;
+
+        if (!customerEmail) {
+          console.error('No customer email in checkout session');
+          break;
+        }
+
+        // Find user by email
+        const userResult = await pool.query(
+          'SELECT id, tier FROM users WHERE email = $1',
+          [customerEmail]
+        );
+
+        if (userResult.rows.length === 0) {
+          console.error(`User not found for email: ${customerEmail}`);
+          break;
+        }
+
+        const user = userResult.rows[0];
+        const tier = metadata.tier || 'basic';
+
+        // Create subscription record
+        await pool.query(
+          `INSERT INTO subscriptions
+           (user_id, stripe_subscription_id, stripe_customer_id, tier, status, current_period_start, current_period_end)
+           VALUES ($1, $2, $3, $4, 'active', NOW(), NOW() + INTERVAL '30 days')
+           ON CONFLICT (stripe_subscription_id)
+           DO UPDATE SET status = 'active', updated_at = NOW()`,
+          [user.id, subscriptionId, session.customer, tier]
+        );
+
+        // Update user tier
+        await pool.query(
+          'UPDATE users SET tier = $1, updated_at = NOW() WHERE id = $2',
+          [tier, user.id]
+        );
+
+        // Update quotas to match tier
+        const tierQuotas = getTierQuotas(tier);
+        await pool.query(
+          `UPDATE quotas
+           SET max_books = $1, max_words = $2, max_chapters = $3,
+               max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+               custom_quotas = false, updated_at = NOW()
+           WHERE user_id = $6`,
+          [
+            tierQuotas.max_books,
+            tierQuotas.max_words,
+            tierQuotas.max_chapters,
+            tierQuotas.max_ai_requests_per_day,
+            tierQuotas.max_concurrent_jobs,
+            user.id
+          ]
+        );
+
+        console.log(`Subscription created for user ${customerEmail}, tier: ${tier}`);
+        break;
+      }
+
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object;
+
+        // Update subscription in database
+        await pool.query(
+          `UPDATE subscriptions
+           SET status = $1,
+               current_period_start = to_timestamp($2),
+               current_period_end = to_timestamp($3),
+               cancel_at_period_end = $4,
+               updated_at = NOW()
+           WHERE stripe_subscription_id = $5`,
+          [
+            subscription.status,
+            subscription.current_period_start,
+            subscription.current_period_end,
+            subscription.cancel_at_period_end,
+            subscription.id
+          ]
+        );
+
+        console.log(`Subscription updated: ${subscription.id}`);
+        break;
+      }
+
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object;
+
+        // Get subscription from DB
+        const subResult = await pool.query(
+          'SELECT user_id FROM subscriptions WHERE stripe_subscription_id = $1',
+          [subscription.id]
+        );
+
+        if (subResult.rows.length === 0) {
+          console.error(`Subscription not found: ${subscription.id}`);
+          break;
+        }
+
+        const userId = subResult.rows[0].user_id;
+
+        // Mark subscription as canceled
+        await pool.query(
+          `UPDATE subscriptions
+           SET status = 'canceled', canceled_at = NOW(), updated_at = NOW()
+           WHERE stripe_subscription_id = $1`,
+          [subscription.id]
+        );
+
+        // Downgrade user to free tier
+        await pool.query(
+          'UPDATE users SET tier = $1, updated_at = NOW() WHERE id = $2',
+          ['free', userId]
+        );
+
+        // Reset quotas to free tier
+        const freeQuotas = getTierQuotas('free');
+        await pool.query(
+          `UPDATE quotas
+           SET max_books = $1, max_words = $2, max_chapters = $3,
+               max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+               custom_quotas = false, updated_at = NOW()
+           WHERE user_id = $6`,
+          [
+            freeQuotas.max_books,
+            freeQuotas.max_words,
+            freeQuotas.max_chapters,
+            freeQuotas.max_ai_requests_per_day,
+            freeQuotas.max_concurrent_jobs,
+            userId
+          ]
+        );
+
+        console.log(`Subscription canceled and user downgraded: ${userId}`);
+        break;
+      }
+
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object;
+        const subscriptionId = invoice.subscription;
+
+        // Get subscription from DB
+        const subResult = await pool.query(
+          'SELECT id, user_id FROM subscriptions WHERE stripe_subscription_id = $1',
+          [subscriptionId]
+        );
+
+        if (subResult.rows.length === 0) {
+          console.log(`Subscription not found for invoice: ${subscriptionId}`);
+          break;
+        }
+
+        const subscription = subResult.rows[0];
+
+        // Create payment record
+        await pool.query(
+          `INSERT INTO payments
+           (user_id, stripe_payment_intent_id, subscription_id, amount, currency, status, payment_method)
+           VALUES ($1, $2, $3, $4, $5, 'succeeded', $6)
+           ON CONFLICT (stripe_payment_intent_id) DO NOTHING`,
+          [
+            subscription.user_id,
+            invoice.payment_intent,
+            subscription.id,
+            invoice.amount_paid,
+            invoice.currency,
+            invoice.payment_method_types?.[0] || 'card'
+          ]
+        );
+
+        // Update subscription period dates
+        await pool.query(
+          `UPDATE subscriptions
+           SET current_period_start = to_timestamp($1),
+               current_period_end = to_timestamp($2),
+               updated_at = NOW()
+           WHERE stripe_subscription_id = $3`,
+          [
+            invoice.period_start,
+            invoice.period_end,
+            subscriptionId
+          ]
+        );
+
+        console.log(`Payment succeeded for subscription: ${subscriptionId}`);
+        break;
+      }
+
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object;
+        const subscriptionId = invoice.subscription;
+
+        // Update subscription status to past_due
+        await pool.query(
+          `UPDATE subscriptions
+           SET status = 'past_due', updated_at = NOW()
+           WHERE stripe_subscription_id = $1`,
+          [subscriptionId]
+        );
+
+        console.log(`Payment failed for subscription: ${subscriptionId}`);
+        break;
+      }
+
+      default:
+        console.log(`Unhandled webhook event type: ${event.type}`);
+    }
+
+    // Mark event as processed
+    await pool.query(
+      `UPDATE stripe_webhook_events
+       SET processed = true
+       WHERE event_id = $1`,
+      [event.id]
+    );
+
+  } catch (error) {
+    console.error('Error processing webhook:', error);
+    throw error;
+  }
+}
+
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
@@ -548,6 +828,40 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // Login
+// Helper function to log login attempts
+async function logLoginAttempt(email, userId, success, failureReason, req) {
+  try {
+    const ip = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent');
+
+    await getPool().query(
+      `INSERT INTO login_history (user_id, email, success, failure_reason, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, email, success, failureReason, ip, userAgent]
+    );
+  } catch (error) {
+    console.error('Error logging login attempt:', error);
+    // Don't fail the login if logging fails
+  }
+}
+
+// Helper function to log user activities
+async function logUserActivity(userId, activityType, details = {}, req) {
+  try {
+    const ip = req?.ip || req?.connection?.remoteAddress || null;
+    const userAgent = req?.get?.('user-agent') || null;
+
+    await getPool().query(
+      `INSERT INTO user_activity_log (user_id, activity_type, details, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, activityType, JSON.stringify(details), ip, userAgent]
+    );
+  } catch (error) {
+    console.error('Error logging user activity:', error);
+    // Don't fail the operation if logging fails
+  }
+}
+
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     console.log('Login attempt for:', req.body?.email);
@@ -555,6 +869,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     if (!email || !password) {
       console.log('Missing email or password');
+      await logLoginAttempt(email, null, false, 'missing_credentials', req);
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
@@ -564,6 +879,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     if (!user) {
       console.log('User not found for email:', email);
+      await logLoginAttempt(email, null, false, 'user_not_found', req);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
@@ -572,7 +888,14 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     console.log('Password valid:', validPassword);
 
     if (!validPassword) {
+      await logLoginAttempt(email, user.id, false, 'invalid_password', req);
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check if user is suspended or banned
+    if (user.status === 'suspended' || user.status === 'banned') {
+      await logLoginAttempt(email, user.id, false, `account_${user.status}`, req);
+      return res.status(403).json({ error: `Account is ${user.status}` });
     }
 
     // Generate JWT token
@@ -585,6 +908,9 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
+
+    // Log successful login
+    await logLoginAttempt(email, user.id, true, null, req);
 
     console.log('Login successful for:', email);
     res.json({
@@ -625,6 +951,18 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
       createdAt: req.user.createdAt
     }
   });
+});
+
+// Get user quotas
+app.get('/api/quotas', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId || req.user.id;
+    const quotas = await getUserQuotas(userId);
+    res.json(quotas);
+  } catch (error) {
+    console.error('Error fetching quotas:', error);
+    res.status(500).json({ error: 'Failed to fetch quotas' });
+  }
 });
 
 // Request password reset
@@ -754,6 +1092,168 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
+
+// ============ USER SUBSCRIPTION ROUTES (Protected) ============
+
+// POST /api/subscriptions/checkout - Create Stripe checkout session
+app.post('/api/subscriptions/checkout',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const { tier } = req.body;
+
+      // Validate tier
+      if (!tier || !['basic', 'premium'].includes(tier)) {
+        return res.status(400).json({ error: 'Invalid tier. Must be basic or premium.' });
+      }
+
+      // Check if user already has an active subscription
+      const existingSubResult = await getPool().query(
+        `SELECT id, status FROM subscriptions WHERE user_id = $1 AND status = 'active'`,
+        [userId]
+      );
+
+      if (existingSubResult.rows.length > 0) {
+        return res.status(400).json({ error: 'You already have an active subscription.' });
+      }
+
+      // Get user details
+      const userResult = await getPool().query(
+        'SELECT email, name FROM users WHERE id = $1',
+        [userId]
+      );
+      const user = userResult.rows[0];
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Get or create Stripe customer
+      let customerId;
+      const customerResult = await getPool().query(
+        `SELECT stripe_customer_id FROM subscriptions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      );
+
+      if (customerResult.rows.length > 0 && customerResult.rows[0].stripe_customer_id) {
+        customerId = customerResult.rows[0].stripe_customer_id;
+      } else {
+        // Create new Stripe customer
+        const customer = await stripeService.createCustomer(user.email, user.name);
+        customerId = customer.id;
+      }
+
+      // Get price ID for tier
+      const priceId = stripeService.getPriceIdForTier(tier);
+
+      // Create checkout session
+      const successUrl = `${req.headers.origin || 'https://story-writing.com'}/profile?tab=quotas&checkout=success`;
+      const cancelUrl = `${req.headers.origin || 'https://story-writing.com'}/profile?tab=quotas&checkout=canceled`;
+
+      const session = await stripeService.createCheckoutSession(
+        customerId,
+        priceId,
+        tier,
+        successUrl,
+        cancelUrl,
+        { user_id: userId }
+      );
+
+      res.json({
+        sessionId: session.id,
+        url: session.url
+      });
+    } catch (error) {
+      console.error('Checkout error:', error);
+      res.status(500).json({ error: 'Failed to create checkout session' });
+    }
+  }
+);
+
+// GET /api/subscriptions/my - Get current user's subscription
+app.get('/api/subscriptions/my',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+
+      const result = await getPool().query(
+        `SELECT id, tier, status, current_period_start, current_period_end,
+                cancel_at_period_end, canceled_at, stripe_subscription_id
+         FROM subscriptions
+         WHERE user_id = $1 AND status IN ('active', 'canceled')
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.json({
+          has_subscription: false,
+          subscription: null
+        });
+      }
+
+      const subscription = result.rows[0];
+
+      res.json({
+        has_subscription: subscription.status === 'active',
+        subscription: {
+          tier: subscription.tier,
+          status: subscription.status,
+          current_period_start: subscription.current_period_start,
+          current_period_end: subscription.current_period_end,
+          cancel_at_period_end: subscription.cancel_at_period_end,
+          canceled_at: subscription.canceled_at
+        }
+      });
+    } catch (error) {
+      console.error('Get subscription error:', error);
+      res.status(500).json({ error: 'Failed to get subscription' });
+    }
+  }
+);
+
+// POST /api/subscriptions/cancel - Cancel current user's subscription
+app.post('/api/subscriptions/cancel',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+
+      // Get active subscription
+      const subResult = await getPool().query(
+        `SELECT id, stripe_subscription_id, current_period_end FROM subscriptions
+         WHERE user_id = $1 AND status = 'active'`,
+        [userId]
+      );
+
+      if (subResult.rows.length === 0) {
+        return res.status(404).json({ error: 'No active subscription found' });
+      }
+
+      const subscription = subResult.rows[0];
+
+      // Cancel in Stripe (at period end)
+      await stripeService.cancelSubscription(subscription.stripe_subscription_id, false);
+
+      // Update database
+      await getPool().query(
+        `UPDATE subscriptions SET cancel_at_period_end = true WHERE id = $1`,
+        [subscription.id]
+      );
+
+      res.json({
+        message: 'Subscription will be canceled at the end of the current billing period',
+        period_end: subscription.current_period_end
+      });
+    } catch (error) {
+      console.error('Cancel subscription error:', error);
+      res.status(500).json({ error: 'Failed to cancel subscription' });
+    }
+  }
+);
 
 // ============ ADMIN ROUTES (Protected) ============
 // Note: All admin routes require authenticateToken + requireAdmin middleware
@@ -902,6 +1402,405 @@ app.put('/api/admin/users/:userId/status',
   }
 );
 
+// Bulk update user status
+app.post('/api/admin/users/bulk/status',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userIds, status, reason } = req.body;
+
+      // Validate inputs
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({ error: 'userIds array required' });
+      }
+
+      if (!['active', 'suspended', 'banned'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const userId of userIds) {
+        try {
+          await UserRepository.updateStatus(userId, status, req.user.userId, reason);
+          results.push({ userId, success: true });
+        } catch (error) {
+          errors.push({ userId, error: error.message });
+        }
+      }
+
+      res.json({
+        message: `Bulk status update completed`,
+        results,
+        errors,
+        summary: {
+          total: userIds.length,
+          successful: results.length,
+          failed: errors.length
+        }
+      });
+    } catch (error) {
+      console.error('Bulk status update error:', error);
+      res.status(500).json({ error: 'Bulk operation failed' });
+    }
+  }
+);
+
+// Bulk update user tier
+app.post('/api/admin/users/bulk/tier',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userIds, tier } = req.body;
+
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({ error: 'userIds array required' });
+      }
+
+      if (!['free', 'basic', 'premium'].includes(tier)) {
+        return res.status(400).json({ error: 'Invalid tier' });
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const userId of userIds) {
+        try {
+          await UserRepository.updateTier(userId, tier, req.user.userId);
+          results.push({ userId, success: true });
+        } catch (error) {
+          errors.push({ userId, error: error.message });
+        }
+      }
+
+      res.json({
+        message: `Bulk tier update completed`,
+        results,
+        errors,
+        summary: {
+          total: userIds.length,
+          successful: results.length,
+          failed: errors.length
+        }
+      });
+    } catch (error) {
+      console.error('Bulk tier update error:', error);
+      res.status(500).json({ error: 'Bulk operation failed' });
+    }
+  }
+);
+
+// Get user quotas for editing
+app.get('/api/admin/users/:userId/quotas',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const quotas = await getUserQuotas(userId);
+      res.json(quotas);
+    } catch (error) {
+      console.error('Error fetching user quotas:', error);
+      res.status(500).json({ error: 'Failed to fetch quotas' });
+    }
+  }
+);
+
+// Update custom quotas for a user
+app.put('/api/admin/users/:userId/quotas',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const {
+        max_books,
+        max_words,
+        max_chapters,
+        max_ai_requests_per_day,
+        max_concurrent_jobs
+      } = req.body;
+
+      // Validate all are positive integers
+      const values = [max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs];
+      if (values.some(v => typeof v !== 'number' || v < 0)) {
+        return res.status(400).json({ error: 'All quota values must be positive numbers' });
+      }
+
+      const result = await getPool().query(
+        `UPDATE quotas
+         SET max_books = $1, max_words = $2, max_chapters = $3,
+             max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+             custom_quotas = true, updated_at = NOW()
+         WHERE user_id = $6
+         RETURNING *`,
+        [max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs, userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Log admin action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'quota_change', userId, JSON.stringify({
+          max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs
+        })]
+      );
+
+      res.json({
+        message: 'Custom quotas updated',
+        quotas: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error updating quotas:', error);
+      res.status(500).json({ error: 'Failed to update quotas' });
+    }
+  }
+);
+
+// Reset quotas to tier defaults
+app.delete('/api/admin/users/:userId/quotas',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      // Get user's tier
+      const userResult = await getPool().query(
+        `SELECT tier FROM users WHERE id = $1`,
+        [userId]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const tier = userResult.rows[0].tier;
+      const tierQuotas = getTierQuotas(tier);
+
+      // Reset to tier defaults
+      const result = await getPool().query(
+        `UPDATE quotas
+         SET max_books = $1, max_words = $2, max_chapters = $3,
+             max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+             custom_quotas = false, updated_at = NOW()
+         WHERE user_id = $6
+         RETURNING *`,
+        [
+          tierQuotas.max_books,
+          tierQuotas.max_words,
+          tierQuotas.max_chapters,
+          tierQuotas.max_ai_requests_per_day,
+          tierQuotas.max_concurrent_jobs,
+          userId
+        ]
+      );
+
+      // Log admin action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'quota_reset', userId, JSON.stringify({ tier })]
+      );
+
+      res.json({
+        message: 'Quotas reset to tier defaults',
+        quotas: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error resetting quotas:', error);
+      res.status(500).json({ error: 'Failed to reset quotas' });
+    }
+  }
+);
+
+// User-facing: Flag content for moderation
+app.post('/api/content/flag',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { content_type, content_id, reason } = req.body;
+
+      if (!['book', 'chapter'].includes(content_type)) {
+        return res.status(400).json({ error: 'Invalid content type' });
+      }
+
+      if (!content_id || !reason) {
+        return res.status(400).json({ error: 'content_id and reason required' });
+      }
+
+      // Check if content exists
+      let exists;
+      if (content_type === 'book') {
+        const result = await getPool().query(
+          `SELECT id FROM books WHERE id = $1 AND deleted_at IS NULL`,
+          [content_id]
+        );
+        exists = result.rows.length > 0;
+      } else {
+        const result = await getPool().query(
+          `SELECT id FROM chapters WHERE id = $1`,
+          [content_id]
+        );
+        exists = result.rows.length > 0;
+      }
+
+      if (!exists) {
+        return res.status(404).json({ error: 'Content not found' });
+      }
+
+      // Check if user already flagged this content
+      const existingFlag = await getPool().query(
+        `SELECT id FROM content_flags
+         WHERE content_type = $1 AND content_id = $2 AND flagged_by_user_id = $3`,
+        [content_type, content_id, req.user.userId]
+      );
+
+      if (existingFlag.rows.length > 0) {
+        return res.status(400).json({ error: 'You have already flagged this content' });
+      }
+
+      // Create flag
+      const result = await getPool().query(
+        `INSERT INTO content_flags (content_type, content_id, flagged_by_user_id, reason, status)
+         VALUES ($1, $2, $3, $4, 'pending')
+         RETURNING *`,
+        [content_type, content_id, req.user.userId, reason]
+      );
+
+      res.json({
+        message: 'Content flagged for review',
+        flag: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error flagging content:', error);
+      res.status(500).json({ error: 'Failed to flag content' });
+    }
+  }
+);
+
+// Admin: Get flagged content
+app.get('/api/admin/content-flags',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50, status, content_type } = req.query;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let whereConditions = '';
+      const params = [];
+      let paramCount = 1;
+
+      if (status) {
+        whereConditions += ` AND cf.status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (content_type) {
+        whereConditions += ` AND cf.content_type = $${paramCount}`;
+        params.push(content_type);
+        paramCount++;
+      }
+
+      // Get total count
+      const countQuery = `
+        SELECT COUNT(*)
+        FROM content_flags cf
+        WHERE 1=1${whereConditions}
+      `;
+      const countResult = await getPool().query(countQuery, params);
+      const total = parseInt(countResult.rows[0].count);
+
+      // Get flags with user and content details
+      const query = `
+        SELECT
+          cf.*,
+          fu.name as flagged_by_name,
+          fu.email as flagged_by_email,
+          ru.name as reviewed_by_name,
+          ru.email as reviewed_by_email,
+          CASE
+            WHEN cf.content_type = 'book' THEN b.title
+            WHEN cf.content_type = 'chapter' THEN c.title
+          END as content_title
+        FROM content_flags cf
+        LEFT JOIN users fu ON cf.flagged_by_user_id = fu.id
+        LEFT JOIN users ru ON cf.reviewed_by_admin_id = ru.id
+        LEFT JOIN books b ON cf.content_type = 'book' AND cf.content_id = b.id
+        LEFT JOIN chapters c ON cf.content_type = 'chapter' AND cf.content_id = c.id
+        WHERE 1=1${whereConditions}
+        ORDER BY cf.created_at DESC
+        LIMIT $${paramCount} OFFSET $${paramCount + 1}
+      `;
+
+      params.push(parseInt(limit), offset);
+      const result = await getPool().query(query, params);
+
+      res.json({
+        flags: result.rows,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching content flags:', error);
+      res.status(500).json({ error: 'Failed to fetch content flags' });
+    }
+  }
+);
+
+// Admin: Review flagged content
+app.put('/api/admin/content-flags/:flagId',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { flagId } = req.params;
+      const { status, admin_notes } = req.body;
+
+      if (!['reviewed', 'dismissed', 'action_taken'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+      }
+
+      const result = await getPool().query(
+        `UPDATE content_flags
+         SET status = $1, admin_notes = $2, reviewed_by_admin_id = $3, reviewed_at = NOW()
+         WHERE id = $4
+         RETURNING *`,
+        [status, admin_notes, req.user.userId, flagId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Flag not found' });
+      }
+
+      res.json({
+        message: 'Flag reviewed',
+        flag: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Error reviewing flag:', error);
+      res.status(500).json({ error: 'Failed to review flag' });
+    }
+  }
+);
+
 // Get system statistics
 app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
   try {
@@ -947,6 +1846,193 @@ app.get('/api/admin/audit-log', authenticateToken, requireAdmin, async (req, res
   }
 });
 
+// Get login history (admin only)
+app.get('/api/admin/login-history', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      userId,
+      success,
+      email
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build WHERE clause conditions
+    let whereConditions = '';
+    const params = [];
+    let paramCount = 1;
+
+    if (userId) {
+      whereConditions += ` AND lh.user_id = $${paramCount}`;
+      params.push(userId);
+      paramCount++;
+    }
+
+    if (success !== undefined) {
+      whereConditions += ` AND lh.success = $${paramCount}`;
+      params.push(success === 'true');
+      paramCount++;
+    }
+
+    if (email) {
+      whereConditions += ` AND lh.email ILIKE $${paramCount}`;
+      params.push(`%${email}%`);
+      paramCount++;
+    }
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*)
+      FROM login_history lh
+      LEFT JOIN users u ON lh.user_id = u.id
+      WHERE 1=1${whereConditions}
+    `;
+    const countResult = await getPool().query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Build main query
+    const query = `
+      SELECT
+        lh.*,
+        u.name as user_name,
+        u.email as user_email
+      FROM login_history lh
+      LEFT JOIN users u ON lh.user_id = u.id
+      WHERE 1=1${whereConditions}
+      ORDER BY lh.login_at DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `;
+
+    // Add pagination params
+    params.push(parseInt(limit), offset);
+
+    const result = await getPool().query(query, params);
+
+    res.json({
+      loginHistory: result.rows,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching login history:', error);
+    res.status(500).json({ error: 'Failed to fetch login history' });
+  }
+});
+
+// Get login history for a specific user (admin only)
+app.get('/api/admin/users/:userId/login-history', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+
+    const result = await getPool().query(
+      `SELECT * FROM login_history
+       WHERE user_id = $1
+       ORDER BY login_at DESC
+       LIMIT $2`,
+      [userId, parseInt(limit)]
+    );
+
+    res.json({ loginHistory: result.rows });
+  } catch (error) {
+    console.error('Error fetching user login history:', error);
+    res.status(500).json({ error: 'Failed to fetch login history' });
+  }
+});
+
+// Get user activity log (admin only, paginated)
+app.get('/api/admin/user-activity', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, userId, activityType } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build WHERE clause conditions
+    let whereConditions = '';
+    const params = [];
+    let paramCount = 1;
+
+    if (userId) {
+      whereConditions += ` AND ual.user_id = $${paramCount}`;
+      params.push(userId);
+      paramCount++;
+    }
+
+    if (activityType) {
+      whereConditions += ` AND ual.activity_type = $${paramCount}`;
+      params.push(activityType);
+      paramCount++;
+    }
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*)
+      FROM user_activity_log ual
+      LEFT JOIN users u ON ual.user_id = u.id
+      WHERE 1=1${whereConditions}
+    `;
+    const countResult = await getPool().query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Build main query
+    const query = `
+      SELECT
+        ual.*,
+        u.name as user_name,
+        u.email as user_email
+      FROM user_activity_log ual
+      LEFT JOIN users u ON ual.user_id = u.id
+      WHERE 1=1${whereConditions}
+      ORDER BY ual.created_at DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `;
+
+    // Add pagination params
+    params.push(parseInt(limit), offset);
+
+    const result = await getPool().query(query, params);
+
+    res.json({
+      activities: result.rows,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user activity:', error);
+    res.status(500).json({ error: 'Failed to fetch user activity' });
+  }
+});
+
+// Get user activity for a specific user (admin only)
+app.get('/api/admin/users/:userId/activity', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+
+    const result = await getPool().query(
+      `SELECT * FROM user_activity_log
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [userId, parseInt(limit)]
+    );
+
+    res.json({ activities: result.rows });
+  } catch (error) {
+    console.error('Error fetching user activity:', error);
+    res.status(500).json({ error: 'Failed to fetch user activity' });
+  }
+});
+
 // Delete user (admin only, soft delete)
 app.delete('/api/admin/users/:userId',
   authenticateToken,
@@ -968,6 +2054,722 @@ app.delete('/api/admin/users/:userId',
     } catch (error) {
       console.error('Error deleting user:', error);
       res.status(500).json({ error: 'Failed to delete user' });
+    }
+  }
+);
+
+// ============ SUBSCRIPTION MANAGEMENT ROUTES (Admin) ============
+
+// Get all subscriptions with filtering
+app.get('/api/admin/subscriptions',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20, status, tier, search } = req.query;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let whereConditions = '';
+      const params = [];
+      let paramCount = 1;
+
+      if (status) {
+        whereConditions += ` AND s.status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (tier) {
+        whereConditions += ` AND s.tier = $${paramCount}`;
+        params.push(tier);
+        paramCount++;
+      }
+
+      if (search) {
+        whereConditions += ` AND (u.email ILIKE $${paramCount} OR u.name ILIKE $${paramCount})`;
+        params.push(`%${search}%`);
+        paramCount++;
+      }
+
+      // Get total count
+      const countQuery = `
+        SELECT COUNT(*)
+        FROM subscriptions s
+        JOIN users u ON u.id = s.user_id
+        WHERE 1=1${whereConditions}
+      `;
+      const countResult = await getPool().query(countQuery, params);
+      const total = parseInt(countResult.rows[0].count);
+
+      // Get subscriptions
+      const query = `
+        SELECT
+          s.*,
+          u.email as user_email,
+          u.name as user_name,
+          CASE
+            WHEN s.tier = 'basic' THEN 999
+            WHEN s.tier = 'premium' THEN 1999
+            ELSE 0
+          END as amount
+        FROM subscriptions s
+        JOIN users u ON u.id = s.user_id
+        WHERE 1=1${whereConditions}
+        ORDER BY s.created_at DESC
+        LIMIT $${paramCount} OFFSET $${paramCount + 1}
+      `;
+
+      params.push(parseInt(limit), offset);
+      const result = await getPool().query(query, params);
+
+      res.json({
+        subscriptions: result.rows,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching subscriptions:', error);
+      res.status(500).json({ error: 'Failed to fetch subscriptions' });
+    }
+  }
+);
+
+// Get subscription details
+app.get('/api/admin/subscriptions/:subscriptionId',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { subscriptionId } = req.params;
+
+      const subQuery = `
+        SELECT
+          s.*,
+          u.id as user_id,
+          u.email as user_email,
+          u.name as user_name
+        FROM subscriptions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.id = $1
+      `;
+      const subResult = await getPool().query(subQuery, [subscriptionId]);
+
+      if (subResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Subscription not found' });
+      }
+
+      const subscription = subResult.rows[0];
+
+      // Get payment history
+      const paymentsQuery = `
+        SELECT *
+        FROM payments
+        WHERE subscription_id = $1
+        ORDER BY created_at DESC
+        LIMIT 50
+      `;
+      const paymentsResult = await getPool().query(paymentsQuery, [subscriptionId]);
+
+      res.json({
+        subscription,
+        payments: paymentsResult.rows
+      });
+    } catch (error) {
+      console.error('Error fetching subscription:', error);
+      res.status(500).json({ error: 'Failed to fetch subscription' });
+    }
+  }
+);
+
+// Cancel subscription (admin)
+app.post('/api/admin/subscriptions/:subscriptionId/cancel',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { subscriptionId } = req.params;
+      const { immediately = false, reason } = req.body;
+
+      if (!reason) {
+        return res.status(400).json({ error: 'Cancellation reason is required' });
+      }
+
+      // Get subscription
+      const subResult = await getPool().query(
+        'SELECT * FROM subscriptions WHERE id = $1',
+        [subscriptionId]
+      );
+
+      if (subResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Subscription not found' });
+      }
+
+      const subscription = subResult.rows[0];
+
+      // Cancel in Stripe
+      await stripeService.cancelSubscription(subscription.stripe_subscription_id, immediately);
+
+      // Update database
+      if (immediately) {
+        await getPool().query(
+          `UPDATE subscriptions
+           SET status = 'canceled', canceled_at = NOW(),
+               cancellation_reason = $1, canceled_by_admin_id = $2, updated_at = NOW()
+           WHERE id = $3`,
+          [reason, req.user.userId, subscriptionId]
+        );
+
+        // Downgrade user to free tier
+        await getPool().query(
+          'UPDATE users SET tier = $1, updated_at = NOW() WHERE id = $2',
+          ['free', subscription.user_id]
+        );
+      } else {
+        await getPool().query(
+          `UPDATE subscriptions
+           SET cancel_at_period_end = true,
+               cancellation_reason = $1, canceled_by_admin_id = $2, updated_at = NOW()
+           WHERE id = $3`,
+          [reason, req.user.userId, subscriptionId]
+        );
+      }
+
+      // Log action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          req.user.userId,
+          'cancel_subscription',
+          subscription.user_id,
+          JSON.stringify({ immediately, reason, subscription_id: subscriptionId })
+        ]
+      );
+
+      res.json({
+        message: immediately
+          ? 'Subscription canceled immediately'
+          : 'Subscription will be canceled at period end',
+        subscription: { ...subscription, cancel_at_period_end: !immediately }
+      });
+    } catch (error) {
+      console.error('Error canceling subscription:', error);
+      res.status(500).json({ error: 'Failed to cancel subscription' });
+    }
+  }
+);
+
+// Get all payments with filtering
+app.get('/api/admin/payments',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20, status, user_id, start_date, end_date } = req.query;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let whereConditions = '';
+      const params = [];
+      let paramCount = 1;
+
+      if (status) {
+        whereConditions += ` AND p.status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (user_id) {
+        whereConditions += ` AND p.user_id = $${paramCount}`;
+        params.push(user_id);
+        paramCount++;
+      }
+
+      if (start_date) {
+        whereConditions += ` AND p.created_at >= $${paramCount}`;
+        params.push(start_date);
+        paramCount++;
+      }
+
+      if (end_date) {
+        whereConditions += ` AND p.created_at <= $${paramCount}`;
+        params.push(end_date);
+        paramCount++;
+      }
+
+      // Get total count
+      const countQuery = `
+        SELECT COUNT(*)
+        FROM payments p
+        WHERE 1=1${whereConditions}
+      `;
+      const countResult = await getPool().query(countQuery, params);
+      const total = parseInt(countResult.rows[0].count);
+
+      // Get payments
+      const query = `
+        SELECT
+          p.*,
+          u.email as user_email,
+          u.name as user_name
+        FROM payments p
+        JOIN users u ON u.id = p.user_id
+        WHERE 1=1${whereConditions}
+        ORDER BY p.created_at DESC
+        LIMIT $${paramCount} OFFSET $${paramCount + 1}
+      `;
+
+      params.push(parseInt(limit), offset);
+      const result = await getPool().query(query, params);
+
+      res.json({
+        payments: result.rows,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching payments:', error);
+      res.status(500).json({ error: 'Failed to fetch payments' });
+    }
+  }
+);
+
+// ============ REVENUE ANALYTICS ROUTES (Admin) ============
+
+// Get revenue analytics
+app.get('/api/admin/analytics/revenue',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { start_date, end_date, granularity = 'day' } = req.query;
+
+      // Parse dates
+      const startDate = start_date
+        ? new Date(start_date)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default: 30 days ago
+      const endDate = end_date ? new Date(end_date) : new Date();
+
+      // Calculate metrics in parallel
+      const [mrr, churn, ltv, timeSeries, periodStats] = await Promise.all([
+        revenueAnalytics.calculateMRR(),
+        revenueAnalytics.calculateChurnRate('monthly'),
+        revenueAnalytics.calculateLTV(),
+        revenueAnalytics.getRevenueTimeSeries(startDate, endDate, granularity),
+        revenueAnalytics.getPeriodStats(startDate, endDate)
+      ]);
+
+      // Calculate total revenue for the period
+      const totalRevenuePeriod = timeSeries.reduce((sum, t) => sum + t.revenue, 0);
+
+      res.json({
+        summary: {
+          mrr: mrr.total_mrr,
+          mrr_by_tier: mrr.by_tier,
+          active_subscribers: ltv.active_subscribers,
+          churn_rate: churn.churn_rate,
+          ltv: ltv.ltv,
+          total_revenue_period: totalRevenuePeriod
+        },
+        time_series: timeSeries,
+        new_subscriptions: periodStats.new_subscriptions,
+        canceled_subscriptions: periodStats.canceled_subscriptions,
+        upgrades: periodStats.upgrades,
+        downgrades: periodStats.downgrades
+      });
+    } catch (error) {
+      console.error('Revenue analytics error:', error);
+      res.status(500).json({ error: 'Failed to fetch revenue analytics' });
+    }
+  }
+);
+
+// GET /api/admin/analytics/engagement - Get user engagement analytics
+app.get('/api/admin/analytics/engagement',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { start_date, end_date, granularity = 'day' } = req.query;
+
+      // Parse dates
+      const startDate = start_date
+        ? new Date(start_date)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default: 30 days ago
+      const endDate = end_date ? new Date(end_date) : new Date();
+
+      // Calculate metrics in parallel
+      const [
+        activeUsers,
+        sessionMetrics,
+        activityBreakdown,
+        activityTimeSeries,
+        newUsersTimeSeries,
+        totalUsers,
+        activeLast7d,
+        activeLast30d
+      ] = await Promise.all([
+        engagementAnalytics.calculateActiveUsers(),
+        engagementAnalytics.calculateSessionMetrics(),
+        engagementAnalytics.getActivityBreakdown(startDate, endDate),
+        engagementAnalytics.getActivityTimeSeries(startDate, endDate, granularity),
+        engagementAnalytics.getNewUsersTimeSeries(startDate, endDate, granularity),
+        engagementAnalytics.getTotalUsers(),
+        engagementAnalytics.getActiveUsersInPeriod(7),
+        engagementAnalytics.getActiveUsersInPeriod(30)
+      ]);
+
+      // Merge time series data (activity + new users)
+      const timeSeriesMap = new Map();
+
+      activityTimeSeries.forEach(item => {
+        const dateKey = new Date(item.date).toISOString();
+        timeSeriesMap.set(dateKey, {
+          date: item.date,
+          active_users: item.active_users,
+          total_actions: item.total_actions,
+          new_users: 0
+        });
+      });
+
+      newUsersTimeSeries.forEach(item => {
+        const dateKey = new Date(item.date).toISOString();
+        if (timeSeriesMap.has(dateKey)) {
+          timeSeriesMap.get(dateKey).new_users = item.new_users;
+        } else {
+          timeSeriesMap.set(dateKey, {
+            date: item.date,
+            active_users: 0,
+            total_actions: 0,
+            new_users: item.new_users
+          });
+        }
+      });
+
+      const timeSeries = Array.from(timeSeriesMap.values()).sort(
+        (a, b) => new Date(a.date) - new Date(b.date)
+      );
+
+      res.json({
+        summary: {
+          total_users: totalUsers,
+          active_last_7d: activeLast7d,
+          active_last_30d: activeLast30d,
+          dau: activeUsers.dau,
+          wau: activeUsers.wau,
+          mau: activeUsers.mau,
+          dau_mau_ratio: activeUsers.dau_mau_ratio,
+          avg_sessions_per_user: sessionMetrics.avg_sessions_per_user,
+          avg_actions_per_session: sessionMetrics.avg_actions_per_session
+        },
+        activity_breakdown: activityBreakdown,
+        time_series: timeSeries
+      });
+    } catch (error) {
+      console.error('Engagement analytics error:', error);
+      res.status(500).json({ error: 'Failed to fetch engagement analytics' });
+    }
+  }
+);
+
+// ============ CSV EXPORT ENDPOINTS ============
+
+// GET /api/admin/export/users - Export users to CSV
+app.get('/api/admin/export/users',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { tier, status, search } = req.query;
+
+      // Build query
+      let query = 'SELECT id, name, email, tier, status, created_at FROM users WHERE 1=1';
+      const params = [];
+      let paramCount = 1;
+
+      if (tier) {
+        query += ` AND tier = $${paramCount}`;
+        params.push(tier);
+        paramCount++;
+      }
+
+      if (status) {
+        query += ` AND status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (search) {
+        query += ` AND (email ILIKE $${paramCount} OR name ILIKE $${paramCount})`;
+        params.push(`%${search}%`);
+        paramCount++;
+      }
+
+      query += ' ORDER BY created_at DESC LIMIT 10000';
+
+      const result = await getPool().query(query, params);
+
+      // Format data for CSV
+      const csvData = result.rows.map(row => ({
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        tier: row.tier,
+        status: row.status,
+        created_at: formatDateForCSV(row.created_at)
+      }));
+
+      const headers = ['id', 'name', 'email', 'tier', 'status', 'created_at'];
+      const csv = toCSV(csvData, headers);
+
+      setCSVHeaders(res, `users-export-${new Date().toISOString().split('T')[0]}.csv`);
+      res.send(csv);
+
+      // Log export action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'export_users', 'users', JSON.stringify({ count: result.rows.length, filters: { tier, status, search } })]
+      );
+    } catch (error) {
+      console.error('Export users error:', error);
+      res.status(500).json({ error: 'Failed to export users' });
+    }
+  }
+);
+
+// GET /api/admin/export/payments - Export payments to CSV
+app.get('/api/admin/export/payments',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { start_date, end_date, status, user_id } = req.query;
+
+      let query = `
+        SELECT p.id, p.user_id, u.email as user_email, u.name as user_name,
+               p.amount, p.currency, p.status, p.payment_method, p.stripe_payment_intent_id,
+               p.created_at
+        FROM payments p
+        JOIN users u ON u.id = p.user_id
+        WHERE 1=1
+      `;
+      const params = [];
+      let paramCount = 1;
+
+      if (start_date) {
+        query += ` AND p.created_at >= $${paramCount}`;
+        params.push(new Date(start_date));
+        paramCount++;
+      }
+
+      if (end_date) {
+        query += ` AND p.created_at <= $${paramCount}`;
+        params.push(new Date(end_date));
+        paramCount++;
+      }
+
+      if (status) {
+        query += ` AND p.status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (user_id) {
+        query += ` AND p.user_id = $${paramCount}`;
+        params.push(user_id);
+        paramCount++;
+      }
+
+      query += ' ORDER BY p.created_at DESC LIMIT 10000';
+
+      const result = await getPool().query(query, params);
+
+      // Format data for CSV
+      const csvData = result.rows.map(row => ({
+        id: row.id,
+        user_id: row.user_id,
+        user_email: row.user_email,
+        user_name: row.user_name,
+        amount: (row.amount / 100).toFixed(2), // Convert cents to dollars
+        currency: row.currency,
+        status: row.status,
+        payment_method: row.payment_method,
+        stripe_payment_intent_id: row.stripe_payment_intent_id,
+        created_at: formatDateForCSV(row.created_at)
+      }));
+
+      const headers = ['id', 'user_id', 'user_email', 'user_name', 'amount', 'currency', 'status', 'payment_method', 'stripe_payment_intent_id', 'created_at'];
+      const csv = toCSV(csvData, headers);
+
+      setCSVHeaders(res, `payments-export-${new Date().toISOString().split('T')[0]}.csv`);
+      res.send(csv);
+
+      // Log export action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'export_payments', 'payments', JSON.stringify({ count: result.rows.length })]
+      );
+    } catch (error) {
+      console.error('Export payments error:', error);
+      res.status(500).json({ error: 'Failed to export payments' });
+    }
+  }
+);
+
+// GET /api/admin/export/subscriptions - Export subscriptions to CSV
+app.get('/api/admin/export/subscriptions',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { status, tier } = req.query;
+
+      let query = `
+        SELECT s.id, s.user_id, u.email as user_email, u.name as user_name,
+               s.tier, s.status, s.stripe_subscription_id, s.stripe_customer_id,
+               s.current_period_start, s.current_period_end, s.cancel_at_period_end,
+               s.canceled_at, s.created_at
+        FROM subscriptions s
+        JOIN users u ON u.id = s.user_id
+        WHERE 1=1
+      `;
+      const params = [];
+      let paramCount = 1;
+
+      if (status) {
+        query += ` AND s.status = $${paramCount}`;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (tier) {
+        query += ` AND s.tier = $${paramCount}`;
+        params.push(tier);
+        paramCount++;
+      }
+
+      query += ' ORDER BY s.created_at DESC LIMIT 10000';
+
+      const result = await getPool().query(query, params);
+
+      // Format data for CSV
+      const csvData = result.rows.map(row => ({
+        id: row.id,
+        user_id: row.user_id,
+        user_email: row.user_email,
+        user_name: row.user_name,
+        tier: row.tier,
+        status: row.status,
+        stripe_subscription_id: row.stripe_subscription_id,
+        stripe_customer_id: row.stripe_customer_id,
+        current_period_start: formatDateForCSV(row.current_period_start),
+        current_period_end: formatDateForCSV(row.current_period_end),
+        cancel_at_period_end: row.cancel_at_period_end ? 'Yes' : 'No',
+        canceled_at: formatDateForCSV(row.canceled_at),
+        created_at: formatDateForCSV(row.created_at)
+      }));
+
+      const headers = ['id', 'user_id', 'user_email', 'user_name', 'tier', 'status', 'stripe_subscription_id', 'stripe_customer_id', 'current_period_start', 'current_period_end', 'cancel_at_period_end', 'canceled_at', 'created_at'];
+      const csv = toCSV(csvData, headers);
+
+      setCSVHeaders(res, `subscriptions-export-${new Date().toISOString().split('T')[0]}.csv`);
+      res.send(csv);
+
+      // Log export action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'export_subscriptions', 'subscriptions', JSON.stringify({ count: result.rows.length })]
+      );
+    } catch (error) {
+      console.error('Export subscriptions error:', error);
+      res.status(500).json({ error: 'Failed to export subscriptions' });
+    }
+  }
+);
+
+// GET /api/admin/export/activity - Export activity logs to CSV
+app.get('/api/admin/export/activity',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { start_date, end_date, activity_type, user_id } = req.query;
+
+      let query = `
+        SELECT a.id, a.user_id, u.email as user_email, a.activity_type,
+               a.details, a.ip_address, a.created_at
+        FROM user_activity_log a
+        JOIN users u ON u.id = a.user_id
+        WHERE 1=1
+      `;
+      const params = [];
+      let paramCount = 1;
+
+      if (start_date) {
+        query += ` AND a.created_at >= $${paramCount}`;
+        params.push(new Date(start_date));
+        paramCount++;
+      }
+
+      if (end_date) {
+        query += ` AND a.created_at <= $${paramCount}`;
+        params.push(new Date(end_date));
+        paramCount++;
+      }
+
+      if (activity_type) {
+        query += ` AND a.activity_type = $${paramCount}`;
+        params.push(activity_type);
+        paramCount++;
+      }
+
+      if (user_id) {
+        query += ` AND a.user_id = $${paramCount}`;
+        params.push(user_id);
+        paramCount++;
+      }
+
+      query += ' ORDER BY a.created_at DESC LIMIT 10000';
+
+      const result = await getPool().query(query, params);
+
+      // Format data for CSV
+      const csvData = result.rows.map(row => ({
+        id: row.id,
+        user_id: row.user_id,
+        user_email: row.user_email,
+        activity_type: row.activity_type,
+        details: typeof row.details === 'object' ? JSON.stringify(row.details) : row.details,
+        ip_address: row.ip_address,
+        created_at: formatDateForCSV(row.created_at)
+      }));
+
+      const headers = ['id', 'user_id', 'user_email', 'activity_type', 'details', 'ip_address', 'created_at'];
+      const csv = toCSV(csvData, headers);
+
+      setCSVHeaders(res, `activity-export-${new Date().toISOString().split('T')[0]}.csv`);
+      res.send(csv);
+
+      // Log export action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user.userId, 'export_activity', 'activity_log', JSON.stringify({ count: result.rows.length })]
+      );
+    } catch (error) {
+      console.error('Export activity error:', error);
+      res.status(500).json({ error: 'Failed to export activity logs' });
     }
   }
 );
@@ -1161,6 +2963,13 @@ app.post('/api/books', authenticateToken, checkBookQuota, async (req, res) => {
     // Update quota usage after successful book creation
     await updateQuotaUsage(req.user.userId);
 
+    // Log activity
+    await logUserActivity(req.user.userId, 'book_created', {
+      book_id: book.id,
+      title: book.title,
+      genre: book.genre
+    }, req);
+
     res.status(201).json(book);
   } catch (error) {
     console.error('Error creating book:', error);
@@ -1287,6 +3096,13 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to delete this book' });
     }
 
+    // Log activity before deleting
+    await logUserActivity(req.user.userId || req.user.id, 'book_deleted', {
+      book_id: id,
+      title: book.title,
+      genre: book.genre
+    }, req);
+
     // Delete the book
     await deleteBook(id, req.user.id);
 
@@ -1299,6 +3115,9 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
       };
       await updateUser(req.user.id, updatedUser);
     }
+
+    // Update quota usage after book deletion
+    await updateQuotaUsage(req.user.userId || req.user.id);
 
     res.json({ message: 'Book deleted successfully' });
   } catch (error) {
@@ -1615,6 +3434,14 @@ app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, r
       context
     );
 
+    // Log activity
+    await logUserActivity(req.user.userId, 'ai_request', {
+      job_id: jobId,
+      type: 'image_generation',
+      book_id: bookId,
+      image_type: imageType
+    }, req);
+
     res.json({ jobId, message: 'Image generation queued' });
   } catch (error) {
     console.error('Queue image error:', error);
@@ -1638,6 +3465,14 @@ app.post('/api/jobs/queue/audio', authenticateToken, aiLimiter, checkJobQuota, r
       text,
       voice
     );
+
+    // Log activity
+    await logUserActivity(req.user.userId, 'ai_request', {
+      job_id: jobId,
+      type: 'audio_generation',
+      book_id: bookId,
+      chapter_id: chapterId
+    }, req);
 
     res.json({ jobId, message: 'Audio generation queued' });
   } catch (error) {
