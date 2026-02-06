@@ -3,9 +3,10 @@ import {
   Users, Shield, Activity, BookOpen, TrendingUp,
   Search, ChevronDown, CheckCircle, XCircle,
   AlertCircle, ArrowLeft, FileText, RefreshCw, Settings,
-  CreditCard, DollarSign, TrendingDown, Download
+  CreditCard, DollarSign, TrendingDown, Download, Cpu
 } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import AICostAnalytics from './AICostAnalytics';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -804,6 +805,17 @@ const AdminDashboard = ({ onBack }) => {
             >
               <Activity className="w-5 h-5 inline mr-2" />
               Analytics
+            </button>
+            <button
+              onClick={() => { setActiveTab('ai-costs'); setCurrentPage(1); }}
+              className={`pb-4 px-2 font-medium transition-colors ${
+                activeTab === 'ai-costs'
+                  ? 'border-b-2 border-purple-600 text-purple-600'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Cpu className="w-5 h-5 inline mr-2" />
+              AI Costs
             </button>
           </nav>
         </div>
@@ -2023,6 +2035,11 @@ const AdminDashboard = ({ onBack }) => {
               </div>
             </div>
           </div>
+        )}
+
+        {/* AI Costs Tab */}
+        {activeTab === 'ai-costs' && (
+          <AICostAnalytics />
         )}
 
         {/* Cancel Subscription Modal */}
