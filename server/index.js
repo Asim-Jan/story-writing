@@ -2264,6 +2264,166 @@ app.post('/api/admin/subscriptions/:subscriptionId/cancel',
   }
 );
 
+// Reactivate subscription (remove cancel_at_period_end)
+app.post('/api/admin/subscriptions/:subscriptionId/reactivate',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { subscriptionId } = req.params;
+
+      // Get subscription
+      const subResult = await getPool().query(
+        'SELECT * FROM subscriptions WHERE id = $1',
+        [subscriptionId]
+      );
+
+      if (subResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Subscription not found' });
+      }
+
+      const subscription = subResult.rows[0];
+
+      if (!subscription.cancel_at_period_end) {
+        return res.status(400).json({ error: 'Subscription is not scheduled for cancellation' });
+      }
+
+      // Reactivate in Stripe
+      await stripeService.reactivateSubscription(subscription.stripe_subscription_id);
+
+      // Update database
+      await getPool().query(
+        `UPDATE subscriptions
+         SET cancel_at_period_end = false, cancellation_reason = NULL,
+             canceled_by_admin_id = NULL, updated_at = NOW()
+         WHERE id = $1`,
+        [subscriptionId]
+      );
+
+      // Log action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          req.user.userId,
+          'reactivate_subscription',
+          subscription.user_id,
+          JSON.stringify({ subscription_id: subscriptionId })
+        ]
+      );
+
+      res.json({
+        message: 'Subscription reactivated successfully',
+        subscription: { ...subscription, cancel_at_period_end: false }
+      });
+    } catch (error) {
+      console.error('Error reactivating subscription:', error);
+      res.status(500).json({ error: 'Failed to reactivate subscription' });
+    }
+  }
+);
+
+// Change subscription tier (upgrade/downgrade)
+app.put('/api/admin/subscriptions/:subscriptionId/tier',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { subscriptionId } = req.params;
+      const { new_tier, reason } = req.body;
+
+      if (!new_tier || !['basic', 'premium'].includes(new_tier)) {
+        return res.status(400).json({ error: 'Invalid tier. Must be basic or premium.' });
+      }
+
+      if (!reason) {
+        return res.status(400).json({ error: 'Reason is required for tier changes' });
+      }
+
+      // Get subscription
+      const subResult = await getPool().query(
+        'SELECT * FROM subscriptions WHERE id = $1',
+        [subscriptionId]
+      );
+
+      if (subResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Subscription not found' });
+      }
+
+      const subscription = subResult.rows[0];
+
+      if (subscription.tier === new_tier) {
+        return res.status(400).json({ error: `Subscription is already on ${new_tier} tier` });
+      }
+
+      // Get new price ID
+      const newPriceId = stripeService.getPriceIdForTier(new_tier);
+
+      // Update in Stripe (with proration)
+      await stripeService.updateSubscription(subscription.stripe_subscription_id, newPriceId);
+
+      // Update database
+      await getPool().query(
+        `UPDATE subscriptions
+         SET tier = $1, updated_at = NOW()
+         WHERE id = $2`,
+        [new_tier, subscriptionId]
+      );
+
+      // Update user tier
+      await getPool().query(
+        'UPDATE users SET tier = $1, updated_at = NOW() WHERE id = $2',
+        [new_tier, subscription.user_id]
+      );
+
+      // Update quotas to match new tier
+      const tierQuotas = getTierQuotas(new_tier);
+      await getPool().query(
+        `UPDATE quotas
+         SET max_books = $1, max_words = $2, max_chapters = $3,
+             max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
+             custom_quotas = false, updated_at = NOW()
+         WHERE user_id = $6`,
+        [
+          tierQuotas.max_books,
+          tierQuotas.max_words,
+          tierQuotas.max_chapters,
+          tierQuotas.max_ai_requests_per_day,
+          tierQuotas.max_concurrent_jobs,
+          subscription.user_id
+        ]
+      );
+
+      // Log action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          req.user.userId,
+          'change_subscription_tier',
+          subscription.user_id,
+          JSON.stringify({
+            subscription_id: subscriptionId,
+            old_tier: subscription.tier,
+            new_tier,
+            reason
+          })
+        ]
+      );
+
+      res.json({
+        message: `Subscription tier changed from ${subscription.tier} to ${new_tier}`,
+        subscription: { ...subscription, tier: new_tier }
+      });
+    } catch (error) {
+      console.error('Error changing subscription tier:', error);
+      res.status(500).json({ error: 'Failed to change subscription tier' });
+    }
+  }
+);
+
 // Get all payments with filtering
 app.get('/api/admin/payments',
   authenticateToken,
@@ -2338,6 +2498,97 @@ app.get('/api/admin/payments',
     } catch (error) {
       console.error('Error fetching payments:', error);
       res.status(500).json({ error: 'Failed to fetch payments' });
+    }
+  }
+);
+
+// Refund a payment
+app.post('/api/admin/payments/:paymentId/refund',
+  authenticateToken,
+  requireAdmin,
+  preventSelfModification,
+  async (req, res) => {
+    try {
+      const { paymentId } = req.params;
+      const { amount, reason } = req.body;
+
+      if (!reason) {
+        return res.status(400).json({ error: 'Refund reason is required' });
+      }
+
+      // Get payment
+      const paymentResult = await getPool().query(
+        'SELECT * FROM payments WHERE id = $1',
+        [paymentId]
+      );
+
+      if (paymentResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Payment not found' });
+      }
+
+      const payment = paymentResult.rows[0];
+
+      if (payment.status !== 'succeeded') {
+        return res.status(400).json({ error: 'Can only refund successful payments' });
+      }
+
+      if (payment.refunded) {
+        return res.status(400).json({ error: 'Payment has already been refunded' });
+      }
+
+      // Validate amount if provided
+      let refundAmount = null;
+      if (amount) {
+        refundAmount = parseInt(amount);
+        if (refundAmount <= 0 || refundAmount > payment.amount) {
+          return res.status(400).json({ error: 'Invalid refund amount' });
+        }
+      }
+
+      // Create refund in Stripe
+      const refund = await stripeService.createRefund(
+        payment.stripe_payment_intent_id,
+        refundAmount,
+        reason
+      );
+
+      // Update payment in database
+      await getPool().query(
+        `UPDATE payments
+         SET refunded = true, refund_amount = $1, refund_reason = $2,
+             refunded_at = NOW(), updated_at = NOW()
+         WHERE id = $3`,
+        [refund.amount, reason, paymentId]
+      );
+
+      // Log action
+      await getPool().query(
+        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          req.user.userId,
+          'refund_payment',
+          payment.user_id,
+          JSON.stringify({
+            payment_id: paymentId,
+            amount: refund.amount,
+            original_amount: payment.amount,
+            reason
+          })
+        ]
+      );
+
+      res.json({
+        message: refundAmount ? 'Partial refund processed' : 'Full refund processed',
+        refund: {
+          id: refund.id,
+          amount: refund.amount,
+          status: refund.status
+        }
+      });
+    } catch (error) {
+      console.error('Error processing refund:', error);
+      res.status(500).json({ error: 'Failed to process refund' });
     }
   }
 );
