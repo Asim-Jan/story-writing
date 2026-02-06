@@ -266,6 +266,27 @@ export class UserDataService {
  */
 export class BookDataService {
   /**
+   * Map PostgreSQL chapter fields to frontend format
+   */
+  static mapChapterFromPostgres(chapter) {
+    if (!chapter) return null;
+
+    return {
+      id: chapter.id,
+      number: chapter.chapter_number || 0,
+      title: chapter.title || '',
+      content: chapter.content || '',
+      summary: chapter.notes || '',
+      scenes: chapter.scenes || [],
+      wordCount: chapter.word_count || 0,
+      status: chapter.status || 'draft',
+      createdAt: chapter.created_at,
+      updatedAt: chapter.updated_at,
+      version: chapter.version
+    };
+  }
+
+  /**
    * Map PostgreSQL book fields to frontend format
    */
   static mapBookFieldsFromPostgres(book) {
@@ -410,7 +431,7 @@ export class BookDataService {
           await this.syncChapters(book.id, chapters);
           // Reload chapters
           const createdChapters = await ChapterRepository.findByBookId(book.id);
-          book.chapters = createdChapters || [];
+          book.chapters = (createdChapters || []).map(ch => this.mapChapterFromPostgres(ch));
         } else {
           book.chapters = [];
         }
@@ -448,7 +469,7 @@ export class BookDataService {
       if (book) {
         // Also fetch chapters
         const chapters = await ChapterRepository.findByBookId(bookId);
-        book.chapters = chapters || [];
+        book.chapters = (chapters || []).map(ch => this.mapChapterFromPostgres(ch));
 
         // Map to frontend format
         return this.mapBookFieldsFromPostgres(book);
@@ -531,7 +552,7 @@ export class BookDataService {
           // Reload chapters to return updated book with chapters
           const updatedChapters = await ChapterRepository.findByBookId(bookId);
           if (book) {
-            book.chapters = updatedChapters || [];
+            book.chapters = (updatedChapters || []).map(ch => this.mapChapterFromPostgres(ch));
           }
         }
       } catch (error) {
@@ -584,11 +605,11 @@ export class BookDataService {
     for (const chapter of chaptersArray) {
       const chapterData = {
         book_id: bookId,
-        chapter_number: chapter.chapterNumber || chapter.chapter_number || chapter.number || 0,
+        chapter_number: chapter.number || chapter.chapterNumber || chapter.chapter_number || 0,
         title: chapter.title || '',
         content: chapter.content || '',
         scenes: chapter.scenes || [],
-        notes: chapter.notes || chapter.summary || '',
+        notes: chapter.summary || chapter.notes || '',
         status: chapter.status || 'draft'
       };
 
@@ -599,6 +620,7 @@ export class BookDataService {
           await ChapterRepository.update(
             chapter.id,
             {
+              chapter_number: chapterData.chapter_number,
               title: chapterData.title,
               content: chapterData.content,
               scenes: chapterData.scenes,

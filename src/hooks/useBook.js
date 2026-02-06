@@ -112,6 +112,8 @@ export const useBook = (bookId) => {
       // If this was a new book, update the URL with the new ID
       if (!bookId && savedBook.id) {
         window.history.pushState({}, '', `?book=${savedBook.id}`);
+        // Trigger a custom event that App.jsx can listen to
+        window.dispatchEvent(new CustomEvent('bookCreated', { detail: { bookId: savedBook.id } }));
       }
 
       return savedBook;

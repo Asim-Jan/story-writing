@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Sparkles, Zap, Users, MessageSquare, Search, BookOpen, TrendingUp, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Sparkles, Zap, Users, MessageSquare, Search, BookOpen, TrendingUp, CheckCircle2, History, X, Copy, GitCompare, FileText, Layers } from 'lucide-react';
 import AISuggestionBox from './AISuggestionBox';
+import { promptTemplates, getTemplatesByCategory, getAllTemplates, fillTemplate } from '../data/promptTemplates';
 
 const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
   const [activeAITool, setActiveAITool] = useState(null);
@@ -8,6 +9,26 @@ const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
   const [selectedCharacter, setSelectedCharacter] = useState('');
   const [selectedPlotlines, setSelectedPlotlines] = useState([]);
   const [aiResult, setAiResult] = useState(null);
+
+  // History features
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [selectedHistory, setSelectedHistory] = useState([]);
+  const [compareMode, setCompareMode] = useState(false);
+
+  // Template features
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [templateVariables, setTemplateVariables] = useState({});
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  // Batch generation features
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchQuantity, setBatchQuantity] = useState(3);
+  const [batchResults, setBatchResults] = useState([]);
+
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+  const token = localStorage.getItem('token');
 
   const tools = [
     {
@@ -62,6 +83,68 @@ const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
     }
   ];
 
+  // Fetch generation history
+  const fetchHistory = useCallback(async () => {
+    if (!data?.id) return;
+
+    setLoadingHistory(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/api/ai-generations?bookId=${data.id}&limit=50`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      );
+
+      if (response.ok) {
+        const result = await response.json();
+        setHistory(result.history || []);
+      }
+    } catch (error) {
+      console.error('Error fetching generation history:', error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [data?.id, API_URL, token]);
+
+  // Load history when panel is opened
+  useEffect(() => {
+    if (showHistory && history.length === 0) {
+      fetchHistory();
+    }
+  }, [showHistory, fetchHistory, history.length]);
+
+  // Apply template
+  const applyTemplate = () => {
+    if (!selectedTemplate) return;
+
+    const filled = fillTemplate(selectedTemplate.template, templateVariables);
+    setAiPrompt(filled);
+    setShowTemplates(false);
+    setSelectedTemplate(null);
+    setTemplateVariables({});
+  };
+
+  // View historical generation
+  const viewHistoryItem = (item) => {
+    setAiResult({ type: item.tool_type, data: item.result });
+    setActiveAITool(item.tool_type);
+    setShowHistory(false);
+  };
+
+  // Toggle compare mode
+  const toggleCompare = (itemId) => {
+    if (compareMode) {
+      if (selectedHistory.includes(itemId)) {
+        setSelectedHistory(selectedHistory.filter(id => id !== itemId));
+      } else if (selectedHistory.length < 3) {
+        setSelectedHistory([...selectedHistory, itemId]);
+      }
+    }
+  };
+
   const handleGenerate = async (toolId) => {
     let finalPrompt = aiPrompt;
 
@@ -82,10 +165,51 @@ const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
     }
 
     setAiResult(null);
-    const result = await onGenerate(toolId, finalPrompt);
-    if (result) {
-      setAiResult({ type: toolId, data: result });
+    setBatchResults([]);
+
+    if (batchMode) {
+      // Batch generation
+      try {
+        const response = await fetch(`${API_URL}/api/generate-batch`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            type: toolId,
+            prompt: finalPrompt,
+            context: { bookId: data?.id },
+            quantity: batchQuantity
+          })
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          alert(error.error || 'Failed to generate batch');
+          return;
+        }
+
+        const result = await response.json();
+        setBatchResults(result.variations || []);
+        fetchHistory(); // Refresh history
+      } catch (error) {
+        console.error('Batch generation error:', error);
+        alert('Failed to generate batch variations');
+      }
+    } else {
+      // Single generation
+      const result = await onGenerate(toolId, finalPrompt);
+      if (result) {
+        setAiResult({ type: toolId, data: result });
+        fetchHistory(); // Refresh history
+      }
     }
+  };
+
+  const acceptVariation = (variationData) => {
+    setAiResult({ type: activeAITool, data: variationData });
+    setBatchResults([]);
   };
 
   const handleAccept = () => {
@@ -152,48 +276,314 @@ const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="mb-8">
-        <h2 className="text-3xl font-bold text-gray-800 mb-3">AI Writing Tools</h2>
-        <p className="text-gray-600">
-          Advanced AI-powered tools to help you write better, faster, and more consistently.
-        </p>
-      </div>
-
-      {/* Tool Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-        {tools.map((tool) => (
-          <button
-            key={tool.id}
-            onClick={() => {
-              setActiveAITool(tool.id);
-              setAiPrompt('');
-              setAiResult(null);
-            }}
-            className={`p-6 bg-white rounded-xl shadow-md hover:shadow-xl transition-all border-2 ${
-              activeAITool === tool.id ? 'border-purple-500 ring-2 ring-purple-200' : 'border-gray-200'
-            } text-left group`}
-          >
-            <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${tool.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
-              <tool.icon className="text-white" size={24} />
-            </div>
-            <h3 className="text-xl font-bold text-gray-800 mb-2">{tool.title}</h3>
-            <p className="text-gray-600 text-sm">{tool.description}</p>
-          </button>
-        ))}
-      </div>
-
-      {/* Active Tool Panel */}
-      {activeAITool && (
-        <div className="bg-white rounded-xl shadow-lg border-2 border-purple-200 p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <Sparkles className="text-purple-600" size={28} />
-            <h3 className="text-2xl font-bold text-gray-800">
-              {tools.find(t => t.id === activeAITool)?.title}
+    <div className="max-w-7xl mx-auto flex gap-6">
+      {/* History Sidebar */}
+      {showHistory && (
+        <div className="w-80 bg-white rounded-xl shadow-lg border-2 border-purple-200 p-6 flex-shrink-0 max-h-[800px] overflow-y-auto">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+              <History size={20} />
+              Generation History
             </h3>
+            <button
+              onClick={() => {
+                setShowHistory(false);
+                setCompareMode(false);
+                setSelectedHistory([]);
+              }}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              <X size={20} />
+            </button>
           </div>
 
-          {!aiResult && (
+          {!compareMode && (
+            <button
+              onClick={() => setCompareMode(true)}
+              disabled={history.length < 2}
+              className="w-full mb-4 px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
+            >
+              <GitCompare size={16} />
+              Compare Results
+            </button>
+          )}
+
+          {compareMode && (
+            <div className="mb-4 p-3 bg-purple-50 rounded-lg border border-purple-200">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-semibold text-purple-900">
+                  Compare Mode ({selectedHistory.length}/3)
+                </p>
+                <button
+                  onClick={() => {
+                    setCompareMode(false);
+                    setSelectedHistory([]);
+                  }}
+                  className="text-xs text-purple-700 hover:text-purple-900"
+                >
+                  Exit
+                </button>
+              </div>
+              <p className="text-xs text-purple-700">
+                Select up to 3 generations to compare
+              </p>
+            </div>
+          )}
+
+          {loadingHistory ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+            </div>
+          ) : history.length === 0 ? (
+            <div className="text-center py-8">
+              <FileText className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm text-gray-500">No generation history yet</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {history.map((item) => (
+                <div
+                  key={item.id}
+                  className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                    selectedHistory.includes(item.id)
+                      ? 'border-purple-500 bg-purple-50'
+                      : 'border-gray-200 hover:border-purple-300 bg-white'
+                  }`}
+                  onClick={() => {
+                    if (compareMode) {
+                      toggleCompare(item.id);
+                    } else {
+                      viewHistoryItem(item);
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs font-semibold">
+                      {item.tool_type}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {new Date(item.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-700 line-clamp-2">
+                    {item.prompt?.substring(0, 80)}...
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Compare View */}
+      {compareMode && selectedHistory.length >= 2 && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-6xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white p-6 relative">
+              <button
+                onClick={() => {
+                  setCompareMode(false);
+                  setSelectedHistory([]);
+                }}
+                className="absolute top-4 right-4 text-white hover:bg-white/20 rounded-full p-2"
+              >
+                <X size={24} />
+              </button>
+              <h2 className="text-2xl font-bold flex items-center gap-3">
+                <GitCompare size={28} />
+                Compare Generations
+              </h2>
+              <p className="text-purple-100 mt-2">Side-by-side comparison of {selectedHistory.length} results</p>
+            </div>
+
+            <div className={`p-6 grid gap-6 ${selectedHistory.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+              {selectedHistory.map((historyId) => {
+                const item = history.find(h => h.id === historyId);
+                if (!item) return null;
+
+                return (
+                  <div key={item.id} className="border-2 border-purple-200 rounded-lg p-4">
+                    <div className="mb-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded text-xs font-semibold">
+                          {item.tool_type}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {new Date(item.created_at).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-600 mb-2">
+                        <strong>Prompt:</strong> {item.prompt?.substring(0, 100)}...
+                      </p>
+                    </div>
+                    <div className="bg-gray-50 p-3 rounded-lg max-h-96 overflow-y-auto">
+                      <pre className="text-xs whitespace-pre-wrap">
+                        {JSON.stringify(item.result, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content */}
+      <div className="flex-1">
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h2 className="text-3xl font-bold text-gray-800 mb-3">AI Writing Tools</h2>
+            <p className="text-gray-600">
+              Advanced AI-powered tools to help you write better, faster, and more consistently.
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setShowTemplates(!showTemplates)}
+              className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-colors ${
+                showTemplates
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+              }`}
+            >
+              <FileText size={20} />
+              Templates
+            </button>
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-colors ${
+                showHistory
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+              }`}
+            >
+              <History size={20} />
+              History
+            </button>
+          </div>
+        </div>
+
+        {/* Template Selector */}
+        {showTemplates && (
+          <div className="mb-6 bg-white rounded-xl shadow-lg border-2 border-purple-200 p-6">
+            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <FileText size={24} />
+              Prompt Templates
+            </h3>
+
+            <div className="mb-4">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Select Template
+              </label>
+              <select
+                value={selectedTemplate?.id || ''}
+                onChange={(e) => {
+                  const template = getAllTemplates().find(t => t.id === e.target.value);
+                  setSelectedTemplate(template);
+                  setTemplateVariables({});
+                }}
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-400 outline-none"
+              >
+                <option value="">-- Choose a template --</option>
+                {Object.entries(promptTemplates).map(([category, templates]) => (
+                  <optgroup key={category} label={category.toUpperCase()}>
+                    {templates.map(t => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} - {t.description}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+
+            {selectedTemplate && (
+              <>
+                <div className="mb-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                  <p className="text-sm text-gray-700">
+                    <strong>Template:</strong> {selectedTemplate.template}
+                  </p>
+                </div>
+
+                <div className="mb-4 grid grid-cols-2 gap-3">
+                  {selectedTemplate.variables.map(varName => (
+                    <div key={varName}>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1">
+                        {varName}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={`Enter ${varName.toLowerCase()}`}
+                        value={templateVariables[varName] || ''}
+                        onChange={(e) => setTemplateVariables({
+                          ...templateVariables,
+                          [varName]: e.target.value
+                        })}
+                        className="w-full p-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-purple-400 outline-none"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={applyTemplate}
+                    disabled={!Object.values(templateVariables).some(v => v.trim())}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+                  >
+                    Insert Template
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedTemplate(null);
+                      setTemplateVariables({});
+                    }}
+                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Tool Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+          {tools.map((tool) => (
+            <button
+              key={tool.id}
+              onClick={() => {
+                setActiveAITool(tool.id);
+                setAiPrompt('');
+                setAiResult(null);
+                setBatchResults([]);
+              }}
+              className={`p-6 bg-white rounded-xl shadow-md hover:shadow-xl transition-all border-2 ${
+                activeAITool === tool.id ? 'border-purple-500 ring-2 ring-purple-200' : 'border-gray-200'
+              } text-left group`}
+            >
+              <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${tool.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
+                <tool.icon className="text-white" size={24} />
+              </div>
+              <h3 className="text-xl font-bold text-gray-800 mb-2">{tool.title}</h3>
+              <p className="text-gray-600 text-sm">{tool.description}</p>
+            </button>
+          ))}
+        </div>
+
+        {/* Active Tool Panel */}
+        {activeAITool && (
+          <div className="bg-white rounded-xl shadow-lg border-2 border-purple-200 p-8">
+            <div className="flex items-center gap-3 mb-6">
+              <Sparkles className="text-purple-600" size={28} />
+              <h3 className="text-2xl font-bold text-gray-800">
+                {tools.find(t => t.id === activeAITool)?.title}
+              </h3>
+            </div>
+
+            {!aiResult && batchResults.length === 0 && (
             <>
               {tools.find(t => t.id === activeAITool)?.needsCharacterSelect && (
                 <div className="mb-4">
@@ -268,36 +658,135 @@ const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
                 </div>
               )}
 
-              <div className="flex gap-3">
-                <button
-                  onClick={() => handleGenerate(activeAITool)}
-                  disabled={
-                    generating ||
-                    (tools.find(t => t.id === activeAITool)?.needsPrompt !== false && !aiPrompt.trim()) ||
-                    (activeAITool === 'character-arc' && !selectedCharacter)
-                  }
-                  className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
-                >
-                  <Sparkles size={20} />
-                  {generating ? 'Generating...' : 'Generate with AI'}
-                </button>
-                <button
-                  onClick={() => {
-                    setActiveAITool(null);
-                    setAiPrompt('');
-                    setSelectedCharacter('');
-                    setSelectedPlotlines([]);
-                  }}
-                  className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold"
-                >
-                  Cancel
-                </button>
-              </div>
-            </>
-          )}
+              {/* Batch Mode Controls */}
+              <div className="mb-6 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                <label className="flex items-center gap-3 mb-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={batchMode}
+                    onChange={(e) => setBatchMode(e.target.checked)}
+                    className="w-5 h-5 text-purple-600 rounded focus:ring-2 focus:ring-purple-400"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Layers size={20} className="text-purple-600" />
+                    <span className="font-semibold text-gray-800">
+                      Batch Mode - Generate Multiple Variations
+                    </span>
+                  </div>
+                </label>
 
-          {/* Results */}
-          {aiResult && (
+                {batchMode && (
+                  <div className="ml-8 space-y-3">
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="range"
+                        min="2"
+                        max="5"
+                        value={batchQuantity}
+                        onChange={(e) => setBatchQuantity(parseInt(e.target.value))}
+                        className="flex-1"
+                      />
+                      <span className="px-3 py-1 bg-purple-600 text-white rounded-lg font-bold text-sm">
+                        {batchQuantity} variations
+                      </span>
+                    </div>
+                    <div className="flex items-start gap-2 text-sm">
+                      <Sparkles size={16} className="text-purple-600 mt-0.5" />
+                      <p className="text-purple-800">
+                        This will use <strong>{batchQuantity} AI requests</strong> and generate {batchQuantity} unique variations
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                  <button
+                    onClick={() => handleGenerate(activeAITool)}
+                    disabled={
+                      generating ||
+                      (tools.find(t => t.id === activeAITool)?.needsPrompt !== false && !aiPrompt.trim()) ||
+                      (activeAITool === 'character-arc' && !selectedCharacter)
+                    }
+                    className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+                  >
+                    <Sparkles size={20} />
+                    {generating ? 'Generating...' : batchMode ? `Generate ${batchQuantity} Variations` : 'Generate with AI'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setActiveAITool(null);
+                      setAiPrompt('');
+                      setSelectedCharacter('');
+                      setSelectedPlotlines([]);
+                      setBatchMode(false);
+                      setBatchResults([]);
+                    }}
+                    className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Batch Results */}
+            {batchResults.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <Layers size={24} className="text-purple-600" />
+                    {batchResults.length} Variations Generated
+                  </h4>
+                  <button
+                    onClick={() => setBatchResults([])}
+                    className="text-sm text-gray-600 hover:text-gray-800"
+                  >
+                    Clear All
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {batchResults.map((item, index) => (
+                    <div
+                      key={index}
+                      className="bg-gradient-to-br from-purple-50 to-blue-50 border-2 border-purple-200 rounded-lg p-4"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <h5 className="font-bold text-gray-800">Variation {item.id}</h5>
+                        <button
+                          onClick={() => acceptVariation(item.result)}
+                          className="px-3 py-1 bg-purple-600 text-white rounded text-sm font-semibold hover:bg-purple-700 transition-colors flex items-center gap-1"
+                        >
+                          <CheckCircle2 size={14} />
+                          Use This
+                        </button>
+                      </div>
+
+                      <div className="bg-white p-3 rounded border border-purple-200 max-h-64 overflow-y-auto">
+                        <pre className="text-xs whitespace-pre-wrap">
+                          {JSON.stringify(item.result, null, 2)}
+                        </pre>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleRegenerate}
+                    disabled={generating}
+                    className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-semibold disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <Sparkles size={20} />
+                    Regenerate All
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Results */}
+            {aiResult && (
             <div className="mt-6">
               {aiResult.type === 'plot-analysis' ? (
                 // Custom display for plot analysis
@@ -499,18 +988,19 @@ const AIToolsTab = ({ data, setData, onGenerate, generating }) => {
                 />
               )}
             </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
 
-      {/* Empty State */}
-      {!activeAITool && (
-        <div className="text-center py-12">
-          <Sparkles className="w-20 h-20 text-purple-300 mx-auto mb-4" />
-          <h3 className="text-2xl font-bold text-gray-700 mb-2">Select a Tool to Get Started</h3>
-          <p className="text-gray-500">Choose an AI tool above to enhance your writing</p>
-        </div>
-      )}
+        {/* Empty State */}
+        {!activeAITool && (
+          <div className="text-center py-12">
+            <Sparkles className="w-20 h-20 text-purple-300 mx-auto mb-4" />
+            <h3 className="text-2xl font-bold text-gray-700 mb-2">Select a Tool to Get Started</h3>
+            <p className="text-gray-500">Choose an AI tool above to enhance your writing</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

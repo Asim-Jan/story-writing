@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User } from 'lucide-react';
+import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User, Lock } from 'lucide-react';
 import { useBook } from '../hooks/useBook';
 import { getMediaUrl } from '../utils/mediaUrl';
+import { useSubscription } from '../contexts/SubscriptionContext';
+import UpgradeModal from './UpgradeModal';
 import AISuggestionBox from './AISuggestionBox';
 import AIHelper from './AIHelper';
 import AIToolsTab from './AIToolsTab';
@@ -24,16 +26,98 @@ import JobsTab from './JobsTab';
 import RPGGameTab from './RPGGameTab';
 import ErrorBoundary from './ErrorBoundary';
 import ProfilePage from './ProfilePage';
+import QuotaBanner from './QuotaBanner';
+import WarningToast from './WarningToast';
+import DailyDigestModal from './DailyDigestModal';
+import { useQuotaWarnings, shouldShowDailyDigest, markDailyDigestShown } from '../hooks/useQuotaWarnings';
 
 const FictionWritingStudio = ({ bookId, onBack }) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showProfile, setShowProfile] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });
 
   const { data, setData, loading, saving, error, saveBook, autosave } = useBook(bookId);
+  const { tier, hasFeature, loading: subLoading } = useSubscription();
+
+  // Quota tracking state
+  const [quotas, setQuotas] = useState(null);
+  const [showDailyDigest, setShowDailyDigest] = useState(false);
+  const [currentWarning, setCurrentWarning] = useState(null);
+  const { warnings, markWarningShown } = useQuotaWarnings(quotas);
+  const API_URL = import.meta.env.VITE_API_URL;
 
   const [searchTerm, setSearchTerm] = useState('');
   const [editingId, setEditingId] = useState(null);
+
+  // Fetch quotas on mount and set up refresh listener
+  useEffect(() => {
+    const fetchQuotas = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        const response = await fetch(`${API_URL}/api/users/quotas`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          credentials: 'include'
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setQuotas(data);
+
+          // Check if should show daily digest on first load
+          if (shouldShowDailyDigest(data)) {
+            setShowDailyDigest(true);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching quotas:', error);
+      }
+    };
+
+    fetchQuotas();
+
+    // Listen for quota refresh events
+    window.addEventListener('quotaRefresh', fetchQuotas);
+    return () => window.removeEventListener('quotaRefresh', fetchQuotas);
+  }, [API_URL]);
+
+  // Show warnings when they appear
+  useEffect(() => {
+    if (warnings.length > 0 && !currentWarning) {
+      // Show first warning
+      setCurrentWarning(warnings[0]);
+    }
+  }, [warnings, currentWarning]);
+
+  // Handle warning dismissal
+  const handleWarningDismiss = () => {
+    if (currentWarning) {
+      markWarningShown(currentWarning.id);
+      setCurrentWarning(null);
+
+      // Show next warning if any
+      const nextWarning = warnings.find(w => w.id !== currentWarning.id);
+      if (nextWarning) {
+        setTimeout(() => setCurrentWarning(nextWarning), 500);
+      }
+    }
+  };
+
+  // Handle daily digest close
+  const handleDigestClose = () => {
+    markDailyDigestShown();
+    setShowDailyDigest(false);
+  };
+
+  // Dispatch quota refresh event after successful save
+  const handleSaveBook = async () => {
+    await saveBook();
+    // Dispatch custom event to refresh quotas
+    window.dispatchEvent(new Event('quotaRefresh'));
+  };
 
   // Warn on navigation if unsaved changes
   useEffect(() => {
@@ -466,25 +550,25 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   };
 
   const tabs = [
-    { id: 'overview', icon: BookOpen, label: 'Overview' },
-    { id: 'metadata', icon: FileText, label: 'Book Info' },
-    ...(data.importedFrom ? [{ id: 'import', icon: Upload, label: 'Import Info' }] : []),
-    { id: 'story', icon: Book, label: 'Story' },
-    { id: 'characters', icon: Users, label: 'Characters' },
-    { id: 'locations', icon: MapPin, label: 'Locations' },
-    { id: 'plotlines', icon: Route, label: 'Plotlines' },
-    { id: 'timeline', icon: Clock, label: 'Timeline' },
-    { id: 'chapters', icon: FileText, label: 'Chapters' },
-    { id: 'notes', icon: FileText, label: 'Notes' },
-    { id: 'visuals', icon: Palette, label: 'Visuals' },
-    { id: 'audiobook', icon: Volume2, label: 'Audiobook' },
-    { id: 'comic', icon: Layout, label: 'Comic Mode' },
-    { id: 'transcripts', icon: Film, label: 'Transcripts' },
-    { id: 'animation', icon: Video, label: 'Animation Studio' },
-    { id: 'rpggame', icon: Swords, label: 'RPG Game' },
-    { id: 'continuity', icon: Shield, label: 'Continuity' },
-    { id: 'jobs', icon: Briefcase, label: 'Jobs' },
-    { id: 'ai-tools', icon: Wand2, label: 'AI Tools' }
+    { id: 'overview', icon: BookOpen, label: 'Overview', requiredFeature: null },
+    { id: 'metadata', icon: FileText, label: 'Book Info', requiredFeature: null },
+    ...(data.importedFrom ? [{ id: 'import', icon: Upload, label: 'Import Info', requiredFeature: null }] : []),
+    { id: 'story', icon: Book, label: 'Story', requiredFeature: null },
+    { id: 'characters', icon: Users, label: 'Characters', requiredFeature: null },
+    { id: 'locations', icon: MapPin, label: 'Locations', requiredFeature: null },
+    { id: 'plotlines', icon: Route, label: 'Plotlines', requiredFeature: null },
+    { id: 'timeline', icon: Clock, label: 'Timeline', requiredFeature: null },
+    { id: 'chapters', icon: FileText, label: 'Chapters', requiredFeature: null },
+    { id: 'notes', icon: FileText, label: 'Notes', requiredFeature: null },
+    { id: 'visuals', icon: Palette, label: 'Visuals', requiredFeature: 'media_generation', requiredTier: 'Basic' },
+    { id: 'audiobook', icon: Volume2, label: 'Audiobook', requiredFeature: 'media_generation', requiredTier: 'Basic' },
+    { id: 'comic', icon: Layout, label: 'Comic Mode', requiredFeature: 'media_generation', requiredTier: 'Basic' },
+    { id: 'transcripts', icon: Film, label: 'Transcripts', requiredFeature: null },
+    { id: 'animation', icon: Video, label: 'Animation Studio', requiredFeature: 'media_generation', requiredTier: 'Basic' },
+    { id: 'rpggame', icon: Swords, label: 'RPG Game', requiredFeature: 'export_rpg', requiredTier: 'Basic' },
+    { id: 'continuity', icon: Shield, label: 'Continuity', requiredFeature: 'continuity_check', requiredTier: 'Basic' },
+    { id: 'jobs', icon: Briefcase, label: 'Jobs', requiredFeature: null },
+    { id: 'ai-tools', icon: Wand2, label: 'AI Tools', requiredFeature: null }
   ];
 
   if (showProfile) {
@@ -528,31 +612,56 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         </div>
         
         <nav className="flex-1 overflow-y-auto p-4">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => {
-                setActiveTab(tab.id);
-                // Close sidebar on mobile after selection
-                if (window.innerWidth < 1024) {
-                  setSidebarOpen(false);
-                }
-              }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition-all ${
-                activeTab === tab.id
-                  ? 'bg-amber-200 text-amber-900 font-semibold'
-                  : 'text-amber-800 hover:bg-amber-100'
-              }`}
-            >
-              <tab.icon size={20} />
-              <span>{tab.label}</span>
-              {tab.id === 'characters' && data.characters.length > 0 && (
-                <span className="ml-auto bg-amber-300 text-amber-900 text-xs px-2 py-1 rounded-full">
-                  {data.characters.length}
-                </span>
-              )}
-            </button>
-          ))}
+          {tabs.map(tab => {
+            const isRestricted = tab.requiredFeature && !hasFeature(tab.requiredFeature);
+            const isActive = activeTab === tab.id;
+
+            return (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  if (isRestricted) {
+                    setUpgradeModalProps({
+                      featureName: tab.label,
+                      requiredTier: tab.requiredTier,
+                      requiredFeature: tab.requiredFeature
+                    });
+                    setShowUpgradeModal(true);
+                    return;
+                  }
+                  setActiveTab(tab.id);
+                  if (window.innerWidth < 1024) {
+                    setSidebarOpen(false);
+                  }
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition-all ${
+                  isActive
+                    ? 'bg-amber-200 text-amber-900 font-semibold'
+                    : isRestricted
+                    ? 'opacity-50 cursor-not-allowed text-amber-600 hover:opacity-60'
+                    : 'text-amber-800 hover:bg-amber-100'
+                }`}
+                title={isRestricted ? `Requires ${tab.requiredTier} subscription` : ''}
+              >
+                {isRestricted ? (
+                  <Lock size={20} className="text-red-500" />
+                ) : (
+                  <tab.icon size={20} />
+                )}
+                <span className="flex-1 text-left">{tab.label}</span>
+                {tab.id === 'characters' && data.characters.length > 0 && (
+                  <span className="ml-auto bg-amber-300 text-amber-900 text-xs px-2 py-1 rounded-full">
+                    {data.characters.length}
+                  </span>
+                )}
+                {isRestricted && (
+                  <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                    {tab.requiredTier}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
       </div>
 
@@ -611,7 +720,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               <User size={20} />
             </button>
             <button
-              onClick={saveBook}
+              onClick={handleSaveBook}
               disabled={saving}
               className="px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 text-sm sm:text-base"
             >
@@ -620,6 +729,9 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             </button>
           </div>
         </header>
+
+        {/* Quota Banner */}
+        <QuotaBanner onNavigateToProfile={() => setShowProfile(true)} />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           {activeTab === 'overview' && (
@@ -1115,6 +1227,33 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         description={selectedImage?.description}
         onClose={() => setSelectedImage(null)}
       />
+
+      {/* Upgrade Modal */}
+      <UpgradeModal
+        isOpen={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        featureName={upgradeModalProps.featureName}
+        requiredTier={upgradeModalProps.requiredTier}
+      />
+
+      {/* Quota Warning Toast */}
+      <WarningToast
+        warning={currentWarning}
+        onDismiss={handleWarningDismiss}
+        onNavigate={() => setShowProfile(true)}
+      />
+
+      {/* Daily Digest Modal */}
+      {showDailyDigest && (
+        <DailyDigestModal
+          quotas={quotas}
+          onClose={handleDigestClose}
+          onNavigateToProfile={() => {
+            setShowProfile(true);
+            handleDigestClose();
+          }}
+        />
+      )}
     </div>
   );
 };

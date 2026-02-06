@@ -1,13 +1,153 @@
-import React, { useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock, Users, MapPin, BookOpen, Sparkles, RefreshCw, TrendingUp, Zap } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { AlertTriangle, CheckCircle2, Clock, Users, MapPin, BookOpen, Sparkles, RefreshCw, TrendingUp, Zap, History, ChevronDown, ChevronUp, Check } from 'lucide-react';
+import QuickFixModal from './QuickFixModal';
 
-const ContinuityTab = ({ data, onAnalyze, analyzing }) => {
+const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
   const [analysis, setAnalysis] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [history, setHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Focus areas state
+  const [focusAreas, setFocusAreas] = useState([]);
+
+  // Chapter selection state
+  const [showChapterSelector, setShowChapterSelector] = useState(false);
+  const [selectedChapters, setSelectedChapters] = useState([]);
+
+  // Quick fix modal state
+  const [fixModalOpen, setFixModalOpen] = useState(false);
+  const [selectedIssue, setSelectedIssue] = useState(null);
+
+  const API_URL = import.meta.env.VITE_API_URL;
+
+  // Fetch history on mount
+  useEffect(() => {
+    if (data.id) {
+      fetchHistory();
+    }
+  }, [data.id]);
+
+  const fetchHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/books/${data.id}/continuity-history?limit=10`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setHistory(result.history);
+      }
+    } catch (error) {
+      console.error('Error fetching history:', error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
 
   const handleAnalyze = async () => {
-    const result = await onAnalyze();
-    setAnalysis(result);
+    const chapterIds = showChapterSelector && selectedChapters.length > 0 ? selectedChapters : [];
+    const result = await onAnalyze(data, focusAreas, chapterIds);
+    if (result) {
+      setAnalysis(result);
+      // Refresh history after new analysis
+      fetchHistory();
+    }
+  };
+
+  const handleViewHistoryItem = (item) => {
+    setAnalysis(item.analysis_result);
+    setSelectedHistoryItem(item);
+    setShowHistory(false);
+  };
+
+  const handleCompareWithHistory = (item) => {
+    // Simple comparison: show both side by side
+    alert(`Current Score: ${analysis?.summary?.score || 0}%\nPrevious Score: ${item.score}%\n\nImprovement: ${(analysis?.summary?.score || 0) - item.score}%`);
+  };
+
+  const toggleFocusArea = (area) => {
+    setFocusAreas(prev =>
+      prev.includes(area)
+        ? prev.filter(a => a !== area)
+        : [...prev, area]
+    );
+  };
+
+  const toggleChapter = (chapterId) => {
+    setSelectedChapters(prev =>
+      prev.includes(chapterId)
+        ? prev.filter(id => id !== chapterId)
+        : [...prev, chapterId]
+    );
+  };
+
+  const applyFix = async (editedSuggestion) => {
+    const issue = selectedIssue;
+    if (!issue) return;
+
+    try {
+      // Strategy 1: Apply to chapter if location mentions chapter
+      if (issue.location?.match(/Chapter (\d+)/)) {
+        const chapterNum = issue.location.match(/Chapter (\d+)/)?.[1];
+        const chapter = data.chapters.find(ch => ch.number == chapterNum);
+
+        if (chapter) {
+          setData(prev => ({
+            ...prev,
+            chapters: prev.chapters.map(ch =>
+              ch.id === chapter.id
+                ? { ...ch, summary: `${ch.summary}\n\n[Continuity Fix]: ${editedSuggestion}` }
+                : ch
+            )
+          }));
+        }
+      }
+
+      // Strategy 2: Apply to character if character category
+      if (issue.category === 'character') {
+        const charName = issue.location?.match(/Character: (.+)/)?.[1];
+        const character = data.characters.find(c => c.name === charName);
+
+        if (character) {
+          setData(prev => ({
+            ...prev,
+            characters: prev.characters.map(ch =>
+              ch.id === character.id
+                ? { ...ch, arc: `${ch.arc}\n\n[Continuity Fix]: ${editedSuggestion}` }
+                : ch
+            )
+          }));
+        }
+      }
+
+      // Strategy 3: Always add to notes as reference
+      const newNote = {
+        id: Date.now(),
+        title: `Continuity Fix: ${issue.title}`,
+        content: `**Issue:** ${issue.description}\n\n**Location:** ${issue.location}\n\n**Fix Applied:**\n${editedSuggestion}`,
+        category: 'continuity',
+        createdAt: new Date().toISOString()
+      };
+
+      setData(prev => ({
+        ...prev,
+        notes: [...(prev.notes || []), newNote]
+      }));
+
+      setFixModalOpen(false);
+      setSelectedIssue(null);
+
+      alert('Fix applied! Check the relevant chapter/character and your Notes tab for details.');
+    } catch (error) {
+      console.error('Error applying fix:', error);
+      alert('Failed to apply fix. Please try again.');
+    }
   };
 
   const getSeverityColor = (severity) => {
@@ -52,24 +192,152 @@ const ContinuityTab = ({ data, onAnalyze, analyzing }) => {
     { id: 'style', label: 'Style', icon: TrendingUp }
   ];
 
+  const focusAreaOptions = ['timeline', 'characters', 'locations', 'plot', 'style'];
+
   return (
     <div className="max-w-6xl mx-auto">
       {/* Header */}
-      <div className="mb-8">
-        <h2 className="text-3xl font-bold text-gray-800 mb-3">AI Writing Continuity</h2>
-        <p className="text-gray-600">Analyze your story for consistency, plot holes, and style issues</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-gray-800 mb-3">AI Writing Continuity</h2>
+          <p className="text-gray-600">Analyze your story for consistency, plot holes, and style issues</p>
+        </div>
+        <button
+          onClick={() => setShowHistory(!showHistory)}
+          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 font-medium"
+        >
+          <History size={20} />
+          History ({history.length})
+          {showHistory ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
       </div>
 
-      {/* Analyze Button */}
+      {/* History Sidebar */}
+      {showHistory && (
+        <div className="bg-white rounded-lg border-2 border-gray-200 p-4 mb-6">
+          <h3 className="font-bold text-lg mb-4">Analysis History</h3>
+          {loadingHistory ? (
+            <p className="text-gray-500">Loading...</p>
+          ) : history.length === 0 ? (
+            <p className="text-gray-500">No previous analyses yet.</p>
+          ) : (
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {history.map((item) => (
+                <div
+                  key={item.id}
+                  className={`p-3 rounded-lg border-2 cursor-pointer transition-colors ${
+                    selectedHistoryItem?.id === item.id
+                      ? 'border-purple-500 bg-purple-50'
+                      : 'border-gray-200 hover:border-purple-300 hover:bg-gray-50'
+                  }`}
+                  onClick={() => handleViewHistoryItem(item)}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium text-gray-700">
+                      {new Date(item.created_at).toLocaleDateString()} {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                    <span className="text-lg font-bold text-purple-600">{item.score}%</span>
+                  </div>
+                  {item.focus_areas && item.focus_areas.length > 0 && (
+                    <p className="text-xs text-gray-500">Focus: {item.focus_areas.join(', ')}</p>
+                  )}
+                  {item.chapter_ids && item.chapter_ids.length > 0 && (
+                    <p className="text-xs text-gray-500">Chapters: {item.chapter_ids.length} selected</p>
+                  )}
+                  {analysis && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCompareWithHistory(item);
+                      }}
+                      className="mt-2 text-xs text-blue-600 hover:text-blue-800 underline"
+                    >
+                      Compare with current
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Analysis Options */}
       <div className="bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg p-6 mb-6 border border-purple-200">
+        {/* Focus Areas */}
+        <div className="mb-4">
+          <h4 className="font-semibold text-gray-800 mb-2">Focus Areas (optional):</h4>
+          <div className="flex flex-wrap gap-2">
+            {focusAreaOptions.map(area => (
+              <button
+                key={area}
+                onClick={() => toggleFocusArea(area)}
+                className={`px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors ${
+                  focusAreas.includes(area)
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-white text-gray-700 border border-gray-300 hover:border-purple-400'
+                }`}
+              >
+                {focusAreas.includes(area) && <Check size={14} />}
+                {getCategoryIcon(area)}
+                <span className="capitalize text-sm">{area}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-gray-600 mt-2">Select specific areas to focus the analysis</p>
+        </div>
+
+        {/* Chapter Selection */}
+        <div className="mb-4">
+          <label className="flex items-center gap-2 cursor-pointer mb-2">
+            <input
+              type="checkbox"
+              checked={showChapterSelector}
+              onChange={(e) => {
+                setShowChapterSelector(e.target.checked);
+                if (!e.target.checked) setSelectedChapters([]);
+              }}
+              className="w-4 h-4"
+            />
+            <span className="font-semibold text-gray-800">Analyze specific chapters only</span>
+          </label>
+
+          {showChapterSelector && (
+            <div className="bg-white rounded-lg p-3 border border-gray-300 max-h-40 overflow-y-auto">
+              {data.chapters.length === 0 ? (
+                <p className="text-gray-500 text-sm">No chapters available</p>
+              ) : (
+                <div className="space-y-1">
+                  {data.chapters.map(ch => (
+                    <label key={ch.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded">
+                      <input
+                        type="checkbox"
+                        checked={selectedChapters.includes(ch.id?.toString())}
+                        onChange={() => toggleChapter(ch.id?.toString())}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm">
+                        Chapter {ch.number}: {ch.title}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Run Analysis Button */}
         <div className="flex items-center justify-between">
           <div className="flex-1">
             <h3 className="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
               <Sparkles className="text-purple-600" size={24} />
               Story Analysis
             </h3>
-            <p className="text-gray-700">
-              Run AI analysis to detect inconsistencies, timeline conflicts, character issues, and style problems
+            <p className="text-gray-700 text-sm">
+              {focusAreas.length > 0 && `Focusing on: ${focusAreas.join(', ')}. `}
+              {showChapterSelector && selectedChapters.length > 0 && `${selectedChapters.length} chapters selected. `}
+              {focusAreas.length === 0 && !showChapterSelector && 'Full book analysis'}
             </p>
           </div>
           <button
@@ -99,80 +367,65 @@ const ContinuityTab = ({ data, onAnalyze, analyzing }) => {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <div className="bg-white rounded-lg shadow-sm border-2 border-green-200 p-4">
               <div className="flex items-center justify-between mb-2">
-                <CheckCircle2 className="text-green-600" size={32} />
-                <span className="text-3xl font-bold text-green-600">{analysis.summary?.passed || 0}</span>
+                <span className="text-sm font-medium text-gray-600">Passed</span>
+                <CheckCircle2 className="text-green-600" size={20} />
               </div>
-              <p className="text-sm font-semibold text-gray-700">Passed Checks</p>
+              <p className="text-3xl font-bold text-green-600">{analysis.summary?.passed || 0}</p>
             </div>
 
             <div className="bg-white rounded-lg shadow-sm border-2 border-yellow-200 p-4">
               <div className="flex items-center justify-between mb-2">
-                <AlertTriangle className="text-yellow-600" size={32} />
-                <span className="text-3xl font-bold text-yellow-600">{analysis.summary?.warnings || 0}</span>
+                <span className="text-sm font-medium text-gray-600">Warnings</span>
+                <AlertTriangle className="text-yellow-600" size={20} />
               </div>
-              <p className="text-sm font-semibold text-gray-700">Warnings</p>
+              <p className="text-3xl font-bold text-yellow-600">{analysis.summary?.warnings || 0}</p>
             </div>
 
             <div className="bg-white rounded-lg shadow-sm border-2 border-red-200 p-4">
               <div className="flex items-center justify-between mb-2">
-                <AlertTriangle className="text-red-600" size={32} />
-                <span className="text-3xl font-bold text-red-600">{analysis.summary?.critical || 0}</span>
+                <span className="text-sm font-medium text-gray-600">Critical</span>
+                <AlertTriangle className="text-red-600" size={20} />
               </div>
-              <p className="text-sm font-semibold text-gray-700">Critical Issues</p>
+              <p className="text-3xl font-bold text-red-600">{analysis.summary?.critical || 0}</p>
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border-2 border-indigo-200 p-4">
+            <div className="bg-white rounded-lg shadow-sm border-2 border-purple-200 p-4">
               <div className="flex items-center justify-between mb-2">
-                <TrendingUp className="text-indigo-600" size={32} />
-                <span className="text-3xl font-bold text-indigo-600">{analysis.summary?.score || 0}%</span>
+                <span className="text-sm font-medium text-gray-600">Quality Score</span>
+                <TrendingUp className="text-purple-600" size={20} />
               </div>
-              <p className="text-sm font-semibold text-gray-700">Quality Score</p>
+              <p className="text-3xl font-bold text-purple-600">{analysis.summary?.score || 0}%</p>
             </div>
           </div>
 
           {/* Category Filters */}
-          <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
-            {categories.map((cat) => {
-              const Icon = cat.icon;
-              const count = cat.id === 'all'
-                ? analysis.issues?.length || 0
-                : analysis.issues?.filter(i => i.category === cat.id).length || 0;
-
-              return (
-                <button
-                  key={cat.id}
-                  onClick={() => setSelectedCategory(cat.id)}
-                  className={`px-4 py-2 rounded-lg font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${
-                    selectedCategory === cat.id
-                      ? 'bg-purple-600 text-white shadow-lg'
-                      : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                  }`}
-                >
-                  <Icon size={18} />
-                  {cat.label}
-                  <span className={`px-2 py-0.5 rounded-full text-xs ${
-                    selectedCategory === cat.id
-                      ? 'bg-purple-700 text-white'
-                      : 'bg-gray-200 text-gray-700'
-                  }`}>
-                    {count}
+          <div className="flex flex-wrap gap-2 mb-6">
+            {categories.map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategory(cat.id)}
+                className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+                  selectedCategory === cat.id
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-white text-gray-700 border border-gray-300 hover:border-purple-400'
+                }`}
+              >
+                <cat.icon size={18} />
+                {cat.label}
+                {cat.id !== 'all' && (
+                  <span className="ml-1 bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full text-xs font-bold">
+                    {analysis.issues?.filter(i => i.category === cat.id).length || 0}
                   </span>
-                </button>
-              );
-            })}
+                )}
+              </button>
+            ))}
           </div>
 
           {/* Issues List */}
           <div className="space-y-4">
             {filteredIssues.length === 0 ? (
-              <div className="bg-green-50 border-2 border-green-200 rounded-lg p-8 text-center">
-                <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto mb-4" />
-                <h3 className="text-xl font-bold text-green-800 mb-2">
-                  {selectedCategory === 'all' ? 'No Issues Found!' : `No ${selectedCategory} issues found!`}
-                </h3>
-                <p className="text-green-700">
-                  Your story looks consistent in this area. Keep up the great work!
-                </p>
+              <div className="text-center py-12 text-gray-500">
+                No issues found in this category
               </div>
             ) : (
               filteredIssues.map((issue, index) => (
@@ -214,7 +467,16 @@ const ContinuityTab = ({ data, onAnalyze, analyzing }) => {
                           <p className="text-sm font-semibold text-gray-700 mb-1">
                             💡 Suggestion:
                           </p>
-                          <p className="text-sm text-gray-800">{issue.suggestion}</p>
+                          <p className="text-sm text-gray-800 mb-2">{issue.suggestion}</p>
+                          <button
+                            onClick={() => {
+                              setSelectedIssue(issue);
+                              setFixModalOpen(true);
+                            }}
+                            className="text-sm bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 transition-colors font-medium"
+                          >
+                            Apply Fix
+                          </button>
                         </div>
                       )}
                     </div>
@@ -257,6 +519,18 @@ const ContinuityTab = ({ data, onAnalyze, analyzing }) => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Quick Fix Modal */}
+      {fixModalOpen && (
+        <QuickFixModal
+          issue={selectedIssue}
+          onApply={applyFix}
+          onCancel={() => {
+            setFixModalOpen(false);
+            setSelectedIssue(null);
+          }}
+        />
       )}
     </div>
   );

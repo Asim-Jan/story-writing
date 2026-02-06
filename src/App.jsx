@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AudioPlayerProvider } from './contexts/AudioPlayerContext';
 import { ThemeProvider } from './contexts/ThemeContext';
+import { SubscriptionProvider } from './contexts/SubscriptionContext';
 import FictionWritingStudio from './components/FictionWritingStudio';
 import BooksList from './components/BooksList';
 import AuthPage from './components/AuthPage';
@@ -28,6 +29,19 @@ function AppContent() {
       }
     }
   }, [isAuthenticated, user]);
+
+  // Listen for book creation events to update the bookId after first save
+  useEffect(() => {
+    const handleBookCreated = (event) => {
+      const { bookId } = event.detail;
+      if (bookId) {
+        setSelectedBookId(bookId);
+      }
+    };
+
+    window.addEventListener('bookCreated', handleBookCreated);
+    return () => window.removeEventListener('bookCreated', handleBookCreated);
+  }, []);
 
   const handleSelectBook = (bookId) => {
     setSelectedBookId(bookId);
@@ -100,9 +114,11 @@ function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <AudioPlayerProvider>
-          <AppContent />
-        </AudioPlayerProvider>
+        <SubscriptionProvider>
+          <AudioPlayerProvider>
+            <AppContent />
+          </AudioPlayerProvider>
+        </SubscriptionProvider>
       </AuthProvider>
     </ThemeProvider>
   );

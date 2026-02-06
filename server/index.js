@@ -54,6 +54,7 @@ import { getPool } from './db/postgres.js';
 import * as stripeService from './services/stripeService.js';
 import * as revenueAnalytics from './services/revenueAnalytics.js';
 import * as engagementAnalytics from './services/engagementAnalytics.js';
+import * as costTracking from './services/costTracking.js';
 import { toCSV, setCSVHeaders, formatDateForCSV } from './utils/csvExporter.js';
 import {
   imageQueue,
@@ -2480,6 +2481,106 @@ app.get('/api/admin/analytics/engagement',
   }
 );
 
+// ============ AI COST TRACKING ENDPOINTS ============
+
+// GET /api/admin/analytics/ai-costs - Get system-wide AI cost analytics (admin only)
+app.get('/api/admin/analytics/ai-costs',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { start_date, end_date } = req.query;
+
+      // Default to last 30 days
+      const endDate = end_date || new Date().toISOString().split('T')[0];
+      const startDate = start_date || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      const analytics = await costTracking.getSystemCostAnalytics(startDate, endDate);
+
+      res.json({
+        summary: analytics.summary,
+        daily_stats: analytics.dailyStats
+      });
+    } catch (error) {
+      console.error('AI cost analytics error:', error);
+      res.status(500).json({ error: 'Failed to fetch AI cost analytics' });
+    }
+  }
+);
+
+// GET /api/admin/analytics/top-users-by-cost - Get top users by AI costs (admin only)
+app.get('/api/admin/analytics/top-users-by-cost',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { days = 30, limit = 20 } = req.query;
+
+      const topUsers = await costTracking.getTopUsersByCost(parseInt(days), parseInt(limit));
+
+      res.json({ topUsers });
+    } catch (error) {
+      console.error('Top users by cost error:', error);
+      res.status(500).json({ error: 'Failed to fetch top users by cost' });
+    }
+  }
+);
+
+// GET /api/admin/analytics/cost-by-model - Get cost breakdown by AI model (admin only)
+app.get('/api/admin/analytics/cost-by-model',
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { days = 30 } = req.query;
+
+      const modelBreakdown = await costTracking.getCostByModel(parseInt(days));
+
+      res.json({ modelBreakdown });
+    } catch (error) {
+      console.error('Cost by model error:', error);
+      res.status(500).json({ error: 'Failed to fetch cost breakdown by model' });
+    }
+  }
+);
+
+// GET /api/users/ai-costs - Get user's own AI cost history
+app.get('/api/users/ai-costs', authenticateToken, async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+
+    const endDate = new Date().toISOString().split('T')[0];
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const [dailyHistory, monthTotals] = await Promise.all([
+      costTracking.getUserCostSummary(req.user.userId, startDate, endDate),
+      costTracking.getUserMonthTotals(req.user.userId)
+    ]);
+
+    res.json({
+      dailyHistory,
+      monthToDate: monthTotals
+    });
+  } catch (error) {
+    console.error('User AI costs error:', error);
+    res.status(500).json({ error: 'Failed to fetch AI costs' });
+  }
+});
+
+// GET /api/users/ai-costs/by-tool - Get user's cost breakdown by tool type
+app.get('/api/users/ai-costs/by-tool', authenticateToken, async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+
+    const toolBreakdown = await costTracking.getUserCostByTool(req.user.userId, parseInt(days));
+
+    res.json({ toolBreakdown });
+  } catch (error) {
+    console.error('User cost by tool error:', error);
+    res.status(500).json({ error: 'Failed to fetch cost breakdown by tool' });
+  }
+});
+
 // ============ CSV EXPORT ENDPOINTS ============
 
 // GET /api/admin/export/users - Export users to CSV
@@ -3391,6 +3492,16 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
 
     const responseText = completion.choices[0].message.content;
 
+    // Extract token usage from OpenAI response
+    const usage = completion.usage || {};
+    const promptTokens = usage.prompt_tokens || 0;
+    const completionTokens = usage.completion_tokens || 0;
+    const totalTokens = usage.total_tokens || (promptTokens + completionTokens);
+
+    // Calculate cost
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const costData = await costTracking.calculateTextCost(model, promptTokens, completionTokens);
+
     // Clean the response
     const cleanedText = responseText
       .replace(/```json\n?/g, '')
@@ -3398,6 +3509,32 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       .trim();
 
     const generatedData = JSON.parse(cleanedText);
+
+    // Save generation to history database with token usage and cost
+    try {
+      await pool.query(`
+        INSERT INTO ai_generations
+        (user_id, book_id, tool_type, prompt, result, model,
+         prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `, [
+        req.user.userId,
+        context?.bookId || null,
+        type,
+        prompt,
+        JSON.stringify(generatedData),
+        model,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        costData.totalCost
+      ]);
+
+      console.log(`AI Generation tracked: ${totalTokens} tokens, $${costData.totalCost.toFixed(6)} cost`);
+    } catch (dbError) {
+      console.error('Error saving AI generation to history:', dbError);
+      // Don't fail the request if DB save fails
+    }
 
     res.json(generatedData);
   } catch (error) {
