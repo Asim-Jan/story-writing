@@ -2265,166 +2265,6 @@ app.post('/api/admin/subscriptions/:subscriptionId/cancel',
   }
 );
 
-// Reactivate subscription (remove cancel_at_period_end)
-app.post('/api/admin/subscriptions/:subscriptionId/reactivate',
-  authenticateToken,
-  requireAdmin,
-  preventSelfModification,
-  async (req, res) => {
-    try {
-      const { subscriptionId } = req.params;
-
-      // Get subscription
-      const subResult = await getPool().query(
-        'SELECT * FROM subscriptions WHERE id = $1',
-        [subscriptionId]
-      );
-
-      if (subResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Subscription not found' });
-      }
-
-      const subscription = subResult.rows[0];
-
-      if (!subscription.cancel_at_period_end) {
-        return res.status(400).json({ error: 'Subscription is not scheduled for cancellation' });
-      }
-
-      // Reactivate in Stripe
-      await stripeService.reactivateSubscription(subscription.stripe_subscription_id);
-
-      // Update database
-      await getPool().query(
-        `UPDATE subscriptions
-         SET cancel_at_period_end = false, cancellation_reason = NULL,
-             canceled_by_admin_id = NULL, updated_at = NOW()
-         WHERE id = $1`,
-        [subscriptionId]
-      );
-
-      // Log action
-      await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          req.user.userId,
-          'reactivate_subscription',
-          subscription.user_id,
-          JSON.stringify({ subscription_id: subscriptionId })
-        ]
-      );
-
-      res.json({
-        message: 'Subscription reactivated successfully',
-        subscription: { ...subscription, cancel_at_period_end: false }
-      });
-    } catch (error) {
-      console.error('Error reactivating subscription:', error);
-      res.status(500).json({ error: 'Failed to reactivate subscription' });
-    }
-  }
-);
-
-// Change subscription tier (upgrade/downgrade)
-app.put('/api/admin/subscriptions/:subscriptionId/tier',
-  authenticateToken,
-  requireAdmin,
-  preventSelfModification,
-  async (req, res) => {
-    try {
-      const { subscriptionId } = req.params;
-      const { new_tier, reason } = req.body;
-
-      if (!new_tier || !['basic', 'premium'].includes(new_tier)) {
-        return res.status(400).json({ error: 'Invalid tier. Must be basic or premium.' });
-      }
-
-      if (!reason) {
-        return res.status(400).json({ error: 'Reason is required for tier changes' });
-      }
-
-      // Get subscription
-      const subResult = await getPool().query(
-        'SELECT * FROM subscriptions WHERE id = $1',
-        [subscriptionId]
-      );
-
-      if (subResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Subscription not found' });
-      }
-
-      const subscription = subResult.rows[0];
-
-      if (subscription.tier === new_tier) {
-        return res.status(400).json({ error: `Subscription is already on ${new_tier} tier` });
-      }
-
-      // Get new price ID
-      const newPriceId = stripeService.getPriceIdForTier(new_tier);
-
-      // Update in Stripe (with proration)
-      await stripeService.updateSubscription(subscription.stripe_subscription_id, newPriceId);
-
-      // Update database
-      await getPool().query(
-        `UPDATE subscriptions
-         SET tier = $1, updated_at = NOW()
-         WHERE id = $2`,
-        [new_tier, subscriptionId]
-      );
-
-      // Update user tier
-      await getPool().query(
-        'UPDATE users SET tier = $1, updated_at = NOW() WHERE id = $2',
-        [new_tier, subscription.user_id]
-      );
-
-      // Update quotas to match new tier
-      const tierQuotas = getTierQuotas(new_tier);
-      await getPool().query(
-        `UPDATE quotas
-         SET max_books = $1, max_words = $2, max_chapters = $3,
-             max_ai_requests_per_day = $4, max_concurrent_jobs = $5,
-             custom_quotas = false, updated_at = NOW()
-         WHERE user_id = $6`,
-        [
-          tierQuotas.max_books,
-          tierQuotas.max_words,
-          tierQuotas.max_chapters,
-          tierQuotas.max_ai_requests_per_day,
-          tierQuotas.max_concurrent_jobs,
-          subscription.user_id
-        ]
-      );
-
-      // Log action
-      await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          req.user.userId,
-          'change_subscription_tier',
-          subscription.user_id,
-          JSON.stringify({
-            subscription_id: subscriptionId,
-            old_tier: subscription.tier,
-            new_tier,
-            reason
-          })
-        ]
-      );
-
-      res.json({
-        message: `Subscription tier changed from ${subscription.tier} to ${new_tier}`,
-        subscription: { ...subscription, tier: new_tier }
-      });
-    } catch (error) {
-      console.error('Error changing subscription tier:', error);
-      res.status(500).json({ error: 'Failed to change subscription tier' });
-    }
-  }
-);
-
 // Get all payments with filtering
 app.get('/api/admin/payments',
   authenticateToken,
@@ -2499,97 +2339,6 @@ app.get('/api/admin/payments',
     } catch (error) {
       console.error('Error fetching payments:', error);
       res.status(500).json({ error: 'Failed to fetch payments' });
-    }
-  }
-);
-
-// Refund a payment
-app.post('/api/admin/payments/:paymentId/refund',
-  authenticateToken,
-  requireAdmin,
-  preventSelfModification,
-  async (req, res) => {
-    try {
-      const { paymentId } = req.params;
-      const { amount, reason } = req.body;
-
-      if (!reason) {
-        return res.status(400).json({ error: 'Refund reason is required' });
-      }
-
-      // Get payment
-      const paymentResult = await getPool().query(
-        'SELECT * FROM payments WHERE id = $1',
-        [paymentId]
-      );
-
-      if (paymentResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Payment not found' });
-      }
-
-      const payment = paymentResult.rows[0];
-
-      if (payment.status !== 'succeeded') {
-        return res.status(400).json({ error: 'Can only refund successful payments' });
-      }
-
-      if (payment.refunded) {
-        return res.status(400).json({ error: 'Payment has already been refunded' });
-      }
-
-      // Validate amount if provided
-      let refundAmount = null;
-      if (amount) {
-        refundAmount = parseInt(amount);
-        if (refundAmount <= 0 || refundAmount > payment.amount) {
-          return res.status(400).json({ error: 'Invalid refund amount' });
-        }
-      }
-
-      // Create refund in Stripe
-      const refund = await stripeService.createRefund(
-        payment.stripe_payment_intent_id,
-        refundAmount,
-        reason
-      );
-
-      // Update payment in database
-      await getPool().query(
-        `UPDATE payments
-         SET refunded = true, refund_amount = $1, refund_reason = $2,
-             refunded_at = NOW(), updated_at = NOW()
-         WHERE id = $3`,
-        [refund.amount, reason, paymentId]
-      );
-
-      // Log action
-      await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          req.user.userId,
-          'refund_payment',
-          payment.user_id,
-          JSON.stringify({
-            payment_id: paymentId,
-            amount: refund.amount,
-            original_amount: payment.amount,
-            reason
-          })
-        ]
-      );
-
-      res.json({
-        message: refundAmount ? 'Partial refund processed' : 'Full refund processed',
-        refund: {
-          id: refund.id,
-          amount: refund.amount,
-          status: refund.status
-        }
-      });
-    } catch (error) {
-      console.error('Error processing refund:', error);
-      res.status(500).json({ error: 'Failed to process refund' });
     }
   }
 );
@@ -3413,9 +3162,6 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
 
       const book = await updateBook(id, req.user.userId, updates, expectedVersion);
 
-      // Update quota usage after successful book update
-      await updateQuotaUsage(req.user.userId);
-
       // Enhanced debug logging to identify which field is undefined
       console.log('Book PUT response - all array fields:', {
         chapters: { type: typeof book?.chapters, isArray: Array.isArray(book?.chapters), length: book?.chapters?.length },
@@ -3802,228 +3548,6 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
     }
 
     res.status(500).json({ error: 'Failed to generate content', details: error.message });
-  }
-});
-
-// Get AI generation history
-app.get('/api/ai-generations', authenticateToken, async (req, res) => {
-  try {
-    const { bookId, toolType, limit = 20, offset = 0 } = req.query;
-
-    let query = `
-      SELECT
-        id,
-        tool_type,
-        prompt,
-        result,
-        model,
-        created_at
-      FROM ai_generations
-      WHERE user_id = $1
-    `;
-    const params = [req.user.userId];
-
-    if (bookId) {
-      query += ` AND book_id = $${params.length + 1}`;
-      params.push(bookId);
-    }
-
-    if (toolType) {
-      query += ` AND tool_type = $${params.length + 1}`;
-      params.push(toolType);
-    }
-
-    query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(parseInt(limit), parseInt(offset));
-
-    const result = await pool.query(query, params);
-
-    // Get total count
-    let countQuery = 'SELECT COUNT(*) FROM ai_generations WHERE user_id = $1';
-    const countParams = [req.user.userId];
-    if (bookId) {
-      countQuery += ` AND book_id = $${countParams.length + 1}`;
-      countParams.push(bookId);
-    }
-    if (toolType) {
-      countQuery += ` AND tool_type = $${countParams.length + 1}`;
-      countParams.push(toolType);
-    }
-
-    const countResult = await pool.query(countQuery, countParams);
-
-    res.json({
-      history: result.rows,
-      total: parseInt(countResult.rows[0].count)
-    });
-  } catch (error) {
-    console.error('Error fetching AI generation history:', error);
-    res.status(500).json({ error: 'Failed to fetch history', details: error.message });
-  }
-});
-
-// Delete an AI generation
-app.delete('/api/ai-generations/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      'DELETE FROM ai_generations WHERE id = $1 AND user_id = $2 RETURNING id',
-      [id, req.user.userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Generation not found' });
-    }
-
-    res.json({ success: true, message: 'Generation deleted' });
-  } catch (error) {
-    console.error('Error deleting AI generation:', error);
-    res.status(500).json({ error: 'Failed to delete generation', details: error.message });
-  }
-});
-
-// Batch AI Generation endpoint
-app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) => {
-  try {
-    const { type, prompt, context, quantity = 3 } = req.body;
-
-    if (!type || !prompt) {
-      return res.status(400).json({ error: 'Type and prompt are required' });
-    }
-
-    // Validate quantity (2-5)
-    const validQuantity = Math.min(Math.max(parseInt(quantity), 2), 5);
-
-    // Get user's OpenAI client
-    let userOpenai;
-    try {
-      userOpenai = await getUserOpenAI(req.user.userId);
-    } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
-        });
-      }
-      throw error;
-    }
-
-    // Check if user has enough AI quota remaining
-    const quotas = await pool.query(
-      'SELECT ai_requests_today, max_ai_requests_per_day FROM quotas WHERE user_id = $1',
-      [req.user.userId]
-    );
-
-    if (quotas.rows.length > 0) {
-      const { ai_requests_today, max_ai_requests_per_day } = quotas.rows[0];
-      if (ai_requests_today + validQuantity > max_ai_requests_per_day) {
-        return res.status(429).json({
-          error: 'Not enough AI requests remaining',
-          available: max_ai_requests_per_day - ai_requests_today,
-          needed: validQuantity,
-          message: `You need ${validQuantity} AI requests but only have ${max_ai_requests_per_day - ai_requests_today} remaining today.`
-        });
-      }
-    }
-
-    // Build context string
-    let contextString = '';
-    if (context) {
-      if (context.bookTitle) contextString += `\n\nBOOK CONTEXT:\nTitle: ${context.bookTitle}`;
-      if (context.overview) contextString += `\nOverview: ${context.overview}`;
-      if (context.characters?.length > 0) {
-        contextString += `\n\nExisting Characters: ${context.characters.map(c => c.name + (c.role ? ` (${c.role})` : '')).join(', ')}`;
-      }
-    }
-
-    // Simple system prompts by type
-    const getSystemPrompt = (type) => {
-      const base = 'You are helping a writer create content. Respond ONLY with valid JSON (no markdown, no backticks).';
-      switch (type) {
-        case 'dialogue':
-          return base + ' Format: {"dialogue": "...", "context": "..."}';
-        case 'character':
-          return base + ' Format: {"name": "...", "role": "...", "background": "...", "personality": "...", "arc": "...", "motivations": "...", "fears": "...", "quirks": "..."}';
-        case 'location':
-          return base + ' Format: {"name": "...", "type": "...", "description": "...", "significance": "...", "atmosphere": "...", "history": "..."}';
-        case 'improve':
-          return base + ' Format: {"improved": "...", "explanation": "..."}';
-        default:
-          return base;
-      }
-    };
-
-    // Generate multiple variations
-    const results = [];
-    for (let i = 0; i < validQuantity; i++) {
-      const promptVariation = `${prompt}\n\n[Generate Variation ${i + 1}: Provide a unique and distinct approach]`;
-
-      const completion = await userOpenai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: getSystemPrompt(type) + contextString },
-          { role: "user", content: promptVariation }
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.7 + (i * 0.1)
-      });
-
-      const responseText = completion.choices[0].message.content;
-      const cleanedText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const generatedData = JSON.parse(cleanedText);
-
-      // Extract token usage
-      const usage = completion.usage || {};
-      const promptTokens = usage.prompt_tokens || 0;
-      const completionTokens = usage.completion_tokens || 0;
-      const totalTokens = usage.total_tokens || (promptTokens + completionTokens);
-
-      // Calculate cost
-      const costData = await costTracking.calculateTextCost('gpt-4o-mini', promptTokens, completionTokens);
-
-      results.push({ id: i + 1, result: generatedData });
-
-      // Save to history with token usage and cost
-      try {
-        await pool.query(`
-          INSERT INTO ai_generations
-          (user_id, book_id, tool_type, prompt, result, model,
-           prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        `, [
-          req.user.userId,
-          context?.bookId || null,
-          type,
-          promptVariation,
-          JSON.stringify(generatedData),
-          'gpt-4o-mini',
-          promptTokens,
-          completionTokens,
-          totalTokens,
-          costData.totalCost
-        ]);
-      } catch (dbError) {
-        console.error('Error saving batch generation:', dbError);
-      }
-    }
-
-    // Increment AI counter
-    await pool.query(
-      'UPDATE quotas SET ai_requests_today = ai_requests_today + $1 WHERE user_id = $2',
-      [validQuantity, req.user.userId]
-    );
-
-    res.json({ variations: results });
-  } catch (error) {
-    console.error('Error in batch generation:', error);
-    if (error.message === 'MISSING_OPENAI_KEY') {
-      return res.status(403).json({
-        error: 'API key required',
-        message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
-      });
-    }
-    res.status(500).json({ error: 'Failed to generate batch content', details: error.message });
   }
 });
 
@@ -4777,7 +4301,7 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
 // Analyze story continuity
 app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
   try {
-    const { bookData, focusAreas = [], chapterIds = [] } = req.body;
+    const { bookData } = req.body;
 
     // Get user's OpenAI client (validates key exists)
     let userOpenai;
@@ -4793,15 +4317,7 @@ app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
       throw error;
     }
 
-    // Filter chapters if chapterIds provided (incremental analysis)
-    let chaptersToAnalyze = bookData.chapters || [];
-    if (chapterIds && chapterIds.length > 0) {
-      chaptersToAnalyze = chaptersToAnalyze.filter(ch =>
-        chapterIds.includes(ch.id?.toString()) || chapterIds.includes(ch.id)
-      );
-    }
-
-    let systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
+    const systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
 1. Timeline conflicts and chronological inconsistencies
 2. Character inconsistencies (behavior, traits, development)
 3. Plot holes and unresolved storylines
@@ -4828,11 +4344,6 @@ Return a JSON object with this structure:
   ]
 }`;
 
-    // Add focus areas to prompt if specified
-    if (focusAreas && focusAreas.length > 0) {
-      systemPrompt += `\n\nFOCUS AREAS: Analyze primarily these aspects: ${focusAreas.join(', ')}. Prioritize issues in these categories.`;
-    }
-
     const userPrompt = `Analyze this book for continuity issues:
 
 Title: ${bookData.bookTitle}
@@ -4846,7 +4357,7 @@ Plotlines: ${JSON.stringify(bookData.plotlines, null, 2)}
 
 Timeline: ${JSON.stringify(bookData.timelines, null, 2)}
 
-Chapters: ${chaptersToAnalyze.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
+Chapters: ${bookData.chapters.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
 
 Provide a thorough analysis with specific, actionable issues.`;
 
@@ -4863,95 +4374,10 @@ Provide a thorough analysis with specific, actionable issues.`;
     const analysisText = completion.choices[0].message.content;
     const analysis = JSON.parse(analysisText);
 
-    // Save analysis to database
-    try {
-      await pool.query(`
-        INSERT INTO continuity_analyses
-        (book_id, user_id, analysis_result, score, focus_areas, chapter_ids)
-        VALUES ($1, $2, $3, $4, $5, $6)
-      `, [
-        bookData.id,
-        req.user.userId,
-        JSON.stringify(analysis),
-        analysis.summary?.score || 0,
-        focusAreas.length > 0 ? focusAreas : null,
-        chapterIds.length > 0 ? chapterIds.map(id => id.toString()) : null
-      ]);
-    } catch (dbError) {
-      console.error('Error saving continuity analysis:', dbError);
-      // Don't fail the request if DB save fails
-    }
-
     res.json(analysis);
   } catch (error) {
     console.error('Continuity analysis error:', error);
     res.status(500).json({ error: 'Failed to analyze continuity', details: error.message });
-  }
-});
-
-// Get continuity analysis history for a book
-app.get('/api/books/:bookId/continuity-history', authenticateToken, async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const { limit = 10, offset = 0 } = req.query;
-
-    // Verify user has access to this book
-    const bookCheck = await pool.query(
-      'SELECT id FROM books WHERE id = $1 AND owner_id = $2',
-      [bookId, req.user.userId]
-    );
-
-    if (bookCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    const result = await pool.query(`
-      SELECT
-        id,
-        analysis_result,
-        score,
-        focus_areas,
-        chapter_ids,
-        created_at
-      FROM continuity_analyses
-      WHERE book_id = $1 AND user_id = $2
-      ORDER BY created_at DESC
-      LIMIT $3 OFFSET $4
-    `, [bookId, req.user.userId, parseInt(limit), parseInt(offset)]);
-
-    const countResult = await pool.query(
-      'SELECT COUNT(*) FROM continuity_analyses WHERE book_id = $1 AND user_id = $2',
-      [bookId, req.user.userId]
-    );
-
-    res.json({
-      history: result.rows,
-      total: parseInt(countResult.rows[0].count)
-    });
-  } catch (error) {
-    console.error('Error fetching continuity history:', error);
-    res.status(500).json({ error: 'Failed to fetch history', details: error.message });
-  }
-});
-
-// Delete a continuity analysis
-app.delete('/api/continuity-analyses/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      'DELETE FROM continuity_analyses WHERE id = $1 AND user_id = $2 RETURNING id',
-      [id, req.user.userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Analysis not found' });
-    }
-
-    res.json({ success: true, message: 'Analysis deleted' });
-  } catch (error) {
-    console.error('Error deleting continuity analysis:', error);
-    res.status(500).json({ error: 'Failed to delete analysis', details: error.message });
   }
 });
 

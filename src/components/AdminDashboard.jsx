@@ -40,18 +40,6 @@ const AdminDashboard = ({ onBack }) => {
   const [selectedSubscription, setSelectedSubscription] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelImmediately, setCancelImmediately] = useState(false);
-  const [showTierModal, setShowTierModal] = useState(false);
-  const [newTier, setNewTier] = useState('');
-  const [tierChangeReason, setTierChangeReason] = useState('');
-  const [showSubscriptionDetailModal, setShowSubscriptionDetailModal] = useState(false);
-  const [subscriptionPayments, setSubscriptionPayments] = useState([]);
-  const [payments, setPayments] = useState([]);
-  const [filterPaymentStatus, setFilterPaymentStatus] = useState('');
-  const [showRefundModal, setShowRefundModal] = useState(false);
-  const [selectedPayment, setSelectedPayment] = useState(null);
-  const [refundAmount, setRefundAmount] = useState('');
-  const [refundReason, setRefundReason] = useState('');
-  const [isPartialRefund, setIsPartialRefund] = useState(false);
   const [revenueData, setRevenueData] = useState(null);
   const [dateRange, setDateRange] = useState('30d');
   const [engagementData, setEngagementData] = useState(null);
@@ -72,14 +60,12 @@ const AdminDashboard = ({ onBack }) => {
       fetchContentFlags();
     } else if (activeTab === 'subscriptions') {
       fetchSubscriptions();
-    } else if (activeTab === 'payments') {
-      fetchPayments();
     } else if (activeTab === 'revenue') {
       fetchRevenueAnalytics();
     } else if (activeTab === 'analytics') {
       fetchEngagementAnalytics();
     }
-  }, [activeTab, securitySubtab, currentPage, filterTier, filterStatus, filterSuccess, filterActivityType, filterFlagStatus, filterContentType, filterSubStatus, filterSubTier, filterPaymentStatus, searchTerm, dateRange]);
+  }, [activeTab, securitySubtab, currentPage, filterTier, filterStatus, filterSuccess, filterActivityType, filterFlagStatus, filterContentType, filterSubStatus, filterSubTier, searchTerm, dateRange]);
 
   const fetchStats = async () => {
     try {
@@ -502,32 +488,6 @@ const AdminDashboard = ({ onBack }) => {
     }
   };
 
-  const fetchPayments = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const params = new URLSearchParams({
-        page: currentPage,
-        limit: 20
-      });
-
-      if (filterPaymentStatus) params.append('status', filterPaymentStatus);
-      if (searchTerm) params.append('user_id', searchTerm); // Can search by user ID
-
-      const response = await fetch(`${API_URL}/api/admin/payments?${params}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-        credentials: 'include'
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setPayments(data.payments);
-        setTotalPages(data.pagination.pages);
-      }
-    } catch (error) {
-      console.error('Error fetching payments:', error);
-    }
-  };
-
   const fetchRevenueAnalytics = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -658,159 +618,6 @@ const AdminDashboard = ({ onBack }) => {
     } catch (error) {
       console.error('Error canceling subscription:', error);
       alert('Failed to cancel subscription');
-    }
-  };
-
-  const handleReactivateSubscription = async (subscription) => {
-    if (!confirm(`Reactivate subscription for ${subscription.user_email}?`)) {
-      return;
-    }
-
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/admin/subscriptions/${subscription.id}/reactivate`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        credentials: 'include'
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        alert(data.message);
-        fetchSubscriptions();
-      } else {
-        const error = await response.json();
-        alert(`Failed: ${error.message || error.error}`);
-      }
-    } catch (error) {
-      console.error('Error reactivating subscription:', error);
-      alert('Failed to reactivate subscription');
-    }
-  };
-
-  const handleChangeTier = (subscription) => {
-    setSelectedSubscription(subscription);
-    setNewTier(subscription.tier === 'basic' ? 'premium' : 'basic');
-    setTierChangeReason('');
-    setShowTierModal(true);
-  };
-
-  const handleConfirmTierChange = async () => {
-    if (!tierChangeReason.trim()) {
-      alert('Please enter a reason for the tier change');
-      return;
-    }
-
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/admin/subscriptions/${selectedSubscription.id}/tier`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          new_tier: newTier,
-          reason: tierChangeReason
-        })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        alert(data.message);
-        setShowTierModal(false);
-        fetchSubscriptions();
-      } else {
-        const error = await response.json();
-        alert(`Failed: ${error.message || error.error}`);
-      }
-    } catch (error) {
-      console.error('Error changing tier:', error);
-      alert('Failed to change tier');
-    }
-  };
-
-  const handleViewSubscriptionDetails = async (subscription) => {
-    setSelectedSubscription(subscription);
-    setShowSubscriptionDetailModal(true);
-
-    // Fetch payment history for this subscription
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/admin/subscriptions/${subscription.id}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        credentials: 'include'
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setSubscriptionPayments(data.payments || []);
-      }
-    } catch (error) {
-      console.error('Error fetching subscription details:', error);
-    }
-  };
-
-  const handleRefundPayment = (payment) => {
-    setSelectedPayment(payment);
-    setRefundAmount((payment.amount / 100).toFixed(2));
-    setRefundReason('');
-    setIsPartialRefund(false);
-    setShowRefundModal(true);
-  };
-
-  const handleConfirmRefund = async () => {
-    if (!refundReason.trim()) {
-      alert('Please enter a refund reason');
-      return;
-    }
-
-    if (isPartialRefund) {
-      const amount = parseFloat(refundAmount);
-      const maxAmount = selectedPayment.amount / 100;
-      if (isNaN(amount) || amount <= 0 || amount > maxAmount) {
-        alert(`Please enter a valid refund amount between £0.01 and £${maxAmount.toFixed(2)}`);
-        return;
-      }
-    }
-
-    try {
-      const token = localStorage.getItem('token');
-      const body = {
-        reason: refundReason
-      };
-
-      if (isPartialRefund) {
-        body.amount = Math.round(parseFloat(refundAmount) * 100); // Convert to cents
-      }
-
-      const response = await fetch(`${API_URL}/api/admin/payments/${selectedPayment.id}/refund`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        credentials: 'include',
-        body: JSON.stringify(body)
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        alert(data.message);
-        setShowRefundModal(false);
-        fetchPayments();
-      } else {
-        const error = await response.json();
-        alert(`Failed: ${error.message || error.error}`);
-      }
-    } catch (error) {
-      console.error('Error processing refund:', error);
-      alert('Failed to process refund');
     }
   };
 
@@ -986,17 +793,6 @@ const AdminDashboard = ({ onBack }) => {
             >
               <DollarSign className="w-5 h-5 inline mr-2" />
               Revenue
-            </button>
-            <button
-              onClick={() => { setActiveTab('payments'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
-                activeTab === 'payments'
-                  ? 'border-b-2 border-purple-600 text-purple-600'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <CreditCard className="w-5 h-5 inline mr-2" />
-              Payments
             </button>
             <button
               onClick={() => { setActiveTab('analytics'); setCurrentPage(1); }}
@@ -1914,45 +1710,17 @@ const AdminDashboard = ({ onBack }) => {
                         {new Date(sub.current_period_end).toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4 text-sm font-medium">
-                        £{(sub.amount / 100).toFixed(2)}/mo
+                        ${(sub.amount / 100).toFixed(2)}/mo
                       </td>
                       <td className="px-6 py-4 text-sm">
-                        <div className="flex gap-2">
+                        {sub.status === 'active' && !sub.cancel_at_period_end && (
                           <button
-                            onClick={() => handleViewSubscriptionDetails(sub)}
-                            className="text-blue-600 hover:text-blue-800"
-                            title="View Details"
+                            onClick={() => handleCancelSubscription(sub)}
+                            className="text-red-600 hover:text-red-800"
                           >
-                            View
+                            Cancel
                           </button>
-                          {sub.status === 'active' && !sub.cancel_at_period_end && (
-                            <>
-                              <button
-                                onClick={() => handleChangeTier(sub)}
-                                className="text-purple-600 hover:text-purple-800"
-                                title="Change Tier"
-                              >
-                                Change Tier
-                              </button>
-                              <button
-                                onClick={() => handleCancelSubscription(sub)}
-                                className="text-red-600 hover:text-red-800"
-                                title="Cancel Subscription"
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          )}
-                          {sub.status === 'active' && sub.cancel_at_period_end && (
-                            <button
-                              onClick={() => handleReactivateSubscription(sub)}
-                              className="text-green-600 hover:text-green-800"
-                              title="Reactivate Subscription"
-                            >
-                              Reactivate
-                            </button>
-                          )}
-                        </div>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -2016,7 +1784,7 @@ const AdminDashboard = ({ onBack }) => {
                   <DollarSign className="w-5 h-5 text-green-600" />
                 </div>
                 <p className="text-2xl font-bold text-gray-900">
-                  £{(revenueData.summary.mrr / 100).toFixed(2)}
+                  ${(revenueData.summary.mrr / 100).toFixed(2)}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">Monthly Recurring Revenue</p>
               </div>
@@ -2049,7 +1817,7 @@ const AdminDashboard = ({ onBack }) => {
                   <TrendingUp className="w-5 h-5 text-purple-600" />
                 </div>
                 <p className="text-2xl font-bold text-gray-900">
-                  £{(revenueData.summary.ltv / 100).toFixed(2)}
+                  ${(revenueData.summary.ltv / 100).toFixed(2)}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">Customer Lifetime Value</p>
               </div>
@@ -2067,9 +1835,9 @@ const AdminDashboard = ({ onBack }) => {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="date" />
                   <YAxis />
-                  <Tooltip formatter={(value) => typeof value === 'number' ? `£${value.toFixed(2)}` : value} />
+                  <Tooltip formatter={(value) => typeof value === 'number' ? `$${value.toFixed(2)}` : value} />
                   <Legend />
-                  <Line type="monotone" dataKey="revenue" stroke="#8b5cf6" name="Revenue (£)" />
+                  <Line type="monotone" dataKey="revenue" stroke="#8b5cf6" name="Revenue ($)" />
                   <Line type="monotone" dataKey="payments" stroke="#3b82f6" name="Payments" />
                 </LineChart>
               </ResponsiveContainer>
@@ -2092,7 +1860,7 @@ const AdminDashboard = ({ onBack }) => {
                         </span>
                         <p className="text-sm text-gray-500 mt-1">{tier.count} subscribers</p>
                       </div>
-                      <p className="text-xl font-bold">£{(tier.mrr / 100).toFixed(2)}</p>
+                      <p className="text-xl font-bold">${(tier.mrr / 100).toFixed(2)}</p>
                     </div>
                   ))}
                 </div>
@@ -2257,133 +2025,6 @@ const AdminDashboard = ({ onBack }) => {
           </div>
         )}
 
-        {/* Payments Tab */}
-        {activeTab === 'payments' && (
-          <div className="bg-white rounded-lg shadow">
-            <div className="p-4 border-b">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold">Payment History</h3>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <select
-                  value={filterPaymentStatus}
-                  onChange={(e) => { setFilterPaymentStatus(e.target.value); setCurrentPage(1); }}
-                  className="border rounded px-3 py-2 focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="">All Statuses</option>
-                  <option value="succeeded">Succeeded</option>
-                  <option value="failed">Failed</option>
-                  <option value="pending">Pending</option>
-                  <option value="refunded">Refunded</option>
-                </select>
-
-                <input
-                  type="text"
-                  placeholder="Search by user email..."
-                  value={searchTerm}
-                  onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
-                  className="border rounded px-3 py-2 focus:ring-2 focus:ring-purple-500"
-                />
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Method</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {payments.map(payment => (
-                    <tr key={payment.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 text-sm text-gray-500">
-                        {new Date(payment.created_at).toLocaleDateString()}
-                        <div className="text-xs text-gray-400">
-                          {new Date(payment.created_at).toLocaleTimeString()}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-sm">
-                        <div className="font-medium">{payment.user_name}</div>
-                        <div className="text-gray-500">{payment.user_email}</div>
-                      </td>
-                      <td className="px-6 py-4 text-sm font-medium">
-                        £{(payment.amount / 100).toFixed(2)}
-                        {payment.refunded && payment.refund_amount && (
-                          <div className="text-xs text-orange-600">
-                            Refunded: £{(payment.refund_amount / 100).toFixed(2)}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-sm">
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          payment.status === 'succeeded' ? 'bg-green-100 text-green-800' :
-                          payment.status === 'failed' ? 'bg-red-100 text-red-800' :
-                          payment.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                          'bg-gray-100 text-gray-800'
-                        }`}>
-                          {payment.status}
-                        </span>
-                        {payment.refunded && (
-                          <span className="ml-1 px-2 py-1 rounded text-xs font-medium bg-orange-100 text-orange-800">
-                            Refunded
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-sm capitalize">
-                        {payment.payment_method || 'card'}
-                      </td>
-                      <td className="px-6 py-4 text-sm">
-                        {payment.status === 'succeeded' && !payment.refunded && (
-                          <button
-                            onClick={() => handleRefundPayment(payment)}
-                            className="text-orange-600 hover:text-orange-800"
-                            title="Process Refund"
-                          >
-                            Refund
-                          </button>
-                        )}
-                        {payment.refunded && payment.refund_reason && (
-                          <div className="text-xs text-gray-500" title={payment.refund_reason}>
-                            Reason: {payment.refund_reason.substring(0, 20)}...
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            <div className="p-4 border-t flex justify-between items-center">
-              <button
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="px-4 py-2 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
-              >
-                Previous
-              </button>
-              <span className="text-sm text-gray-600">
-                Page {currentPage} of {totalPages}
-              </span>
-              <button
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                className="px-4 py-2 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Cancel Subscription Modal */}
         {showCancelModal && selectedSubscription && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -2434,198 +2075,6 @@ const AdminDashboard = ({ onBack }) => {
                 >
                   Confirm Cancellation
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Change Tier Modal */}
-        {showTierModal && selectedSubscription && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 max-w-md w-full">
-              <h3 className="text-lg font-semibold mb-4">Change Subscription Tier</h3>
-              <p className="text-gray-600 mb-4">
-                Change tier for {selectedSubscription.user_email}?
-              </p>
-              <p className="text-sm text-gray-500 mb-4">
-                Current tier: <span className="font-semibold capitalize">{selectedSubscription.tier}</span>
-              </p>
-
-              <div className="mb-4">
-                <label className="block text-sm font-medium mb-2">New Tier</label>
-                <select
-                  value={newTier}
-                  onChange={(e) => setNewTier(e.target.value)}
-                  className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="basic">Basic (£9.99/mo)</option>
-                  <option value="premium">Premium (£19.99/mo)</option>
-                </select>
-              </div>
-
-              <div className="mb-4">
-                <label className="block text-sm font-medium mb-2">Reason (required)</label>
-                <textarea
-                  value={tierChangeReason}
-                  onChange={(e) => setTierChangeReason(e.target.value)}
-                  className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
-                  rows="3"
-                  placeholder="Reason for tier change..."
-                />
-              </div>
-
-              <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4">
-                <p className="text-sm text-blue-800">
-                  <strong>Note:</strong> This will create a proration in Stripe. The user will be charged/credited
-                  the difference immediately.
-                </p>
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setShowTierModal(false);
-                    setSelectedSubscription(null);
-                    setTierChangeReason('');
-                  }}
-                  className="px-4 py-2 border rounded hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleConfirmTierChange}
-                  className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
-                  disabled={!tierChangeReason.trim()}
-                >
-                  Confirm Change
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Subscription Detail Modal */}
-        {showSubscriptionDetailModal && selectedSubscription && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="flex justify-between items-start mb-4">
-                <h3 className="text-lg font-semibold">Subscription Details</h3>
-                <button
-                  onClick={() => {
-                    setShowSubscriptionDetailModal(false);
-                    setSelectedSubscription(null);
-                    setSubscriptionPayments([]);
-                  }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Subscription Info */}
-              <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-600">User</p>
-                    <p className="font-medium">{selectedSubscription.user_name}</p>
-                    <p className="text-sm text-gray-500">{selectedSubscription.user_email}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Tier</p>
-                    <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-                      selectedSubscription.tier === 'premium'
-                        ? 'bg-purple-100 text-purple-800'
-                        : 'bg-blue-100 text-blue-800'
-                    }`}>
-                      {selectedSubscription.tier}
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Status</p>
-                    <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-                      selectedSubscription.status === 'active' ? 'bg-green-100 text-green-800' :
-                      selectedSubscription.status === 'canceled' ? 'bg-red-100 text-red-800' :
-                      'bg-yellow-100 text-yellow-800'
-                    }`}>
-                      {selectedSubscription.status}
-                      {selectedSubscription.cancel_at_period_end && ' (ending)'}
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Amount</p>
-                    <p className="font-medium">£{(selectedSubscription.amount / 100).toFixed(2)}/mo</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Current Period</p>
-                    <p className="text-sm">
-                      {new Date(selectedSubscription.current_period_start).toLocaleDateString()} -
-                      {' '}{new Date(selectedSubscription.current_period_end).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Created</p>
-                    <p className="text-sm">{new Date(selectedSubscription.created_at).toLocaleDateString()}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Stripe Subscription ID</p>
-                    <p className="text-xs font-mono text-gray-500">{selectedSubscription.stripe_subscription_id}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Stripe Customer ID</p>
-                    <p className="text-xs font-mono text-gray-500">{selectedSubscription.stripe_customer_id}</p>
-                  </div>
-                </div>
-
-                {selectedSubscription.cancellation_reason && (
-                  <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded">
-                    <p className="text-sm font-medium text-red-800">Cancellation Reason:</p>
-                    <p className="text-sm text-red-700">{selectedSubscription.cancellation_reason}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Payment History */}
-              <div>
-                <h4 className="font-semibold mb-2">Payment History</h4>
-                {subscriptionPayments.length > 0 ? (
-                  <div className="border rounded-lg overflow-hidden">
-                    <table className="w-full">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Date</th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Amount</th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Status</th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Method</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y">
-                        {subscriptionPayments.map(payment => (
-                          <tr key={payment.id}>
-                            <td className="px-4 py-2 text-sm">{new Date(payment.created_at).toLocaleDateString()}</td>
-                            <td className="px-4 py-2 text-sm font-medium">£{(payment.amount / 100).toFixed(2)}</td>
-                            <td className="px-4 py-2 text-sm">
-                              <span className={`px-2 py-1 rounded text-xs ${
-                                payment.status === 'succeeded' ? 'bg-green-100 text-green-800' :
-                                payment.status === 'failed' ? 'bg-red-100 text-red-800' :
-                                'bg-gray-100 text-gray-800'
-                              }`}>
-                                {payment.status}
-                              </span>
-                              {payment.refunded && (
-                                <span className="ml-1 px-2 py-1 rounded text-xs bg-orange-100 text-orange-800">
-                                  Refunded
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2 text-sm capitalize">{payment.payment_method || 'card'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-500">No payment history available</p>
-                )}
               </div>
             </div>
           </div>
@@ -2738,93 +2187,6 @@ const AdminDashboard = ({ onBack }) => {
                   className="px-4 py-2 border rounded hover:bg-gray-50"
                 >
                   Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Refund Payment Modal */}
-        {showRefundModal && selectedPayment && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 max-w-md w-full">
-              <h3 className="text-lg font-semibold mb-4">Refund Payment</h3>
-              <p className="text-gray-600 mb-4">
-                Refund payment for {selectedPayment.user_email}?
-              </p>
-              <p className="text-sm text-gray-500 mb-4">
-                Original amount: <span className="font-semibold">£{(selectedPayment.amount / 100).toFixed(2)}</span>
-              </p>
-
-              <div className="mb-4">
-                <label className="block text-sm font-medium mb-2">Refund Type</label>
-                <select
-                  value={isPartialRefund ? 'partial' : 'full'}
-                  onChange={(e) => {
-                    setIsPartialRefund(e.target.value === 'partial');
-                    if (e.target.value === 'full') {
-                      setRefundAmount((selectedPayment.amount / 100).toFixed(2));
-                    }
-                  }}
-                  className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="full">Full Refund</option>
-                  <option value="partial">Partial Refund</option>
-                </select>
-              </div>
-
-              {isPartialRefund && (
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-2">Refund Amount (£)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    max={(selectedPayment.amount / 100).toFixed(2)}
-                    value={refundAmount}
-                    onChange={(e) => setRefundAmount(e.target.value)}
-                    className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
-                    placeholder="0.00"
-                  />
-                </div>
-              )}
-
-              <div className="mb-4">
-                <label className="block text-sm font-medium mb-2">Reason (required)</label>
-                <textarea
-                  value={refundReason}
-                  onChange={(e) => setRefundReason(e.target.value)}
-                  className="border rounded px-3 py-2 w-full focus:ring-2 focus:ring-purple-500"
-                  rows="3"
-                  placeholder="Reason for refund..."
-                />
-              </div>
-
-              <div className="bg-orange-50 border border-orange-200 rounded p-3 mb-4">
-                <p className="text-sm text-orange-800">
-                  <strong>Warning:</strong> This will process a {isPartialRefund ? 'partial' : 'full'} refund
-                  through Stripe. This action cannot be undone.
-                </p>
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setShowRefundModal(false);
-                    setSelectedPayment(null);
-                    setRefundReason('');
-                    setIsPartialRefund(false);
-                  }}
-                  className="px-4 py-2 border rounded hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleConfirmRefund}
-                  className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700"
-                  disabled={!refundReason.trim()}
-                >
-                  Process Refund
                 </button>
               </div>
             </div>

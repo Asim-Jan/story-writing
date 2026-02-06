@@ -805,7 +805,7 @@ const ProfilePage = ({ onBack }) => {
                               <div className="mb-4">
                                 <h4 className="text-xl font-bold text-gray-900">Basic</h4>
                                 <div className="mt-2">
-                                  <span className="text-3xl font-bold">£9.99</span>
+                                  <span className="text-3xl font-bold">$9.99</span>
                                   <span className="text-gray-600">/month</span>
                                 </div>
                               </div>
@@ -846,7 +846,7 @@ const ProfilePage = ({ onBack }) => {
                               <div className="mb-4">
                                 <h4 className="text-xl font-bold text-gray-900">Premium</h4>
                                 <div className="mt-2">
-                                  <span className="text-3xl font-bold">£19.99</span>
+                                  <span className="text-3xl font-bold">$19.99</span>
                                   <span className="text-gray-600">/month</span>
                                 </div>
                               </div>
