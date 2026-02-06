@@ -3650,6 +3650,25 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
 
     const generatedData = JSON.parse(cleanedText);
 
+    // Save generation to history database
+    try {
+      await pool.query(`
+        INSERT INTO ai_generations
+        (user_id, book_id, tool_type, prompt, result, model)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        req.user.userId,
+        context?.bookId || null,
+        type,
+        prompt,
+        JSON.stringify(generatedData),
+        'gpt-4o-mini'
+      ]);
+    } catch (dbError) {
+      console.error('Error saving AI generation to history:', dbError);
+      // Don't fail the request if DB save fails
+    }
+
     res.json(generatedData);
   } catch (error) {
     console.error('Error generating content:', error);
@@ -3662,6 +3681,206 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
     }
 
     res.status(500).json({ error: 'Failed to generate content', details: error.message });
+  }
+});
+
+// Get AI generation history
+app.get('/api/ai-generations', authenticateToken, async (req, res) => {
+  try {
+    const { bookId, toolType, limit = 20, offset = 0 } = req.query;
+
+    let query = `
+      SELECT
+        id,
+        tool_type,
+        prompt,
+        result,
+        model,
+        created_at
+      FROM ai_generations
+      WHERE user_id = $1
+    `;
+    const params = [req.user.userId];
+
+    if (bookId) {
+      query += ` AND book_id = $${params.length + 1}`;
+      params.push(bookId);
+    }
+
+    if (toolType) {
+      query += ` AND tool_type = $${params.length + 1}`;
+      params.push(toolType);
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Get total count
+    let countQuery = 'SELECT COUNT(*) FROM ai_generations WHERE user_id = $1';
+    const countParams = [req.user.userId];
+    if (bookId) {
+      countQuery += ` AND book_id = $${countParams.length + 1}`;
+      countParams.push(bookId);
+    }
+    if (toolType) {
+      countQuery += ` AND tool_type = $${countParams.length + 1}`;
+      countParams.push(toolType);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+
+    res.json({
+      history: result.rows,
+      total: parseInt(countResult.rows[0].count)
+    });
+  } catch (error) {
+    console.error('Error fetching AI generation history:', error);
+    res.status(500).json({ error: 'Failed to fetch history', details: error.message });
+  }
+});
+
+// Delete an AI generation
+app.delete('/api/ai-generations/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM ai_generations WHERE id = $1 AND user_id = $2 RETURNING id',
+      [id, req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Generation not found' });
+    }
+
+    res.json({ success: true, message: 'Generation deleted' });
+  } catch (error) {
+    console.error('Error deleting AI generation:', error);
+    res.status(500).json({ error: 'Failed to delete generation', details: error.message });
+  }
+});
+
+// Batch AI Generation endpoint
+app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) => {
+  try {
+    const { type, prompt, context, quantity = 3 } = req.body;
+
+    if (!type || !prompt) {
+      return res.status(400).json({ error: 'Type and prompt are required' });
+    }
+
+    // Validate quantity (2-5)
+    const validQuantity = Math.min(Math.max(parseInt(quantity), 2), 5);
+
+    // Get user's OpenAI client
+    let userOpenai;
+    try {
+      userOpenai = await getUserOpenAI(req.user.userId);
+    } catch (error) {
+      if (error.message === 'MISSING_OPENAI_KEY') {
+        return res.status(403).json({
+          error: 'API key required',
+          message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
+        });
+      }
+      throw error;
+    }
+
+    // Check if user has enough AI quota remaining
+    const quotas = await pool.query(
+      'SELECT ai_requests_today, max_ai_requests_per_day FROM quotas WHERE user_id = $1',
+      [req.user.userId]
+    );
+
+    if (quotas.rows.length > 0) {
+      const { ai_requests_today, max_ai_requests_per_day } = quotas.rows[0];
+      if (ai_requests_today + validQuantity > max_ai_requests_per_day) {
+        return res.status(429).json({
+          error: 'Not enough AI requests remaining',
+          available: max_ai_requests_per_day - ai_requests_today,
+          needed: validQuantity,
+          message: `You need ${validQuantity} AI requests but only have ${max_ai_requests_per_day - ai_requests_today} remaining today.`
+        });
+      }
+    }
+
+    // Build context string
+    let contextString = '';
+    if (context) {
+      if (context.bookTitle) contextString += `\n\nBOOK CONTEXT:\nTitle: ${context.bookTitle}`;
+      if (context.overview) contextString += `\nOverview: ${context.overview}`;
+      if (context.characters?.length > 0) {
+        contextString += `\n\nExisting Characters: ${context.characters.map(c => c.name + (c.role ? ` (${c.role})` : '')).join(', ')}`;
+      }
+    }
+
+    // Simple system prompts by type
+    const getSystemPrompt = (type) => {
+      const base = 'You are helping a writer create content. Respond ONLY with valid JSON (no markdown, no backticks).';
+      switch (type) {
+        case 'dialogue':
+          return base + ' Format: {"dialogue": "...", "context": "..."}';
+        case 'character':
+          return base + ' Format: {"name": "...", "role": "...", "background": "...", "personality": "...", "arc": "...", "motivations": "...", "fears": "...", "quirks": "..."}';
+        case 'location':
+          return base + ' Format: {"name": "...", "type": "...", "description": "...", "significance": "...", "atmosphere": "...", "history": "..."}';
+        case 'improve':
+          return base + ' Format: {"improved": "...", "explanation": "..."}';
+        default:
+          return base;
+      }
+    };
+
+    // Generate multiple variations
+    const results = [];
+    for (let i = 0; i < validQuantity; i++) {
+      const promptVariation = `${prompt}\n\n[Generate Variation ${i + 1}: Provide a unique and distinct approach]`;
+
+      const completion = await userOpenai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: getSystemPrompt(type) + contextString },
+          { role: "user", content: promptVariation }
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.7 + (i * 0.1)
+      });
+
+      const responseText = completion.choices[0].message.content;
+      const cleanedText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const generatedData = JSON.parse(cleanedText);
+
+      results.push({ id: i + 1, result: generatedData });
+
+      // Save to history
+      try {
+        await pool.query(`
+          INSERT INTO ai_generations (user_id, book_id, tool_type, prompt, result, model)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [req.user.userId, context?.bookId || null, type, promptVariation, JSON.stringify(generatedData), 'gpt-4o-mini']);
+      } catch (dbError) {
+        console.error('Error saving batch generation:', dbError);
+      }
+    }
+
+    // Increment AI counter
+    await pool.query(
+      'UPDATE quotas SET ai_requests_today = ai_requests_today + $1 WHERE user_id = $2',
+      [validQuantity, req.user.userId]
+    );
+
+    res.json({ variations: results });
+  } catch (error) {
+    console.error('Error in batch generation:', error);
+    if (error.message === 'MISSING_OPENAI_KEY') {
+      return res.status(403).json({
+        error: 'API key required',
+        message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
+      });
+    }
+    res.status(500).json({ error: 'Failed to generate batch content', details: error.message });
   }
 });
 
@@ -4415,7 +4634,7 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
 // Analyze story continuity
 app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
   try {
-    const { bookData } = req.body;
+    const { bookData, focusAreas = [], chapterIds = [] } = req.body;
 
     // Get user's OpenAI client (validates key exists)
     let userOpenai;
@@ -4431,7 +4650,15 @@ app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
       throw error;
     }
 
-    const systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
+    // Filter chapters if chapterIds provided (incremental analysis)
+    let chaptersToAnalyze = bookData.chapters || [];
+    if (chapterIds && chapterIds.length > 0) {
+      chaptersToAnalyze = chaptersToAnalyze.filter(ch =>
+        chapterIds.includes(ch.id?.toString()) || chapterIds.includes(ch.id)
+      );
+    }
+
+    let systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
 1. Timeline conflicts and chronological inconsistencies
 2. Character inconsistencies (behavior, traits, development)
 3. Plot holes and unresolved storylines
@@ -4458,6 +4685,11 @@ Return a JSON object with this structure:
   ]
 }`;
 
+    // Add focus areas to prompt if specified
+    if (focusAreas && focusAreas.length > 0) {
+      systemPrompt += `\n\nFOCUS AREAS: Analyze primarily these aspects: ${focusAreas.join(', ')}. Prioritize issues in these categories.`;
+    }
+
     const userPrompt = `Analyze this book for continuity issues:
 
 Title: ${bookData.bookTitle}
@@ -4471,7 +4703,7 @@ Plotlines: ${JSON.stringify(bookData.plotlines, null, 2)}
 
 Timeline: ${JSON.stringify(bookData.timelines, null, 2)}
 
-Chapters: ${bookData.chapters.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
+Chapters: ${chaptersToAnalyze.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
 
 Provide a thorough analysis with specific, actionable issues.`;
 
@@ -4488,10 +4720,95 @@ Provide a thorough analysis with specific, actionable issues.`;
     const analysisText = completion.choices[0].message.content;
     const analysis = JSON.parse(analysisText);
 
+    // Save analysis to database
+    try {
+      await pool.query(`
+        INSERT INTO continuity_analyses
+        (book_id, user_id, analysis_result, score, focus_areas, chapter_ids)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        bookData.id,
+        req.user.userId,
+        JSON.stringify(analysis),
+        analysis.summary?.score || 0,
+        focusAreas.length > 0 ? focusAreas : null,
+        chapterIds.length > 0 ? chapterIds.map(id => id.toString()) : null
+      ]);
+    } catch (dbError) {
+      console.error('Error saving continuity analysis:', dbError);
+      // Don't fail the request if DB save fails
+    }
+
     res.json(analysis);
   } catch (error) {
     console.error('Continuity analysis error:', error);
     res.status(500).json({ error: 'Failed to analyze continuity', details: error.message });
+  }
+});
+
+// Get continuity analysis history for a book
+app.get('/api/books/:bookId/continuity-history', authenticateToken, async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    const { limit = 10, offset = 0 } = req.query;
+
+    // Verify user has access to this book
+    const bookCheck = await pool.query(
+      'SELECT id FROM books WHERE id = $1 AND owner_id = $2',
+      [bookId, req.user.userId]
+    );
+
+    if (bookCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await pool.query(`
+      SELECT
+        id,
+        analysis_result,
+        score,
+        focus_areas,
+        chapter_ids,
+        created_at
+      FROM continuity_analyses
+      WHERE book_id = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3 OFFSET $4
+    `, [bookId, req.user.userId, parseInt(limit), parseInt(offset)]);
+
+    const countResult = await pool.query(
+      'SELECT COUNT(*) FROM continuity_analyses WHERE book_id = $1 AND user_id = $2',
+      [bookId, req.user.userId]
+    );
+
+    res.json({
+      history: result.rows,
+      total: parseInt(countResult.rows[0].count)
+    });
+  } catch (error) {
+    console.error('Error fetching continuity history:', error);
+    res.status(500).json({ error: 'Failed to fetch history', details: error.message });
+  }
+});
+
+// Delete a continuity analysis
+app.delete('/api/continuity-analyses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM continuity_analyses WHERE id = $1 AND user_id = $2 RETURNING id',
+      [id, req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Analysis not found' });
+    }
+
+    res.json({ success: true, message: 'Analysis deleted' });
+  } catch (error) {
+    console.error('Error deleting continuity analysis:', error);
+    res.status(500).json({ error: 'Failed to delete analysis', details: error.message });
   }
 });
 

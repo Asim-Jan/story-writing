@@ -26,6 +26,10 @@ import JobsTab from './JobsTab';
 import RPGGameTab from './RPGGameTab';
 import ErrorBoundary from './ErrorBoundary';
 import ProfilePage from './ProfilePage';
+import QuotaBanner from './QuotaBanner';
+import WarningToast from './WarningToast';
+import DailyDigestModal from './DailyDigestModal';
+import { useQuotaWarnings, shouldShowDailyDigest, markDailyDigestShown } from '../hooks/useQuotaWarnings';
 
 const FictionWritingStudio = ({ bookId, onBack }) => {
   const [activeTab, setActiveTab] = useState('overview');
@@ -37,8 +41,83 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   const { data, setData, loading, saving, error, saveBook, autosave } = useBook(bookId);
   const { tier, hasFeature, loading: subLoading } = useSubscription();
 
+  // Quota tracking state
+  const [quotas, setQuotas] = useState(null);
+  const [showDailyDigest, setShowDailyDigest] = useState(false);
+  const [currentWarning, setCurrentWarning] = useState(null);
+  const { warnings, markWarningShown } = useQuotaWarnings(quotas);
+  const API_URL = import.meta.env.VITE_API_URL;
+
   const [searchTerm, setSearchTerm] = useState('');
   const [editingId, setEditingId] = useState(null);
+
+  // Fetch quotas on mount and set up refresh listener
+  useEffect(() => {
+    const fetchQuotas = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        const response = await fetch(`${API_URL}/api/users/quotas`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          credentials: 'include'
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setQuotas(data);
+
+          // Check if should show daily digest on first load
+          if (shouldShowDailyDigest(data)) {
+            setShowDailyDigest(true);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching quotas:', error);
+      }
+    };
+
+    fetchQuotas();
+
+    // Listen for quota refresh events
+    window.addEventListener('quotaRefresh', fetchQuotas);
+    return () => window.removeEventListener('quotaRefresh', fetchQuotas);
+  }, [API_URL]);
+
+  // Show warnings when they appear
+  useEffect(() => {
+    if (warnings.length > 0 && !currentWarning) {
+      // Show first warning
+      setCurrentWarning(warnings[0]);
+    }
+  }, [warnings, currentWarning]);
+
+  // Handle warning dismissal
+  const handleWarningDismiss = () => {
+    if (currentWarning) {
+      markWarningShown(currentWarning.id);
+      setCurrentWarning(null);
+
+      // Show next warning if any
+      const nextWarning = warnings.find(w => w.id !== currentWarning.id);
+      if (nextWarning) {
+        setTimeout(() => setCurrentWarning(nextWarning), 500);
+      }
+    }
+  };
+
+  // Handle daily digest close
+  const handleDigestClose = () => {
+    markDailyDigestShown();
+    setShowDailyDigest(false);
+  };
+
+  // Dispatch quota refresh event after successful save
+  const handleSaveBook = async () => {
+    await saveBook();
+    // Dispatch custom event to refresh quotas
+    window.dispatchEvent(new Event('quotaRefresh'));
+  };
 
   // Warn on navigation if unsaved changes
   useEffect(() => {
@@ -641,7 +720,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               <User size={20} />
             </button>
             <button
-              onClick={saveBook}
+              onClick={handleSaveBook}
               disabled={saving}
               className="px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 text-sm sm:text-base"
             >
@@ -650,6 +729,9 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             </button>
           </div>
         </header>
+
+        {/* Quota Banner */}
+        <QuotaBanner onNavigateToProfile={() => setShowProfile(true)} />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           {activeTab === 'overview' && (
@@ -1153,6 +1235,25 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         featureName={upgradeModalProps.featureName}
         requiredTier={upgradeModalProps.requiredTier}
       />
+
+      {/* Quota Warning Toast */}
+      <WarningToast
+        warning={currentWarning}
+        onDismiss={handleWarningDismiss}
+        onNavigate={() => setShowProfile(true)}
+      />
+
+      {/* Daily Digest Modal */}
+      {showDailyDigest && (
+        <DailyDigestModal
+          quotas={quotas}
+          onClose={handleDigestClose}
+          onNavigateToProfile={() => {
+            setShowProfile(true);
+            handleDigestClose();
+          }}
+        />
+      )}
     </div>
   );
 };
