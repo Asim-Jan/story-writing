@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle, Lock, LogOut, TrendingUp, Database, Cpu, Image, FileText } from 'lucide-react';
+import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle, Lock, LogOut, TrendingUp, Database, Cpu, Image, FileText, DollarSign } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import UserAICosts from './UserAICosts';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -403,6 +404,17 @@ const ProfilePage = ({ onBack }) => {
                 >
                   <TrendingUp className="w-5 h-5" />
                   Usage & Limits
+                </button>
+                <button
+                  onClick={() => setActiveTab('ai-costs')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                    activeTab === 'ai-costs'
+                      ? 'bg-purple-600 text-white'
+                      : 'text-gray-700 hover:bg-purple-50'
+                  }`}
+                >
+                  <DollarSign className="w-5 h-5" />
+                  AI Costs
                 </button>
               </nav>
             </div>
@@ -1011,6 +1023,13 @@ const ProfilePage = ({ onBack }) => {
                       <p className="text-gray-600">Loading quota information...</p>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* AI Costs Tab */}
+              {activeTab === 'ai-costs' && (
+                <div>
+                  <UserAICosts />
                 </div>
               )}
             </div>
