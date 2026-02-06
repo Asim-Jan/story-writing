@@ -3,13 +3,7 @@
  * Handles token usage tracking and cost calculations for AI operations
  */
 
-import pkg from 'pg';
-const { Pool } = pkg;
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+import { getPool } from '../db/postgres.js';
 
 /**
  * Pricing cache to avoid repeated database lookups
@@ -30,7 +24,7 @@ async function loadPricing() {
   }
 
   try {
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         model_name,
         input_price_per_1m,
@@ -146,7 +140,7 @@ export async function trackAIUsage(userId, data) {
   try {
     const requestField = `${requestType}_requests`;
 
-    await pool.query(`
+    await getPool().query(`
       INSERT INTO ai_cost_summary
         (user_id, date, total_tokens, prompt_tokens, completion_tokens, total_cost_usd, ${requestField})
       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, 1)
@@ -174,7 +168,7 @@ export async function trackAIUsage(userId, data) {
  */
 export async function getUserCostSummary(userId, startDate, endDate) {
   try {
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         date,
         total_tokens,
@@ -219,7 +213,7 @@ export async function getUserMonthTotals(userId) {
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
 
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         SUM(total_tokens) as month_tokens,
         SUM(total_cost_usd) as month_cost,
@@ -248,7 +242,7 @@ export async function getUserMonthTotals(userId) {
  */
 export async function getUserCostByTool(userId, days = 30) {
   try {
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         tool_type,
         COUNT(*) as usage_count,
@@ -285,7 +279,7 @@ export async function getUserCostByTool(userId, days = 30) {
  */
 export async function getSystemCostAnalytics(startDate, endDate) {
   try {
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         date,
         SUM(total_cost_usd) as daily_cost,
@@ -346,7 +340,7 @@ export async function getSystemCostAnalytics(startDate, endDate) {
  */
 export async function getTopUsersByCost(days = 30, limit = 20) {
   try {
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         u.id,
         u.email,
@@ -385,7 +379,7 @@ export async function getTopUsersByCost(days = 30, limit = 20) {
  */
 export async function getCostByModel(days = 30) {
   try {
-    const result = await pool.query(`
+    const result = await getPool().query(`
       SELECT
         model,
         COUNT(*) as request_count,
