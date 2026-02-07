@@ -659,10 +659,12 @@ export class BookDataService {
     }
 
     // Delete chapters that are no longer in the array
+    // Use hard delete (not soft delete) to allow chapter numbers to be reused
     for (const existing of existingChapters) {
       if (!chaptersToKeep.has(existing.id)) {
         try {
-          await ChapterRepository.delete(existing.id);
+          // Hard delete instead of soft delete to free up the (book_id, chapter_number) constraint
+          await query('DELETE FROM chapters WHERE id = $1', [existing.id]);
           console.log(`  ✓ Deleted chapter ${existing.id} (number: ${existing.chapter_number})`);
         } catch (error) {
           console.error(`  ✗ Failed to delete chapter ${existing.id}:`, error.message);

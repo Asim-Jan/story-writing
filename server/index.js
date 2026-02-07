@@ -3162,6 +3162,9 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
 
       const book = await updateBook(id, req.user.userId, updates, expectedVersion);
 
+      // Update user quota usage after book/chapter changes
+      await updateQuotaUsage(req.user.userId);
+
       // Enhanced debug logging to identify which field is undefined
       console.log('Book PUT response - all array fields:', {
         chapters: { type: typeof book?.chapters, isArray: Array.isArray(book?.chapters), length: book?.chapters?.length },
