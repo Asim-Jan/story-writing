@@ -3536,6 +3536,9 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       // Don't fail the request if DB save fails
     }
 
+    // Increment AI request counter for quota tracking
+    await incrementAICounter(req.user.userId);
+
     res.json(generatedData);
   } catch (error) {
     console.error('Error generating content:', error);

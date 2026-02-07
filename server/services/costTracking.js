@@ -344,7 +344,6 @@ export async function getTopUsersByCost(days = 30, limit = 20) {
       SELECT
         u.id,
         u.email,
-        u.username,
         u.tier,
         SUM(acs.total_cost_usd) as total_cost,
         SUM(acs.total_tokens) as total_tokens,
@@ -352,7 +351,7 @@ export async function getTopUsersByCost(days = 30, limit = 20) {
       FROM ai_cost_summary acs
       JOIN users u ON acs.user_id = u.id
       WHERE acs.date >= CURRENT_DATE - INTERVAL '${parseInt(days)} days'
-      GROUP BY u.id, u.email, u.username, u.tier
+      GROUP BY u.id, u.email, u.tier
       ORDER BY total_cost DESC
       LIMIT $1
     `, [parseInt(limit)]);
@@ -360,7 +359,7 @@ export async function getTopUsersByCost(days = 30, limit = 20) {
     return result.rows.map(row => ({
       userId: row.id,
       email: row.email,
-      username: row.username,
+      username: row.email.split('@')[0], // Derive username from email
       tier: row.tier,
       totalCost: parseFloat(row.total_cost) || 0,
       totalTokens: parseInt(row.total_tokens) || 0,
