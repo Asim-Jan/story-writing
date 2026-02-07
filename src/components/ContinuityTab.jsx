@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, CheckCircle2, Clock, Users, MapPin, BookOpen, Sparkles, RefreshCw, TrendingUp, Zap, History, ChevronDown, ChevronUp, Check } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, Users, MapPin, BookOpen, Sparkles, RefreshCw, TrendingUp, Zap, History, ChevronDown, ChevronUp, Check, Trash2 } from 'lucide-react';
 import QuickFixModal from './QuickFixModal';
 
 const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
@@ -69,6 +69,37 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
   const handleCompareWithHistory = (item) => {
     // Simple comparison: show both side by side
     alert(`Current Score: ${analysis?.summary?.score || 0}%\nPrevious Score: ${item.score}%\n\nImprovement: ${(analysis?.summary?.score || 0) - item.score}%`);
+  };
+
+  const handleDeleteHistory = async (historyId) => {
+    if (!confirm('Are you sure you want to delete this analysis from history?')) {
+      return;
+    }
+
+    try {
+      const API_URL = window.location.hostname === 'localhost' ? 'http://localhost:3001' : '';
+      const response = await fetch(`${API_URL}/api/continuity-analyses/${historyId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete analysis');
+      }
+
+      // Refresh history list
+      fetchHistory();
+
+      // Clear selected history item if it was deleted
+      if (selectedHistoryItem?.id === historyId) {
+        setSelectedHistoryItem(null);
+      }
+    } catch (error) {
+      console.error('Error deleting history:', error);
+      alert('Failed to delete analysis. Please try again.');
+    }
   };
 
   const toggleFocusArea = (area) => {
@@ -236,7 +267,19 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
                     <span className="text-sm font-medium text-gray-700">
                       {new Date(item.created_at).toLocaleDateString()} {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    <span className="text-lg font-bold text-purple-600">{item.score}%</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-bold text-purple-600">{item.score}%</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteHistory(item.id);
+                        }}
+                        className="text-red-500 hover:text-red-700 p-1 rounded hover:bg-red-50 transition-colors"
+                        title="Delete this analysis"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                   {item.focus_areas && item.focus_areas.length > 0 && (
                     <p className="text-xs text-gray-500">Focus: {item.focus_areas.join(', ')}</p>
