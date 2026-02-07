@@ -466,7 +466,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     }
   };
 
-  const handleContinuityAnalysis = async () => {
+  const handleContinuityAnalysis = async (bookData, focusAreas = [], chapterIds = []) => {
     setGeneratingAI(true);
     try {
       const response = await fetch('/api/analyze-continuity', {
@@ -476,6 +476,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         },
         body: JSON.stringify({
           bookData: {
+            id: data.id,  // Add book ID for database saving
             bookTitle: data.bookTitle,
             overview: data.overview,
             characters: data.characters,
@@ -483,7 +484,9 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             plotlines: data.plotlines,
             timelines: data.timelines,
             chapters: data.chapters
-          }
+          },
+          focusAreas: focusAreas,
+          chapterIds: chapterIds
         })
       });
 

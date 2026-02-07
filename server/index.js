@@ -4307,7 +4307,7 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
 // Analyze story continuity
 app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
   try {
-    const { bookData } = req.body;
+    const { bookData, focusAreas = [], chapterIds = [] } = req.body;
 
     // Get user's OpenAI client (validates key exists)
     let userOpenai;
@@ -4323,7 +4323,16 @@ app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
       throw error;
     }
 
-    const systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
+    // Filter chapters if specific chapters selected
+    let chaptersToAnalyze = bookData.chapters || [];
+    if (chapterIds.length > 0) {
+      chaptersToAnalyze = chaptersToAnalyze.filter(ch =>
+        chapterIds.includes(ch.id?.toString())
+      );
+      console.log(`Analyzing ${chaptersToAnalyze.length} selected chapters out of ${bookData.chapters.length} total`);
+    }
+
+    let systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
 1. Timeline conflicts and chronological inconsistencies
 2. Character inconsistencies (behavior, traits, development)
 3. Plot holes and unresolved storylines
@@ -4350,6 +4359,10 @@ Return a JSON object with this structure:
   ]
 }`;
 
+    if (focusAreas.length > 0) {
+      systemPrompt += `\n\nFOCUS AREAS: Prioritize analysis of these specific aspects: ${focusAreas.join(', ')}. While you should still check all aspects, pay special attention to these areas in your analysis.`;
+    }
+
     const userPrompt = `Analyze this book for continuity issues:
 
 Title: ${bookData.bookTitle}
@@ -4363,7 +4376,8 @@ Plotlines: ${JSON.stringify(bookData.plotlines, null, 2)}
 
 Timeline: ${JSON.stringify(bookData.timelines, null, 2)}
 
-Chapters: ${bookData.chapters.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
+Chapters (${chaptersToAnalyze.length} ${chapterIds.length > 0 ? 'selected' : 'total'}):
+${chaptersToAnalyze.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
 
 Provide a thorough analysis with specific, actionable issues.`;
 
@@ -4379,6 +4393,27 @@ Provide a thorough analysis with specific, actionable issues.`;
 
     const analysisText = completion.choices[0].message.content;
     const analysis = JSON.parse(analysisText);
+
+    // Save analysis to database for history
+    try {
+      await getPool().query(`
+        INSERT INTO continuity_analyses
+        (id, book_id, user_id, analysis_result, score, focus_areas, chapter_ids, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      `, [
+        uuidv4(),
+        bookData.id || null,
+        req.user.userId,
+        JSON.stringify(analysis),
+        analysis.summary?.score || 0,
+        focusAreas,
+        chapterIds
+      ]);
+      console.log('Continuity analysis saved to database');
+    } catch (dbError) {
+      console.error('Error saving continuity analysis:', dbError);
+      // Don't fail the request if DB save fails
+    }
 
     res.json(analysis);
   } catch (error) {
