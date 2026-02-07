@@ -4422,6 +4422,81 @@ Provide a thorough analysis with specific, actionable issues.`;
   }
 });
 
+// Get continuity analysis history for a book
+app.get('/api/books/:bookId/continuity-history', authenticateToken, async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Verify user owns this book
+    const bookCheck = await getPool().query(
+      'SELECT id FROM books WHERE id = $1 AND owner_id = $2',
+      [bookId, req.user.userId]
+    );
+
+    if (bookCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Book not found' });
+    }
+
+    // Fetch history with pagination
+    const historyResult = await getPool().query(`
+      SELECT
+        id,
+        book_id,
+        analysis_result,
+        score,
+        focus_areas,
+        chapter_ids,
+        created_at
+      FROM continuity_analyses
+      WHERE book_id = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3 OFFSET $4
+    `, [bookId, req.user.userId, limit, offset]);
+
+    // Get total count
+    const countResult = await getPool().query(
+      'SELECT COUNT(*) FROM continuity_analyses WHERE book_id = $1 AND user_id = $2',
+      [bookId, req.user.userId]
+    );
+
+    res.json({
+      history: historyResult.rows,
+      total: parseInt(countResult.rows[0].count)
+    });
+  } catch (error) {
+    console.error('Error fetching continuity history:', error);
+    res.status(500).json({ error: 'Failed to fetch history', details: error.message });
+  }
+});
+
+// Delete a continuity analysis from history
+app.delete('/api/continuity-analyses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify user owns this analysis
+    const analysisCheck = await getPool().query(
+      'SELECT id FROM continuity_analyses WHERE id = $1 AND user_id = $2',
+      [id, req.user.userId]
+    );
+
+    if (analysisCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Analysis not found' });
+    }
+
+    // Delete the analysis
+    await getPool().query('DELETE FROM continuity_analyses WHERE id = $1', [id]);
+
+    console.log(`Deleted continuity analysis ${id}`);
+    res.json({ success: true, message: 'Analysis deleted' });
+  } catch (error) {
+    console.error('Error deleting continuity analysis:', error);
+    res.status(500).json({ error: 'Failed to delete analysis', details: error.message });
+  }
+});
+
 // ============ BOOK IMPORT ROUTES (Protected) ============
 
 // Upload and parse book file
