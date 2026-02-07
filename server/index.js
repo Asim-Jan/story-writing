@@ -3512,7 +3512,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
 
     // Save generation to history database with token usage and cost
     try {
-      await pool.query(`
+      await getPool().query(`
         INSERT INTO ai_generations
         (user_id, book_id, tool_type, prompt, result, model,
          prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
