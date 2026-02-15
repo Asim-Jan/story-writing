@@ -7147,6 +7147,60 @@ app.use(notFoundHandler);
 // Global error handler (must be last)
 app.use(errorHandler);
 
+// ============ MIGRATION ENDPOINT (Temporary - Remove after migration) ============
+app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    console.log('🔧 Running custom_focus_areas migration...');
+
+    // Run migration SQL
+    await getPool().query(`
+      ALTER TABLE books
+      ADD COLUMN IF NOT EXISTS custom_focus_areas TEXT[] DEFAULT ARRAY[]::TEXT[];
+    `);
+
+    await getPool().query(`
+      CREATE INDEX IF NOT EXISTS idx_books_custom_focus_areas
+      ON books USING GIN (custom_focus_areas);
+    `);
+
+    // Verify column exists
+    const columnCheck = await getPool().query(`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+      AND table_name = 'books'
+      AND column_name = 'custom_focus_areas'
+    `);
+
+    // Verify index exists
+    const indexCheck = await getPool().query(`
+      SELECT indexname
+      FROM pg_indexes
+      WHERE tablename = 'books'
+      AND indexname = 'idx_books_custom_focus_areas'
+    `);
+
+    console.log('✅ Migration complete!');
+    console.log(`  Column: ${columnCheck.rows.length > 0 ? '✓' : '✗'} custom_focus_areas`);
+    console.log(`  Index: ${indexCheck.rows.length > 0 ? '✓' : '✗'} idx_books_custom_focus_areas`);
+
+    res.json({
+      success: true,
+      message: 'Migration completed successfully',
+      column_exists: columnCheck.rows.length > 0,
+      index_exists: indexCheck.rows.length > 0,
+      column_info: columnCheck.rows[0] || null
+    });
+  } catch (error) {
+    console.error('❌ Migration failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Migration failed',
+      details: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log('\n🚀 Fiction Writing Studio Server');
   console.log('================================');
