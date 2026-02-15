@@ -3107,7 +3107,8 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         animation_projects: req.body.animationProjects || [],
         metadata: req.body.metadata || {},
         chapters: req.body.chapters || [],
-        status: req.body.status || 'draft'
+        status: req.body.status || 'draft',
+        custom_focus_areas: req.body.customFocusAreas || []
       };
 
       const book = await createBook(bookData);
@@ -3147,7 +3148,8 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         chapters: req.body.chapters,  // Add chapters to be synced
         status: req.body.status,
         word_count: req.body.wordCount || req.body.word_count,
-        chapter_count: req.body.chapterCount || req.body.chapter_count
+        chapter_count: req.body.chapterCount || req.body.chapter_count,
+        custom_focus_areas: req.body.customFocusAreas
       };
 
       // Remove undefined fields

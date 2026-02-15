@@ -12,6 +12,8 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
 
   // Focus areas state
   const [focusAreas, setFocusAreas] = useState([]);
+  const [customFocusAreas, setCustomFocusAreas] = useState(data.customFocusAreas || []);
+  const [newFocusArea, setNewFocusArea] = useState('');
 
   // Chapter selection state
   const [showChapterSelector, setShowChapterSelector] = useState(false);
@@ -29,6 +31,13 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
       fetchHistory();
     }
   }, [data.id]);
+
+  // Sync custom focus areas when data changes
+  useEffect(() => {
+    if (data.customFocusAreas && Array.isArray(data.customFocusAreas)) {
+      setCustomFocusAreas(data.customFocusAreas);
+    }
+  }, [data.customFocusAreas]);
 
   const fetchHistory = async () => {
     setLoadingHistory(true);
@@ -108,6 +117,24 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
         ? prev.filter(a => a !== area)
         : [...prev, area]
     );
+  };
+
+  const addCustomFocusArea = () => {
+    const trimmed = newFocusArea.trim().toLowerCase();
+    if (trimmed && !customFocusAreas.includes(trimmed)) {
+      const updated = [...customFocusAreas, trimmed];
+      setCustomFocusAreas(updated);
+      setData(prev => ({ ...prev, customFocusAreas: updated }));
+      setNewFocusArea('');
+    }
+  };
+
+  const removeCustomFocusArea = (area) => {
+    const updated = customFocusAreas.filter(a => a !== area);
+    setCustomFocusAreas(updated);
+    setData(prev => ({ ...prev, customFocusAreas: updated }));
+    // Also remove from selected focus areas if it was selected
+    setFocusAreas(prev => prev.filter(a => a !== area));
   };
 
   const toggleChapter = (chapterId) => {
@@ -310,7 +337,9 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
         {/* Focus Areas */}
         <div className="mb-4">
           <h4 className="font-semibold text-gray-800 mb-2">Focus Areas (optional):</h4>
-          <div className="flex flex-wrap gap-2">
+
+          {/* Preset Focus Areas */}
+          <div className="flex flex-wrap gap-2 mb-3">
             {focusAreaOptions.map(area => (
               <button
                 key={area}
@@ -327,7 +356,55 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
               </button>
             ))}
           </div>
-          <p className="text-xs text-gray-600 mt-2">Select specific areas to focus the analysis</p>
+
+          {/* Custom Focus Areas */}
+          {customFocusAreas.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {customFocusAreas.map(area => (
+                <button
+                  key={area}
+                  onClick={() => toggleFocusArea(area)}
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors ${
+                    focusAreas.includes(area)
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white text-gray-700 border border-indigo-300 hover:border-indigo-400'
+                  }`}
+                >
+                  {focusAreas.includes(area) && <Check size={14} />}
+                  <span className="capitalize text-sm">{area}</span>
+                  <Trash2
+                    size={12}
+                    className="ml-1 hover:text-red-500 cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeCustomFocusArea(area);
+                    }}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Add Custom Focus Area */}
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="text"
+              value={newFocusArea}
+              onChange={(e) => setNewFocusArea(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && addCustomFocusArea()}
+              placeholder="Add custom focus area (e.g., magic system, dialogue)"
+              className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <button
+              onClick={addCustomFocusArea}
+              disabled={!newFocusArea.trim()}
+              className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Add
+            </button>
+          </div>
+
+          <p className="text-xs text-gray-600 mt-2">Select areas to focus the analysis. Custom areas shown in blue.</p>
         </div>
 
         {/* Chapter Selection */}
