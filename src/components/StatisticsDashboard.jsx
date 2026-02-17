@@ -32,9 +32,15 @@ export default function StatisticsDashboard({ bookId }) {
   const loadData = async () => {
     try {
       setLoading(true);
+      const token = localStorage.getItem('token');
 
       // Load writing stats
-      const statsResponse = await fetch('/api/users/stats');
+      const statsResponse = await fetch('/api/users/stats', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
       if (statsResponse.ok) {
         const statsData = await statsResponse.json();
         setStats(statsData);
@@ -42,7 +48,12 @@ export default function StatisticsDashboard({ bookId }) {
 
       // Load book data if bookId provided
       if (bookId) {
-        const bookResponse = await fetch(`/api/books/${bookId}`);
+        const bookResponse = await fetch(`/api/books/${bookId}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          credentials: 'include'
+        });
         if (bookResponse.ok) {
           const book = await bookResponse.json();
           setBookData(book);

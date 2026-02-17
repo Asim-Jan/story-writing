@@ -17,7 +17,13 @@ export default function WritingGoals({ className = '' }) {
 
   const loadStats = async () => {
     try {
-      const response = await fetch('/api/users/stats');
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/users/stats', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
       if (response.ok) {
         const data = await response.json();
         setStats(data);
@@ -34,9 +40,14 @@ export default function WritingGoals({ className = '' }) {
 
   const saveGoals = async () => {
     try {
+      const token = localStorage.getItem('token');
       const response = await fetch('/api/users/goals', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include',
         body: JSON.stringify(goals),
       });
 
