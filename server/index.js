@@ -52,7 +52,6 @@ import TemplateRepository from './db/repositories/TemplateRepository.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
 import ChapterRepository from './db/repositories/ChapterRepository.js';
-import { ChapterDataService } from './db/dataService.js';
 import { getPool, query } from './db/postgres.js';
 import * as stripeService from './services/stripeService.js';
 import * as revenueAnalytics from './services/revenueAnalytics.js';
@@ -5719,7 +5718,7 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, a
     }
 
     // Get chapter to find current version
-    const chapter = await ChapterDataService.findById(chapterId);
+    const chapter = await ChapterRepository.findById(chapterId);
     if (!chapter) {
       return res.status(404).json({ error: 'Chapter not found' });
     }
@@ -5781,7 +5780,7 @@ app.get('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, as
     }
 
     // Get chapter to verify it belongs to this book
-    const chapter = await ChapterDataService.findById(chapterId);
+    const chapter = await ChapterRepository.findById(chapterId);
     if (!chapter) {
       return res.status(404).json({ error: 'Chapter not found' });
     }
@@ -5824,7 +5823,7 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions/:versionId/restore', a
     }
 
     // Get chapter to verify it belongs to this book and get current version
-    const chapter = await ChapterDataService.findById(chapterId);
+    const chapter = await ChapterRepository.findById(chapterId);
     if (!chapter) {
       return res.status(404).json({ error: 'Chapter not found' });
     }
