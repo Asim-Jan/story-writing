@@ -51,7 +51,9 @@ import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
-import { getPool } from './db/postgres.js';
+import ChapterRepository from './db/repositories/ChapterRepository.js';
+import { ChapterDataService } from './db/dataService.js';
+import { getPool, query } from './db/postgres.js';
 import * as stripeService from './services/stripeService.js';
 import * as revenueAnalytics from './services/revenueAnalytics.js';
 import * as engagementAnalytics from './services/engagementAnalytics.js';
@@ -5703,51 +5705,61 @@ app.post('/api/grammar-check', authenticateToken, async (req, res) => {
 
 // ==================== VERSION HISTORY ENDPOINTS ====================
 
-// Save a version of chapter content
+// Save a version of chapter content (manual save)
 app.post('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, async (req, res) => {
   try {
     const { bookId, chapterId } = req.params;
-    const { content, title } = req.body;
+    const { content, scenes } = req.body;
     const userId = req.user.userId;
 
-    const bookKey = `book:${userId}:${bookId}`;
-    const book = await getBook(bookId);
-
-    if (!book) {
-      return res.status(404).json({ error: 'Book not found' });
+    // Verify book access
+    const hasAccess = await checkBookAccess(bookId, userId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
-    
-
-    // Initialize versions array if not exists
-    if (!book.versions) {
-      book.versions = {};
-    }
-    if (!book.versions[chapterId]) {
-      book.versions[chapterId] = [];
+    // Get chapter to find current version
+    const chapter = await ChapterDataService.findById(chapterId);
+    if (!chapter) {
+      return res.status(404).json({ error: 'Chapter not found' });
     }
 
-    // Create version
-    const version = {
-      id: Date.now(),
-      content,
-      title: title || 'Auto-save',
-      timestamp: new Date().toISOString(),
-      wordCount: content.trim().split(/\s+/).filter(w => w).length,
-    };
-
-    // Add to beginning of array (newest first)
-    book.versions[chapterId].unshift(version);
-
-    // Keep only last 50 versions per chapter
-    if (book.versions[chapterId].length > 50) {
-      book.versions[chapterId] = book.versions[chapterId].slice(0, 50);
+    if (chapter.book_id !== bookId) {
+      return res.status(400).json({ error: 'Chapter does not belong to this book' });
     }
 
-    book.updatedAt = new Date().toISOString();
-    await updateBook(bookId, req.user.id, book);
+    // Calculate word count
+    const word_count = content.trim().split(/\s+/).filter(w => w.length > 0).length;
 
-    res.json({ success: true, version });
+    // Create version entry (version is auto-saved on chapter update via ChapterRepository)
+    // This endpoint is for manual version snapshots
+    const versionResult = await query(
+      `INSERT INTO chapter_versions (chapter_id, version_number, content, scenes, word_count, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        chapterId,
+        chapter.version + 1, // Next version
+        content,
+        JSON.stringify(scenes || []),
+        word_count,
+        userId
+      ]
+    );
+
+    const version = versionResult.rows[0];
+
+    res.json({
+      success: true,
+      version: {
+        id: version.id,
+        content: version.content,
+        title: chapter.title,
+        timestamp: version.created_at,
+        wordCount: version.word_count,
+        versionNumber: version.version_number
+      }
+    });
   } catch (error) {
     console.error('Save version error:', error);
     res.status(500).json({ error: 'Failed to save version' });
@@ -5759,18 +5771,40 @@ app.get('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, as
   try {
     const { bookId, chapterId } = req.params;
     const userId = req.user.userId;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
 
-    const bookKey = `book:${userId}:${bookId}`;
-    const book = await getBook(bookId);
-
-    if (!book) {
-      return res.status(404).json({ error: 'Book not found' });
+    // Verify book access
+    const hasAccess = await checkBookAccess(bookId, userId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
-    
-    const versions = book.versions?.[chapterId] || [];
+    // Get chapter to verify it belongs to this book
+    const chapter = await ChapterDataService.findById(chapterId);
+    if (!chapter) {
+      return res.status(404).json({ error: 'Chapter not found' });
+    }
 
-    res.json({ versions });
+    if (chapter.book_id !== bookId) {
+      return res.status(400).json({ error: 'Chapter does not belong to this book' });
+    }
+
+    // Get version history
+    const versions = await ChapterRepository.getVersionHistory(chapterId, { limit, offset });
+
+    // Format for frontend
+    const formattedVersions = versions.map(v => ({
+      id: v.id,
+      content: v.content,
+      title: chapter.title,
+      timestamp: v.created_at,
+      wordCount: v.word_count,
+      versionNumber: v.version_number,
+      createdBy: v.created_by_name || v.created_by_email || 'Unknown'
+    }));
+
+    res.json({ versions: formattedVersions });
   } catch (error) {
     console.error('Get versions error:', error);
     res.status(500).json({ error: 'Failed to get versions' });
@@ -5783,39 +5817,60 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions/:versionId/restore', a
     const { bookId, chapterId, versionId } = req.params;
     const userId = req.user.userId;
 
-    const bookKey = `book:${userId}:${bookId}`;
-    const book = await getBook(bookId);
-
-    if (!book) {
-      return res.status(404).json({ error: 'Book not found' });
+    // Verify book access
+    const hasAccess = await checkBookAccess(bookId, userId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
-    
-    const version = book.versions?.[chapterId]?.find(v => v.id.toString() === versionId);
+    // Get chapter to verify it belongs to this book and get current version
+    const chapter = await ChapterDataService.findById(chapterId);
+    if (!chapter) {
+      return res.status(404).json({ error: 'Chapter not found' });
+    }
 
-    if (!version) {
+    if (chapter.book_id !== bookId) {
+      return res.status(400).json({ error: 'Chapter does not belong to this book' });
+    }
+
+    // Get the version to restore
+    const versionResult = await query(
+      'SELECT * FROM chapter_versions WHERE id = $1 AND chapter_id = $2',
+      [versionId, chapterId]
+    );
+
+    if (versionResult.rows.length === 0) {
       return res.status(404).json({ error: 'Version not found' });
     }
 
-    // Update chapter with version content
-    book.chapters = book.chapters.map(ch => {
-      if (ch.id.toString() === chapterId) {
-        return {
-          ...ch,
-          content: version.content,
-          wordCount: version.wordCount,
-          updatedAt: new Date().toISOString(),
-        };
+    const version = versionResult.rows[0];
+
+    // Restore the version using repository method
+    const updatedChapter = await ChapterRepository.restoreVersion(
+      chapterId,
+      version.version_number,
+      chapter.version,
+      userId
+    );
+
+    res.json({
+      success: true,
+      chapter: {
+        id: updatedChapter.id,
+        number: updatedChapter.chapter_number,
+        title: updatedChapter.title,
+        content: updatedChapter.content,
+        wordCount: updatedChapter.word_count,
+        scenes: typeof updatedChapter.scenes === 'string' ? JSON.parse(updatedChapter.scenes) : updatedChapter.scenes,
+        updatedAt: updatedChapter.updated_at,
+        version: updatedChapter.version
       }
-      return ch;
     });
-
-    book.updatedAt = new Date().toISOString();
-    await updateBook(bookId, req.user.id, book);
-
-    res.json({ success: true, chapter: book.chapters.find(ch => ch.id.toString() === chapterId) });
   } catch (error) {
     console.error('Restore version error:', error);
+    if (error.message.includes('CONFLICT')) {
+      return res.status(409).json({ error: error.message });
+    }
     res.status(500).json({ error: 'Failed to restore version' });
   }
 });
