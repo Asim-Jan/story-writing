@@ -3165,6 +3165,53 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
 
       const book = await updateBook(id, req.user.userId, updates, expectedVersion);
 
+      // Track words written for writing goals
+      if (updates.chapters && existing.chapters) {
+        // Calculate word count difference
+        const oldWordCount = existing.chapters.reduce((sum, ch) => sum + (ch.word_count || ch.wordCount || 0), 0);
+        const newWordCount = updates.chapters.reduce((sum, ch) => sum + (ch.word_count || ch.wordCount || 0), 0);
+        const wordsWritten = Math.max(0, newWordCount - oldWordCount);
+
+        if (wordsWritten > 0) {
+          try {
+            // Update today's writing stats
+            const today = new Date().toISOString().split('T')[0];
+            const statsKey = `user:${req.user.userId}:stats`;
+            let stats = await getStats(statsKey);
+            if (!stats) {
+              stats = { daily: [], goals: {} };
+            }
+
+            const todayIndex = stats.daily.findIndex(d => d.date === today);
+            if (todayIndex >= 0) {
+              stats.daily[todayIndex].wordsWritten = (stats.daily[todayIndex].wordsWritten || 0) + wordsWritten;
+              if (!stats.daily[todayIndex].chaptersEdited) {
+                stats.daily[todayIndex].chaptersEdited = [];
+              }
+            } else {
+              stats.daily.push({
+                date: today,
+                wordsWritten,
+                timeSpent: 0,
+                chaptersEdited: []
+              });
+            }
+
+            // Keep only last 365 days
+            if (stats.daily.length > 365) {
+              stats.daily.sort((a, b) => new Date(b.date) - new Date(a.date));
+              stats.daily = stats.daily.slice(0, 365);
+            }
+
+            await setStats(statsKey, stats);
+            console.log(`📝 Tracked ${wordsWritten} words written by user ${req.user.userId}`);
+          } catch (error) {
+            console.error('Error tracking writing stats:', error);
+            // Don't fail the request if stats tracking fails
+          }
+        }
+      }
+
       // Update user quota usage after book/chapter changes
       await updateQuotaUsage(req.user.userId);
 

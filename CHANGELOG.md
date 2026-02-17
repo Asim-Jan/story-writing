@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.0] - 2026-02-17
+
+### Added
+- **Writing Goals & Progress Tracking** - Motivational writing goals system
+  - Writing Goals widget in Profile page with daily/weekly/monthly progress bars
+  - Statistics Dashboard with time-range charts (week/month/year)
+  - Writing streak counter to track consecutive writing days
+  - Goal customization (set your own word count targets)
+  - Automatic word count tracking when editing chapters
+  - Real-time progress visualization with color-coded completion
+  - Historical analytics with recharts integration
+  - 365-day rolling window for writing statistics
+
+### Changed
+- Profile page now has "Writing Goals" tab with integrated goal tracker and analytics
+- Book saves automatically track words written and update daily statistics
+- Word count differences calculated on each chapter save to log progress
+
 ## [2.18.11] - 2026-02-17
 
 ### Added
