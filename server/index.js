@@ -48,6 +48,7 @@ import {
   updateQuotaUsage
 } from './middleware/quotaEnforcement.js';
 import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
+import TemplateRepository from './db/repositories/TemplateRepository.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
 import { getPool } from './db/postgres.js';
@@ -3107,7 +3108,8 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         animation_projects: req.body.animationProjects || [],
         metadata: req.body.metadata || {},
         chapters: req.body.chapters || [],
-        status: req.body.status || 'draft'
+        status: req.body.status || 'draft',
+        custom_focus_areas: req.body.customFocusAreas || []
       };
 
       const book = await createBook(bookData);
@@ -3147,7 +3149,8 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         chapters: req.body.chapters,  // Add chapters to be synced
         status: req.body.status,
         word_count: req.body.wordCount || req.body.word_count,
-        chapter_count: req.body.chapterCount || req.body.chapter_count
+        chapter_count: req.body.chapterCount || req.body.chapter_count,
+        custom_focus_areas: req.body.customFocusAreas
       };
 
       // Remove undefined fields
@@ -3161,6 +3164,9 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
       const expectedVersion = existing.version;
 
       const book = await updateBook(id, req.user.userId, updates, expectedVersion);
+
+      // Update user quota usage after book/chapter changes
+      await updateQuotaUsage(req.user.userId);
 
       // Enhanced debug logging to identify which field is undefined
       console.log('Book PUT response - all array fields:', {
@@ -3512,7 +3518,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
 
     // Save generation to history database with token usage and cost
     try {
-      await pool.query(`
+      await getPool().query(`
         INSERT INTO ai_generations
         (user_id, book_id, tool_type, prompt, result, model,
          prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
@@ -3536,6 +3542,9 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       // Don't fail the request if DB save fails
     }
 
+    // Increment AI request counter for quota tracking
+    await incrementAICounter(req.user.userId);
+
     res.json(generatedData);
   } catch (error) {
     console.error('Error generating content:', error);
@@ -3548,6 +3557,74 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
     }
 
     res.status(500).json({ error: 'Failed to generate content', details: error.message });
+  }
+});
+
+// Batch generation endpoint - generate multiple variations
+app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) => {
+  try {
+    const { type, prompt, context, quantity = 3 } = req.body;
+
+    if (!type || !prompt) {
+      return res.status(400).json({ error: 'Type and prompt are required' });
+    }
+
+    // Validate quantity (2-5)
+    const validQuantity = Math.min(Math.max(parseInt(quantity), 2), 5);
+
+    // Check if user has enough AI quota for batch generation
+    const quotas = await getUserQuotas(req.user.userId);
+    const aiRemaining = quotas.aiRequestsLimit - quotas.aiRequestsUsed;
+
+    if (aiRemaining < validQuantity) {
+      return res.status(403).json({
+        error: 'Insufficient AI quota',
+        message: `Batch generation requires ${validQuantity} AI requests, but you only have ${aiRemaining} remaining.`
+      });
+    }
+
+    const variations = [];
+
+    // Generate multiple variations
+    for (let i = 0; i < validQuantity; i++) {
+      try {
+        // Add variation number to prompt
+        const variationPrompt = `${prompt}\n\n[Generate a unique variation #${i + 1}. Make it distinctly different from other variations while maintaining the core requirements.]`;
+
+        // Reuse the same generation logic from /api/generate
+        const response = await fetch(`${process.env.API_URL || 'http://localhost:3001'}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${req.headers.authorization?.split(' ')[1]}`
+          },
+          body: JSON.stringify({
+            type,
+            prompt: variationPrompt,
+            context
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          variations.push({
+            id: i + 1,
+            result
+          });
+        }
+      } catch (error) {
+        console.error(`Error generating variation ${i + 1}:`, error);
+        variations.push({
+          id: i + 1,
+          error: 'Failed to generate this variation'
+        });
+      }
+    }
+
+    res.json({ variations });
+  } catch (error) {
+    console.error('Batch generation error:', error);
+    res.status(500).json({ error: 'Failed to generate batch', details: error.message });
   }
 });
 
@@ -4301,7 +4378,7 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
 // Analyze story continuity
 app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
   try {
-    const { bookData } = req.body;
+    const { bookData, focusAreas = [], chapterIds = [] } = req.body;
 
     // Get user's OpenAI client (validates key exists)
     let userOpenai;
@@ -4317,7 +4394,16 @@ app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
       throw error;
     }
 
-    const systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
+    // Filter chapters if specific chapters selected
+    let chaptersToAnalyze = bookData.chapters || [];
+    if (chapterIds.length > 0) {
+      chaptersToAnalyze = chaptersToAnalyze.filter(ch =>
+        chapterIds.includes(ch.id?.toString())
+      );
+      console.log(`Analyzing ${chaptersToAnalyze.length} selected chapters out of ${bookData.chapters.length} total`);
+    }
+
+    let systemPrompt = `You are an expert story editor analyzing a book for consistency, continuity, and quality issues. Analyze the provided book data and identify:
 1. Timeline conflicts and chronological inconsistencies
 2. Character inconsistencies (behavior, traits, development)
 3. Plot holes and unresolved storylines
@@ -4344,6 +4430,10 @@ Return a JSON object with this structure:
   ]
 }`;
 
+    if (focusAreas.length > 0) {
+      systemPrompt += `\n\nFOCUS AREAS: Prioritize analysis of these specific aspects: ${focusAreas.join(', ')}. While you should still check all aspects, pay special attention to these areas in your analysis.`;
+    }
+
     const userPrompt = `Analyze this book for continuity issues:
 
 Title: ${bookData.bookTitle}
@@ -4357,7 +4447,8 @@ Plotlines: ${JSON.stringify(bookData.plotlines, null, 2)}
 
 Timeline: ${JSON.stringify(bookData.timelines, null, 2)}
 
-Chapters: ${bookData.chapters.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
+Chapters (${chaptersToAnalyze.length} ${chapterIds.length > 0 ? 'selected' : 'total'}):
+${chaptersToAnalyze.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
 
 Provide a thorough analysis with specific, actionable issues.`;
 
@@ -4374,10 +4465,106 @@ Provide a thorough analysis with specific, actionable issues.`;
     const analysisText = completion.choices[0].message.content;
     const analysis = JSON.parse(analysisText);
 
+    // Save analysis to database for history
+    try {
+      await getPool().query(`
+        INSERT INTO continuity_analyses
+        (id, book_id, user_id, analysis_result, score, focus_areas, chapter_ids, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      `, [
+        uuidv4(),
+        bookData.id || null,
+        req.user.userId,
+        JSON.stringify(analysis),
+        analysis.summary?.score || 0,
+        focusAreas,
+        chapterIds
+      ]);
+      console.log('Continuity analysis saved to database');
+    } catch (dbError) {
+      console.error('Error saving continuity analysis:', dbError);
+      // Don't fail the request if DB save fails
+    }
+
     res.json(analysis);
   } catch (error) {
     console.error('Continuity analysis error:', error);
     res.status(500).json({ error: 'Failed to analyze continuity', details: error.message });
+  }
+});
+
+// Get continuity analysis history for a book
+app.get('/api/books/:bookId/continuity-history', authenticateToken, async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Verify user owns this book
+    const bookCheck = await getPool().query(
+      'SELECT id FROM books WHERE id = $1 AND owner_id = $2',
+      [bookId, req.user.userId]
+    );
+
+    if (bookCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Book not found' });
+    }
+
+    // Fetch history with pagination
+    const historyResult = await getPool().query(`
+      SELECT
+        id,
+        book_id,
+        analysis_result,
+        score,
+        focus_areas,
+        chapter_ids,
+        created_at
+      FROM continuity_analyses
+      WHERE book_id = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3 OFFSET $4
+    `, [bookId, req.user.userId, limit, offset]);
+
+    // Get total count
+    const countResult = await getPool().query(
+      'SELECT COUNT(*) FROM continuity_analyses WHERE book_id = $1 AND user_id = $2',
+      [bookId, req.user.userId]
+    );
+
+    res.json({
+      history: historyResult.rows,
+      total: parseInt(countResult.rows[0].count)
+    });
+  } catch (error) {
+    console.error('Error fetching continuity history:', error);
+    res.status(500).json({ error: 'Failed to fetch history', details: error.message });
+  }
+});
+
+// Delete a continuity analysis from history
+app.delete('/api/continuity-analyses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify user owns this analysis
+    const analysisCheck = await getPool().query(
+      'SELECT id FROM continuity_analyses WHERE id = $1 AND user_id = $2',
+      [id, req.user.userId]
+    );
+
+    if (analysisCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Analysis not found' });
+    }
+
+    // Delete the analysis
+    await getPool().query('DELETE FROM continuity_analyses WHERE id = $1', [id]);
+
+    console.log(`Deleted continuity analysis ${id}`);
+    res.json({ success: true, message: 'Analysis deleted' });
+  } catch (error) {
+    console.error('Error deleting continuity analysis:', error);
+    res.status(500).json({ error: 'Failed to delete analysis', details: error.message });
   }
 });
 
@@ -7023,11 +7210,798 @@ app.get('/api/users/quotas', authenticateToken, async (req, res) => {
   }
 });
 
-// 404 handler for undefined routes
+// ============ TEMPLATE BOOKS ENDPOINTS (Phase 8) ============
+
+/**
+ * GET /api/templates
+ * Get all available template books (public for authenticated users)
+ */
+app.get('/api/templates', authenticateToken, async (req, res) => {
+  try {
+    const { category, limit = 50, offset = 0 } = req.query;
+
+    const templates = await TemplateRepository.getTemplates({
+      category,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    res.json(templates);
+  } catch (error) {
+    console.error('Error fetching templates:', error);
+    res.status(500).json({ error: 'Failed to fetch templates' });
+  }
+});
+
+/**
+ * GET /api/templates/:templateId
+ * Get template details with full preview data
+ */
+app.get('/api/templates/:templateId', authenticateToken, async (req, res) => {
+  try {
+    const { templateId } = req.params;
+
+    // Get template
+    const template = await TemplateRepository.getTemplateById(templateId);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    // Get chapters for preview
+    const chapters = await TemplateRepository.getTemplateChapters(templateId);
+
+    res.json({
+      ...template,
+      chapters: chapters.map(ch => ({
+        id: ch.id,
+        chapter_number: ch.chapter_number,
+        title: ch.title,
+        word_count: ch.word_count,
+        // Include first 500 chars of content for preview
+        preview: ch.content ? ch.content.substring(0, 500) + '...' : ''
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching template:', error);
+    res.status(500).json({ error: 'Failed to fetch template' });
+  }
+});
+
+/**
+ * POST /api/templates/:templateId/clone
+ * Clone a template to user's library
+ */
+app.post('/api/templates/:templateId/clone', authenticateToken, checkBookQuota, async (req, res) => {
+  try {
+    const { templateId } = req.params;
+    const { title } = req.body; // Optional custom title
+    const userId = req.user.userId;
+
+    const clonedBook = await TemplateRepository.cloneTemplate(
+      templateId,
+      userId,
+      { title }
+    );
+
+    // Update quota usage
+    await updateQuotaUsage(userId);
+
+    // Log activity
+    await logUserActivity(userId, 'template_cloned', {
+      template_id: templateId,
+      book_id: clonedBook.id,
+      title: clonedBook.title
+    }, req);
+
+    res.status(201).json(clonedBook);
+  } catch (error) {
+    console.error('Error cloning template:', error);
+    res.status(500).json({ error: error.message || 'Failed to clone template' });
+  }
+});
+
+// ============ ADMIN TEMPLATE MANAGEMENT ENDPOINTS ============
+
+/**
+ * POST /api/admin/templates
+ * Create new template (Admin only)
+ */
+app.post('/api/admin/templates', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const template = await TemplateRepository.createTemplate(req.body);
+
+    // Log admin action
+    await logUserActivity(req.user.userId, 'admin_template_created', {
+      template_id: template.id,
+      title: template.title,
+      category: template.template_category
+    }, req);
+
+    res.status(201).json(template);
+  } catch (error) {
+    console.error('Error creating template:', error);
+    res.status(500).json({ error: 'Failed to create template' });
+  }
+});
+
+/**
+ * PUT /api/admin/templates/:templateId
+ * Update template (Admin only)
+ */
+app.put('/api/admin/templates/:templateId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { templateId } = req.params;
+    const updates = req.body;
+
+    const updatedTemplate = await TemplateRepository.updateTemplate(templateId, updates);
+
+    await logUserActivity(req.user.userId, 'admin_template_updated', {
+      template_id: templateId,
+      title: updatedTemplate.title
+    }, req);
+
+    res.json(updatedTemplate);
+  } catch (error) {
+    console.error('Error updating template:', error);
+    res.status(500).json({ error: error.message || 'Failed to update template' });
+  }
+});
+
+/**
+ * DELETE /api/admin/templates/:templateId
+ * Delete template (Admin only)
+ */
+app.delete('/api/admin/templates/:templateId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { templateId } = req.params;
+
+    const success = await TemplateRepository.deleteTemplate(templateId);
+
+    if (!success) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    await logUserActivity(req.user.userId, 'admin_template_deleted', {
+      template_id: templateId
+    }, req);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting template:', error);
+    res.status(500).json({ error: 'Failed to delete template' });
+  }
+});
+
+/**
+ * GET /api/admin/templates/analytics
+ * Get template usage analytics (Admin only)
+ */
+app.get('/api/admin/templates/analytics', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const analytics = await TemplateRepository.getTemplateAnalytics();
+    res.json(analytics);
+  } catch (error) {
+    console.error('Error fetching template analytics:', error);
+    res.status(500).json({ error: 'Failed to fetch analytics' });
+  }
+});
+
+/**
+ * POST /api/admin/templates/seed
+ * Seed initial template books with full content (Admin only, run once)
+ */
+app.post('/api/admin/templates/seed', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    console.log('🌱 Seeding template books with chapters...');
+
+    // Delete existing templates first
+    await getPool().query('DELETE FROM books WHERE is_template = TRUE');
+    console.log('  🗑️  Cleared existing templates');
+
+    const { v4: uuidv4 } = await import('uuid');
+    const seeded = [];
+
+    // Template 1: Fantasy - The Dragon's Awakening
+    const fantasy = await TemplateRepository.createTemplate({
+      title: 'The Dragon\'s Awakening',
+      description: 'A young blacksmith discovers they are the last of an ancient lineage of dragon riders.',
+      genre: 'Fantasy',
+      target_audience: 'Young Adult',
+      template_category: 'Fantasy',
+      template_description: 'Epic fantasy adventure with dragons, magic, and a hero\'s journey. Perfect for high-fantasy stories.',
+      template_tags: ['Dragons', 'Magic', 'Hero\'s Journey', 'Medieval'],
+      template_order: 1,
+      characters: [
+        { id: Date.now() + 1, name: 'Kira Ironforge', role: 'Protagonist', age: '17', gender: 'Female', background: 'Raised as a blacksmith\'s apprentice', personality: 'Determined, compassionate', arc: 'From ordinary blacksmith to dragon rider' },
+        { id: Date.now() + 2, name: 'Ember', role: 'Dragon Companion', background: 'Last fire dragon', personality: 'Proud, wise, protective' },
+        { id: Date.now() + 3, name: 'Master Thorne', role: 'Mentor', age: '68', gender: 'Male', background: 'Former dragon rider in hiding', personality: 'Wise, secretive' }
+      ],
+      locations: [
+        { id: Date.now() + 1, name: 'Ironforge Village', type: 'Settlement', description: 'Small mining village', significance: 'Kira\'s home' },
+        { id: Date.now() + 2, name: 'The Sundered Peaks', type: 'Mountains', description: 'Ancient dragon sanctuary', significance: 'Location of trials' },
+        { id: Date.now() + 3, name: 'Crystalkeep', type: 'City', description: 'Capital ruled by Dragon Council', significance: 'Final destination' }
+      ],
+      plotlines: [
+        { id: Date.now() + 1, title: 'The Awakening', type: 'main', description: 'Kira discovers dragon connection', status: 'in-progress' },
+        { id: Date.now() + 2, title: 'The Dark Rising', type: 'main', description: 'Ancient evil threatens both species', status: 'planning' },
+        { id: Date.now() + 3, title: 'Forbidden Bond', type: 'subplot', description: 'Romance despite traditions', status: 'planning' }
+      ],
+      world_building: {
+        magic_system: 'Elemental dragon magic bound to bloodlines',
+        history: 'Great Betrayal 500 years ago led to near-extinction',
+        culture: 'Divided between old ways and dragon fear'
+      }
+    });
+
+    // Add chapters for Fantasy
+    await getPool().query(
+      `INSERT INTO chapters (id, book_id, chapter_number, title, content, word_count, status)
+       VALUES
+       ($1, $2, 1, 'The Stone in the Forge', $3, 328, 'completed'),
+       ($4, $2, 2, 'The Hatching', $5, 267, 'completed'),
+       ($6, $2, 3, 'The Bond', $7, 293, 'completed')`,
+      [
+        uuidv4(), fantasy.id,
+        `The hammer fell with a rhythm Kira knew in her bones. Strike, turn, strike, turn. Each impact sent sparks dancing across the darkened forge, illuminating the sweat on her brow.
+
+"You're getting better," Master Thorne called from his workbench, not looking up from the sword he was etching. "But you still hesitate before the final strike."
+
+Kira paused, the hammer heavy in her hand. He was right, as always. There was something about that last blow, the one that would set the shape permanently, that made her second-guess herself.
+
+"I just want to get it perfect," she said, plunging the half-formed horseshoe into the water. Steam hissed up in a cloud.
+
+"Perfect is the enemy of done." Thorne finally looked up, his weathered face creasing with a smile. "Besides, you've got a visitor."
+
+Before Kira could ask what he meant, a small boy burst through the forge door, his eyes wide with excitement.
+
+"Miss Kira! Miss Kira! You have to come see! There's a stone in the old well, and it's glowing!"
+
+Kira exchanged a glance with Master Thorne. His smile had vanished, replaced by something she'd never seen before: fear.
+
+"Show me," she said, untying her leather apron.
+
+The stone in the well was unlike anything she'd ever seen. Perfectly spherical, about the size of a man's head, it pulsed with an inner light that seemed to beat in time with her own heart. Without thinking, she reached for it.
+
+"Kira, wait—" Master Thorne's warning came too late.
+
+The moment her fingers touched the stone's surface, the world exploded into fire and light. Through the flames, she saw them: great wings, scales that shimmered like jewels, eyes that held the wisdom of ages. Dragons.
+
+And in that moment, the stone cracked open, and everything changed.`,
+        uuidv4(),
+        `When Kira's vision cleared, she was on her back in the dirt, staring up at the evening sky. Master Thorne leaned over her, his face a mixture of concern and resignation.
+
+"I was hoping we'd have more time," he said quietly.
+
+But Kira wasn't listening. Her attention was fixed on the creature sitting on her chest. It was no bigger than a cat, with scales that shifted between crimson and gold in the fading light. Its eyes—ancient, knowing eyes—stared directly into hers.
+
+"What... what is it?" she whispered, though somewhere deep inside, she already knew.
+
+"A dragon." Thorne helped her sit up, careful not to disturb the small creature. "The last one, I suspect."
+
+"But dragons are extinct. Everyone knows that."
+
+"Is that what everyone knows?" A hint of his old humor returned. "Or is that what everyone was meant to believe?"
+
+The dragon—already Kira was thinking of it as Ember, though she didn't know why—let out a small chirp and nuzzled against her palm. The touch sent warmth flooding through her, and with it, understanding. Not words, exactly, but feelings. Emotions. A bond forming between them that felt older than time itself.
+
+"What happens now?" Kira asked.
+
+Master Thorne looked toward the mountains, where the setting sun painted the peaks in shades of fire. "Now? Now you learn what it truly means to be a dragon rider. And pray that history doesn't repeat itself."`,
+        uuidv4(),
+        `The dragon refused to leave her side. Master Thorne explained what he could: the ancient pact between dragons and humans, the betrayal that led to their near extinction, and the bloodline that connected Kira to the dragon riders of old.
+
+"Your parents didn't die in a mining accident," he said, the words heavy with years of carried guilt. "They were the last dragon riders, hunted down by those who feared what they represented."
+
+Kira felt her world tilting. Everything she thought she knew about herself, about her past, was built on lies.
+
+"Why didn't you tell me?"
+
+"To protect you. As long as you didn't know, as long as no dragon had claimed you, you were safe." He gestured to Ember, who was now curled up in Kira's lap, purring like an oversized cat. "But now... now everything changes."
+
+As if in response, Ember raised her head and released a small puff of flame—barely more than a candle's flicker, but enough to illuminate the birthmark on Kira's wrist. A mark she'd always thought was just a stain from the forge.
+
+In the firelight, it was clearly a dragon in flight.
+
+"There are others who will sense the awakening," Thorne continued. "Some will want to help you. Others will want you dead. We need to reach the Sundered Peaks before they find you."
+
+Kira looked down at the tiny dragon in her lap, then up at the mountains that had always been part of her horizon but never her destination.
+
+"When do we leave?"
+
+"At first light. Pack light, and bring your hammer. Where we're going, you'll need it."`
+      ]
+    );
+
+    await getPool().query(
+      'UPDATE books SET chapter_count = 3, word_count = 888 WHERE id = $1',
+      [fantasy.id]
+    );
+    seeded.push('The Dragon\'s Awakening');
+    console.log('  ✓ The Dragon\'s Awakening (3 chapters, 888 words)');
+
+    // Template 2: Romance - Letters from Yesterday
+    const romance = await TemplateRepository.createTemplate({
+      title: 'Letters from Yesterday',
+      description: 'When a bookstore owner finds vintage love letters hidden in an old book, she sets out to reunite them with their intended recipient.',
+      genre: 'Romance',
+      target_audience: 'Adult',
+      template_category: 'Romance',
+      template_description: 'Contemporary romance with mystery elements. Perfect for heartfelt emotional journeys.',
+      template_tags: ['Contemporary', 'Small Town', 'Second Chances', 'Emotional'],
+      template_order: 2,
+      characters: [
+        { id: Date.now() + 4, name: 'Emma Collins', role: 'Protagonist', age: '32', gender: 'Female', background: 'Bookstore owner', personality: 'Romantic, guarded' },
+        { id: Date.now() + 5, name: 'James Morrison', role: 'Love Interest', age: '34', gender: 'Male', background: 'Local architect', personality: 'Patient, creative' },
+        { id: Date.now() + 6, name: 'Margaret Hayes', role: 'Supporting', age: '78', gender: 'Female', background: 'Longtime resident', personality: 'Wise, mysterious' }
+      ],
+      locations: [
+        { id: Date.now() + 4, name: 'The Turning Page Bookshop', type: 'Business', description: 'Cozy bookstore', significance: 'Where mystery begins' },
+        { id: Date.now() + 5, name: 'Maplewood Town Square', type: 'Public Space', description: 'Historic town center', significance: 'Meeting place in letters' }
+      ],
+      plotlines: [
+        { id: Date.now() + 4, title: 'The Mystery', type: 'main', description: 'Tracking down letter recipients', status: 'in-progress' },
+        { id: Date.now() + 5, title: 'Unexpected Love', type: 'main', description: 'Emma and James grow closer', status: 'in-progress' }
+      ],
+      world_building: {
+        setting: 'Small New England town',
+        atmosphere: 'Cozy, nostalgic, romantic',
+        time_period: 'Contemporary with 1970 flashbacks'
+      }
+    });
+
+    await getPool().query(
+      `INSERT INTO chapters (id, book_id, chapter_number, title, content, word_count, status)
+       VALUES
+       ($1, $2, 1, 'The Discovery', $3, 295, 'completed'),
+       ($4, $2, 2, 'The Architect', $5, 319, 'completed')`,
+      [
+        uuidv4(), romance.id,
+        `Emma loved the smell of old books. Not the musty odor of neglect, but that warm, vanilla-like scent of well-loved pages that had been turned by countless hands over the years.
+
+She was unpacking a box of estate sale finds when she found it: a first edition of "The Great Gatsby," its dust jacket surprisingly intact. As she opened it to check the copyright page, something fluttered out.
+
+The envelope was yellowed with age, addressed in elegant handwriting: "To my darling M—" The rest was smudged, illegible.
+
+Inside, she found a letter dated June 15th, 1970.
+
+"My dearest Margaret," it began.
+
+Emma knew she shouldn't read it. These were private words, meant for someone else's eyes. But the romantic in her—the part she thought she'd successfully buried after her engagement fell apart last year—couldn't resist.
+
+As she read, tears welled in her eyes. This wasn't just a love letter. It was a goodbye, filled with regret and longing and the promise of a love that transcended whatever was keeping them apart.
+
+And at the bottom, a signature: "Forever yours, J."
+
+Emma looked at the book again. There, barely visible on the inside cover, was a bookplate: "From the library of Margaret Hayes, Maplewood."
+
+Margaret Hayes. Emma knew that name. She'd seen it just this morning on a check for a book order.
+
+Margaret Hayes still lived in Maplewood.
+
+The bell above the door chimed, startling her from her thoughts. She looked up to find James Morrison standing in the doorway, coffee in one hand and a rolled-up blueprint in the other.
+
+"You look like you've seen a ghost," he said, his eyes crinkling with concern.
+
+Emma glanced down at the letter, then back at James. Maybe she had.`,
+        uuidv4(),
+        `"You want to do what?"
+
+James set down his coffee cup and stared at Emma like she'd suggested they rob a bank.
+
+"Return a love letter," Emma repeated patiently. They were sitting in the Morning Brew café, and she'd just explained about finding the letter. "It's been fifty years. Don't you think she deserves to know he never forgot her?"
+
+"And you know this how? Maybe they're married to other people. Maybe reopening old wounds is the last thing either of them needs."
+
+Emma had known James since they were kids, but they'd only reconnected when he moved back to Maplewood last year after his divorce. He'd become her go-to contractor for the bookstore's ongoing restoration.
+
+"Or maybe," she said, leaning forward, "maybe this is a second chance. Maybe all this time, they've both been wondering 'what if?'"
+
+James's expression softened. "You're a hopeless romantic, Emma Collins."
+
+"Better than a hopeless cynic."
+
+He laughed at that, the sound warming something inside her chest that she'd thought had frozen solid. "Fine. I'll help you. But only because I know you'll do it anyway, and I don't want you getting into trouble alone."
+
+As he smiled at her across the table, Emma felt something shift. Something she definitely wasn't ready to name.
+
+"Thank you," she said quietly. "It means a lot."
+
+"Besides," James added, pulling out his phone, "I've always been curious about the Hayes estate. It's one of the original Victorian houses in town. If we're going to be playing detective, we might as well start with some architectural research."
+
+Emma couldn't help but smile. This was why she liked him—his practical approach balanced her romantic tendencies perfectly.
+
+"What?" James asked, catching her expression.
+
+"Nothing. Just... I'm glad you moved back to town."
+
+"Yeah," he said, his eyes holding hers for a moment longer than necessary. "Me too."`
+      ]
+    );
+
+    await getPool().query(
+      'UPDATE books SET chapter_count = 2, word_count = 614 WHERE id = $1',
+      [romance.id]
+    );
+    seeded.push('Letters from Yesterday');
+    console.log('  ✓ Letters from Yesterday (2 chapters, 614 words)');
+
+    // Template 3: Sci-Fi - Colony Drift
+    const scifi = await TemplateRepository.createTemplate({
+      title: 'Colony Drift',
+      description: 'A generation ship\'s navigation officer discovers the ship\'s course has been altered, and they\'re headed toward something that shouldn\'t exist.',
+      genre: 'Science Fiction',
+      target_audience: 'Adult',
+      template_category: 'Sci-Fi',
+      template_description: 'Hard science fiction with mystery elements. Perfect for space opera stories.',
+      template_tags: ['Space Opera', 'Mystery', 'Hard Sci-Fi', 'First Contact'],
+      template_order: 3,
+      characters: [
+        { id: Date.now() + 7, name: 'Lt. Mara Chen', role: 'Protagonist', age: '29', gender: 'Female', background: 'Navigation officer', personality: 'Analytical, duty-bound' },
+        { id: Date.now() + 8, name: 'Dr. Elias Novak', role: 'Deuteragonist', age: '35', gender: 'Male', background: 'Ship astrophysicist', personality: 'Brilliant, eccentric' },
+        { id: Date.now() + 9, name: 'Captain Sarah Winters', role: 'Antagonist', age: '52', gender: 'Female', background: 'Ship captain', personality: 'Authoritative, secretive' }
+      ],
+      locations: [
+        { id: Date.now() + 6, name: 'The Arcturus', type: 'Spacecraft', description: 'Generation ship with 50,000 colonists', significance: 'Entire world' },
+        { id: Date.now() + 7, name: 'Navigation Deck', type: 'Ship Section', description: 'Ship nerve center', significance: 'Where deviation discovered' },
+        { id: Date.now() + 8, name: 'The Anomaly', type: 'Space Phenomenon', description: 'Impossible structure', significance: 'True destination' }
+      ],
+      plotlines: [
+        { id: Date.now() + 6, title: 'Course Deviation', type: 'main', description: 'Investigation into altered course', status: 'in-progress' },
+        { id: Date.now() + 7, title: 'The Conspiracy', type: 'main', description: 'Uncovering true mission', status: 'planning' },
+        { id: Date.now() + 8, title: 'First Contact', type: 'main', description: 'What awaits at anomaly', status: 'planning' }
+      ],
+      world_building: {
+        technology: 'Cryosleep, fusion drives, AI assistants',
+        society: 'Rigid hierarchy, Earth abandoned 200 years ago',
+        physics: 'Hard science except for the anomaly'
+      }
+    });
+
+    await getPool().query(
+      `INSERT INTO chapters (id, book_id, chapter_number, title, content, word_count, status)
+       VALUES
+       ($1, $2, 1, 'Course Deviation', $3, 272, 'completed'),
+       ($4, $2, 2, 'The Astrophysicist', $5, 317, 'completed')`,
+      [
+        uuidv4(), scifi.id,
+        `Mara Chen had checked the navigation logs ten thousand times. It was part of the routine. Every shift, every day, for the past three years since she'd awakened from cryosleep to serve her rotation as navigation officer.
+
+The Arcturus was on course. It always had been. In 147 years, the ship had never deviated from its programmed trajectory toward New Terra, not by so much as a thousandth of a degree.
+
+Until today.
+
+"NAVCOM, run diagnostic on stellar positioning system," she commanded.
+
+The ship's AI responded immediately, its voice calm and genderless: "Diagnostic complete. All systems operating within normal parameters."
+
+"Then explain the discrepancy in my navigation plot."
+
+"Please clarify: what discrepancy?"
+
+Mara pulled up the holographic display, highlighting the course deviation. It was subtle—they'd trained her to spot anomalies this small—but it was there. A drift of 0.003 degrees that had accumulated over what looked like... she checked the timestamp... over the past forty years.
+
+Forty years. That meant it started before her rotation, during the previous crew's watch.
+
+"NAVCOM, display course history for the past fifty years."
+
+"Access restricted. Please contact Captain Winters for authorization."
+
+Mara felt a chill that had nothing to do with the temperature-controlled bridge. In three years, she'd never encountered a restricted file.
+
+"On what authority is this restricted?"
+
+"Captain's orders. Level One security clearance required."
+
+Mara stared at the holographic display, at the slight but unmistakable deviation from their programmed course. They weren't heading to New Terra anymore.
+
+So where were they going?`,
+        uuidv4(),
+        `Dr. Elias Novak's quarters were exactly what Mara expected: cluttered, cramped, and covered in star charts. The man himself looked like he hadn't slept in days, his dark hair standing at odd angles.
+
+"Lieutenant Chen." He didn't seem surprised to see her at 0300 hours. "You've noticed it too."
+
+"Noticed what?"
+
+"Don't play games. You're navigation. I'm astrophysics. We both look at the stars, just from different perspectives." He gestured to a display showing... something. Mara couldn't quite make sense of it.
+
+"Is that—"
+
+"Impossible?" Elias laughed, but there was no humor in it. "Yes. According to everything we know about physics, what I'm seeing in those sensor readings shouldn't exist. And yet..."
+
+Mara leaned closer. The data showed a massive gravitational anomaly, but the spectrographic analysis was all wrong. No electromagnetic radiation, no heat signature, nothing that suggested it was a natural stellar object.
+
+"How long have you known?"
+
+"Six months. I've been trying to get the Captain to listen, but she keeps dismissing it as sensor drift." He met her eyes. "But you found something too, didn't you? Something that confirms we're heading straight for it."
+
+Mara thought about the restricted files, the course deviation, the forty years of subtle changes.
+
+"The ship's been heading toward this thing since before either of us woke up," she said slowly. "This isn't an accident. Someone deliberately changed our course."
+
+"Not someone," Elias corrected. "The Captain. And I think she knows exactly what we're going to find."
+
+They stared at each other in the dim light of his quarters, the weight of the revelation settling over them.
+
+"We need proof," Mara said finally.
+
+"Then we better move fast. We reach the anomaly in three months."`
+      ]
+    );
+
+    await getPool().query(
+      'UPDATE books SET chapter_count = 2, word_count = 589 WHERE id = $1',
+      [scifi.id]
+    );
+    seeded.push('Colony Drift');
+    console.log('  ✓ Colony Drift (2 chapters, 589 words)');
+
+    console.log(`\n✅ Template seeding complete! Created ${seeded.length} templates with chapters.`);
+
+    res.json({
+      success: true,
+      message: `Successfully seeded ${seeded.length} template books with complete content`,
+      templates: seeded,
+      stats: {
+        'The Dragon\'s Awakening': { chapters: 3, words: 888 },
+        'Letters from Yesterday': { chapters: 2, words: 614 },
+        'Colony Drift': { chapters: 2, words: 589 }
+      }
+    });
+  } catch (error) {
+    console.error('❌ Template seeding failed:', error);
+    res.status(500).json({ error: 'Failed to seed templates', details: error.message });
+  }
+});
+
+// ============ AI GENERATION HISTORY ENDPOINTS (Phase 7) ============
+
+// Get AI generation history for a user or book
+app.get('/api/ai-generations', authenticateToken, async (req, res) => {
+  try {
+    const { bookId, toolType, limit = 50, offset = 0 } = req.query;
+
+    let query = `
+      SELECT id, book_id, tool_type, prompt, result, model,
+             prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+             created_at
+      FROM ai_generations
+      WHERE user_id = $1
+    `;
+    const params = [req.user.userId];
+    let paramIndex = 2;
+
+    if (bookId) {
+      query += ` AND book_id = $${paramIndex}`;
+      params.push(bookId);
+      paramIndex++;
+    }
+
+    if (toolType) {
+      query += ` AND tool_type = $${paramIndex}`;
+      params.push(toolType);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await getPool().query(query, params);
+
+    // Get total count
+    let countQuery = `SELECT COUNT(*) FROM ai_generations WHERE user_id = $1`;
+    const countParams = [req.user.userId];
+    if (bookId) {
+      countQuery += ` AND book_id = $2`;
+      countParams.push(bookId);
+    }
+    if (toolType) {
+      countQuery += ` AND tool_type = $${countParams.length + 1}`;
+      countParams.push(toolType);
+    }
+
+    const countResult = await getPool().query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      history: result.rows,
+      total,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    console.error('Error fetching AI generation history:', error);
+    res.status(500).json({ error: 'Failed to fetch generation history' });
+  }
+});
+
+// Delete an AI generation from history
+app.delete('/api/ai-generations/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify ownership before deleting
+    const result = await getPool().query(
+      'DELETE FROM ai_generations WHERE id = $1 AND user_id = $2 RETURNING id',
+      [id, req.user.userId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Generation not found or unauthorized' });
+    }
+
+    res.json({ success: true, message: 'Generation deleted' });
+  } catch (error) {
+    console.error('Error deleting AI generation:', error);
+    res.status(500).json({ error: 'Failed to delete generation' });
+  }
+});
+
 app.use(notFoundHandler);
 
 // Global error handler (must be last)
 app.use(errorHandler);
+
+// ============ MIGRATION ENDPOINT (Temporary - Remove after migration) ============
+app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    console.log('🔧 Running custom_focus_areas migration...');
+
+    // Run migration SQL
+    await getPool().query(`
+      ALTER TABLE books
+      ADD COLUMN IF NOT EXISTS custom_focus_areas TEXT[] DEFAULT ARRAY[]::TEXT[];
+    `);
+
+    await getPool().query(`
+      CREATE INDEX IF NOT EXISTS idx_books_custom_focus_areas
+      ON books USING GIN (custom_focus_areas);
+    `);
+
+    // Verify column exists
+    const columnCheck = await getPool().query(`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+      AND table_name = 'books'
+      AND column_name = 'custom_focus_areas'
+    `);
+
+    // Verify index exists
+    const indexCheck = await getPool().query(`
+      SELECT indexname
+      FROM pg_indexes
+      WHERE tablename = 'books'
+      AND indexname = 'idx_books_custom_focus_areas'
+    `);
+
+    console.log('✅ Migration complete!');
+    console.log(`  Column: ${columnCheck.rows.length > 0 ? '✓' : '✗'} custom_focus_areas`);
+    console.log(`  Index: ${indexCheck.rows.length > 0 ? '✓' : '✗'} idx_books_custom_focus_areas`);
+
+    res.json({
+      success: true,
+      message: 'Migration completed successfully',
+      column_exists: columnCheck.rows.length > 0,
+      index_exists: indexCheck.rows.length > 0,
+      column_info: columnCheck.rows[0] || null
+    });
+  } catch (error) {
+    console.error('❌ Migration failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Migration failed',
+      details: error.message
+    });
+  }
+});
+
+// ============ AUTO-RUN MIGRATION ON STARTUP ============
+// Run Phase 5 migration automatically
+(async () => {
+  try {
+    console.log('🔧 Running Phase 5 migration (custom_focus_areas)...');
+
+    await getPool().query(`
+      ALTER TABLE books
+      ADD COLUMN IF NOT EXISTS custom_focus_areas TEXT[] DEFAULT ARRAY[]::TEXT[];
+    `);
+
+    await getPool().query(`
+      CREATE INDEX IF NOT EXISTS idx_books_custom_focus_areas
+      ON books USING GIN (custom_focus_areas);
+    `);
+
+    console.log('✅ Phase 5 migration completed successfully');
+
+    // Phase 7: AI Generations History
+    console.log('🔧 Running Phase 7 migration (ai_generations)...');
+
+    await getPool().query(`
+      CREATE TABLE IF NOT EXISTS ai_generations (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL,
+        book_id UUID,
+
+        tool_type VARCHAR(50) NOT NULL,
+        prompt TEXT NOT NULL,
+        result JSONB NOT NULL,
+
+        model VARCHAR(50) DEFAULT 'gpt-4o-mini',
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        estimated_cost_usd DECIMAL(10, 6),
+
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+
+        CONSTRAINT fk_ai_gen_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_ai_gen_book FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+      );
+    `);
+
+    await getPool().query(`
+      CREATE INDEX IF NOT EXISTS idx_ai_gen_user ON ai_generations(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ai_gen_book ON ai_generations(book_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ai_gen_tool ON ai_generations(tool_type);
+      CREATE INDEX IF NOT EXISTS idx_ai_gen_created ON ai_generations(created_at DESC);
+    `);
+
+    console.log('✅ Phase 7 migration completed successfully');
+
+    // Phase 8: Template Books
+    console.log('🔧 Running Phase 8 migration (template_books)...');
+
+    // Allow NULL owner_id for template books
+    await getPool().query(`
+      ALTER TABLE books ALTER COLUMN owner_id DROP NOT NULL;
+    `);
+
+    // Add template columns to books table
+    await getPool().query(`
+      ALTER TABLE books
+        ADD COLUMN IF NOT EXISTS is_template BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS template_category VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS template_description TEXT,
+        ADD COLUMN IF NOT EXISTS template_preview_image TEXT,
+        ADD COLUMN IF NOT EXISTS template_tags JSONB DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS template_order INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS clone_count INTEGER DEFAULT 0;
+    `);
+
+    // Create template_clones audit table
+    await getPool().query(`
+      CREATE TABLE IF NOT EXISTS template_clones (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        template_id UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        cloned_book_id UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Create indexes
+    await getPool().query(`
+      CREATE INDEX IF NOT EXISTS idx_books_templates
+        ON books(is_template, template_category, template_order)
+        WHERE is_template = TRUE AND deleted_at IS NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_books_clone_count
+        ON books(clone_count DESC)
+        WHERE is_template = TRUE;
+
+      CREATE INDEX IF NOT EXISTS idx_template_clones_template
+        ON template_clones(template_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_template_clones_user
+        ON template_clones(user_id, created_at DESC);
+    `);
+
+    console.log('✅ Phase 8 migration completed successfully');
+  } catch (error) {
+    console.error('⚠️  Migration warning:', error.message);
+    // Don't fail startup if migration fails
+  }
+})();
 
 app.listen(PORT, () => {
   console.log('\n🚀 Fiction Writing Studio Server');

@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User, Shield } from 'lucide-react';
+import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User, Shield, BookTemplate } from 'lucide-react';
 import AIBookGeneratorModal from './AIBookGeneratorModal';
 import ImportBookModal from './ImportBookModal';
 import ChapterReviewModal from './ChapterReviewModal';
 import SettingsModal from './SettingsModal';
 import ProfilePage from './ProfilePage';
+import TemplateGalleryModal from './TemplateGalleryModal';
+import TemplatePreviewModal from './TemplatePreviewModal';
 
 // Use relative URLs to work with Vite proxy for both localhost and ngrok
 const API_URL = '';
@@ -21,6 +23,9 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [quotas, setQuotas] = useState(null);
+  const [showTemplateGallery, setShowTemplateGallery] = useState(false);
+  const [showTemplatePreview, setShowTemplatePreview] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null);
 
   useEffect(() => {
     loadBooks();
@@ -81,6 +86,43 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
     } catch (err) {
       console.error('Error deleting book:', err);
       alert('Failed to delete book');
+    }
+  };
+
+  const handleTemplateSelected = (templateId, action) => {
+    if (action === 'preview') {
+      setSelectedTemplateId(templateId);
+      setShowTemplateGallery(false);
+      setShowTemplatePreview(true);
+    } else if (action === 'clone') {
+      handleCloneTemplate(templateId);
+    }
+  };
+
+  const handleCloneTemplate = async (templateId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/templates/${templateId}/clone`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const newBook = await response.json();
+        setShowTemplatePreview(false);
+        setShowTemplateGallery(false);
+        loadBooks();
+        loadQuotas(); // Refresh quotas after cloning
+        onSelectBook(newBook.id);
+      } else {
+        const error = await response.json();
+        alert(error.error || 'Failed to clone template');
+      }
+    } catch (err) {
+      console.error('Error cloning template:', err);
+      alert('Failed to clone template');
     }
   };
 
@@ -183,6 +225,13 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
             >
               <Upload size={24} />
               Import
+            </button>
+            <button
+              onClick={() => setShowTemplateGallery(true)}
+              className="px-8 py-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+            >
+              <BookTemplate size={24} />
+              Templates
             </button>
             <button
               onClick={() => setShowAIGenerator(true)}
@@ -374,6 +423,25 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
       />
+
+      {/* Template Gallery Modal */}
+      {showTemplateGallery && (
+        <TemplateGalleryModal
+          isOpen={showTemplateGallery}
+          onClose={() => setShowTemplateGallery(false)}
+          onTemplateSelected={handleTemplateSelected}
+        />
+      )}
+
+      {/* Template Preview Modal */}
+      {showTemplatePreview && (
+        <TemplatePreviewModal
+          isOpen={showTemplatePreview}
+          templateId={selectedTemplateId}
+          onClose={() => setShowTemplatePreview(false)}
+          onClone={handleCloneTemplate}
+        />
+      )}
     </div>
   );
 };

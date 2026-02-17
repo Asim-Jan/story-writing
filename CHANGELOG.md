@@ -5,6 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.11] - 2026-02-17
+
+### Added
+- **Template Books Feature** - Sample books system for quick-start writing
+  - Template gallery with browse, preview, and clone functionality
+  - Three professional sample books (Fantasy, Romance, Sci-Fi)
+  - Complete with chapters, characters, locations, and plotlines
+  - Admin endpoints for template management and analytics
+  - Clone count tracking per template
+
+### Fixed
+- Template cloning now properly handles JSONB vs TEXT[] column types
+- Database connection issues in TemplateRepository resolved
+- Seed endpoint now creates templates with complete chapter content
+
+## [2.17.10] - 2026-02-15
+
+### Added
+- **Custom Focus Areas** - User-defined continuity analysis areas
+  - Create book-specific focus areas beyond the 5 defaults
+  - Examples: "magic system", "tech accuracy", "historical accuracy"
+  - Stored in PostgreSQL with TEXT[] array type
+  - GIN index for efficient querying
+  - UI for adding/removing custom areas
+
+## [2.17.9] - 2026-02-07
+
+### Added
+- **Continuity Analysis History** - Full tracking of past analyses
+  - View all past continuity checks with scores and timestamps
+  - Delete old analyses to clean up history
+  - Compare current vs previous results
+  - Filter by chapters and focus areas analyzed
+
+## [2.17.7] - 2026-02-07
+
+### Added
+- **Incremental Chapter Analysis** - Selective continuity checking
+  - Analyze specific chapters instead of entire book
+  - Focus on specific areas (timeline, characters, plot, locations, style)
+  - Save analysis parameters to database for tracking
+  - More efficient for large books and targeted edits
+
+### Changed
+- Continuity checker now saves focus areas and chapter selection to history
+
+## [2.17.6] - 2026-02-07
+
+### Fixed
+- **HOTFIX**: Fixed chapter deletion by importing `query` function in ChapterRepository
+  - Chapters can now be properly deleted from books
+  - Chapter counts update correctly after deletion
+
+## [2.17.5] - 2026-02-07
+
+### Fixed
+- **HOTFIX**: Changed chapter deletion from soft delete to hard delete
+  - Allows reusing chapter numbers after deletion
+  - Prevents "duplicate key" errors when recreating chapters
+- Fixed quota stats not updating after book/chapter operations
+  - Added proper incrementers for book_count and chapter_count
+
+## [2.17.4] - 2026-02-07
+
+### Fixed
+- **HOTFIX**: Fixed chapter synchronization issues
+  - Deleted chapters no longer reappear after save
+  - AI-generated chapters now persist correctly
+  - Fixed duplicate key constraint errors on chapter numbers
+  - Improved chapter matching logic to handle chapters without IDs
+
+## [2.17.3] - 2026-02-07
+
+### Fixed
+- **HOTFIX**: Fixed token tracking database save
+  - AI generation data now properly saves to `ai_generations` table
+  - Fixed "pool is not defined" error
+  - Cost tracking dashboards now show token usage data
+
+## [2.17.2] - 2026-02-07
+
+### Fixed
+- **HOTFIX**: Fixed AI quota tracking
+  - AI request counter now increments correctly (0/10 → 1/10, etc.)
+  - Fixed admin dashboard "Top Users by Cost" query
+  - Changed username column references to name/email
+
+## [2.17.1] - 2026-02-07
+
+### Fixed
+- **HOTFIX**: Fixed database connection in cost tracking service
+  - Replaced standalone pool with shared `getPool()` from postgres.js
+  - AI generation endpoint now works correctly
+  - Cost tracking can load pricing data without errors
+
+## [2.17.0] - 2026-02-06
+
+### Added
+- **AI Cost Tracking System** (Phase 7)
+  - Track token usage and costs for all AI generations
+  - User dashboard showing personal AI costs
+  - Admin dashboard with system-wide cost analytics
+  - Daily/monthly cost trends and usage statistics
+  - Top users by cost reporting
+  - Detailed generation history with model/token data
+- Database table: `ai_generations` for tracking all AI requests
+- Cost calculation based on model pricing (GPT-4, Claude, Gemini, etc.)
+
+### Changed
+- All AI generation endpoints now record usage to database
+- Enhanced `/api/generate` endpoint with cost tracking
+
 ## [2.0.3] - 2026-01-28
 
 ### Fixed

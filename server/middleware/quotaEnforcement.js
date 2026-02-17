@@ -19,8 +19,26 @@ export async function getUserQuotas(userId) {
     throw new Error('User quotas not found');
   }
 
-  const data = result.rows[0];
+  let data = result.rows[0];
   const tierLimits = getTierQuotas(data.tier);
+
+  // Reset daily counter if it's a new day
+  const lastReset = new Date(data.last_ai_reset);
+  const now = new Date();
+  const hoursSinceReset = (now - lastReset) / (1000 * 60 * 60);
+
+  if (hoursSinceReset >= 24) {
+    // Reset counter in database
+    await pool.query(
+      `UPDATE quotas
+       SET ai_requests_today = 0, last_ai_reset = NOW()
+       WHERE user_id = $1`,
+      [userId]
+    );
+    // Update local data to reflect reset
+    data.ai_requests_today = 0;
+    data.last_ai_reset = now;
+  }
 
   return {
     tier: data.tier,
@@ -144,25 +162,10 @@ export const checkChapterQuota = async (req, res, next) => {
 export const checkAIQuota = async (req, res, next) => {
   try {
     const userId = req.user.userId || req.user.id;
-    const quotas = await getUserQuotas(userId);
-
-    // Reset daily counter if it's a new day
-    const lastReset = new Date(quotas.usage.last_ai_reset);
-    const now = new Date();
-    const hoursSinceReset = (now - lastReset) / (1000 * 60 * 60);
-
-    if (hoursSinceReset >= 24) {
-      // Reset counter
-      await pool.query(
-        `UPDATE quotas
-         SET ai_requests_today = 0, last_ai_reset = NOW()
-         WHERE user_id = $1`,
-        [userId]
-      );
-      quotas.usage.ai_requests_today = 0;
-    }
+    const quotas = await getUserQuotas(userId); // getUserQuotas now handles daily reset
 
     if (quotas.usage.ai_requests_today >= quotas.limits.max_ai_requests_per_day) {
+      const lastReset = new Date(quotas.usage.last_ai_reset);
       return res.status(429).json({
         error: 'Daily AI request limit reached',
         message: `Your ${quotas.tier} plan allows ${quotas.limits.max_ai_requests_per_day} AI requests per day. Please try again tomorrow or upgrade.`,

@@ -8,6 +8,7 @@
 import { features } from '../config/features.js';
 import { UserRepository, BookRepository, ChapterRepository, JobRepository } from './repositories/index.js';
 import { getRedisClient } from '../services/dataAdapter.js';
+import { query } from './postgres.js';
 
 /**
  * Helper to get Redis book key
@@ -601,6 +602,10 @@ export class BookDataService {
     // Get existing chapters from database
     const existingChapters = await ChapterRepository.findByBookId(bookId);
     const existingChapterMap = new Map(existingChapters.map(ch => [ch.id, ch]));
+    const existingByNumber = new Map(existingChapters.map(ch => [ch.chapter_number, ch]));
+
+    // Track which chapters are in the new array
+    const chaptersToKeep = new Set();
 
     for (const chapter of chaptersArray) {
       const chapterData = {
@@ -613,12 +618,20 @@ export class BookDataService {
         status: chapter.status || 'draft'
       };
 
+      // Try to find existing chapter by ID or chapter_number
+      let existingChapter = null;
       if (chapter.id && existingChapterMap.has(chapter.id)) {
+        existingChapter = existingChapterMap.get(chapter.id);
+      } else if (existingByNumber.has(chapterData.chapter_number)) {
+        existingChapter = existingByNumber.get(chapterData.chapter_number);
+      }
+
+      if (existingChapter) {
         // Update existing chapter
+        chaptersToKeep.add(existingChapter.id);
         try {
-          const existing = existingChapterMap.get(chapter.id);
           await ChapterRepository.update(
-            chapter.id,
+            existingChapter.id,
             {
               chapter_number: chapterData.chapter_number,
               title: chapterData.title,
@@ -627,20 +640,35 @@ export class BookDataService {
               notes: chapterData.notes,
               status: chapterData.status
             },
-            existing.version,
+            existingChapter.version,
             null // userId for version history (optional)
           );
-          console.log(`  ✓ Updated chapter ${chapter.id}`);
+          console.log(`  ✓ Updated chapter ${existingChapter.id} (number: ${chapterData.chapter_number})`);
         } catch (error) {
-          console.error(`  ✗ Failed to update chapter ${chapter.id}:`, error.message);
+          console.error(`  ✗ Failed to update chapter ${existingChapter.id}:`, error.message);
         }
       } else {
         // Create new chapter
         try {
           const newChapter = await ChapterRepository.create(chapterData);
-          console.log(`  ✓ Created chapter ${newChapter.id}`);
+          chaptersToKeep.add(newChapter.id);
+          console.log(`  ✓ Created chapter ${newChapter.id} (number: ${chapterData.chapter_number})`);
         } catch (error) {
           console.error(`  ✗ Failed to create chapter:`, error.message);
+        }
+      }
+    }
+
+    // Delete chapters that are no longer in the array
+    // Use hard delete (not soft delete) to allow chapter numbers to be reused
+    for (const existing of existingChapters) {
+      if (!chaptersToKeep.has(existing.id)) {
+        try {
+          // Hard delete instead of soft delete to free up the (book_id, chapter_number) constraint
+          await query('DELETE FROM chapters WHERE id = $1', [existing.id]);
+          console.log(`  ✓ Deleted chapter ${existing.id} (number: ${existing.chapter_number})`);
+        } catch (error) {
+          console.error(`  ✗ Failed to delete chapter ${existing.id}:`, error.message);
         }
       }
     }

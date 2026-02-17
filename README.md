@@ -1,8 +1,10 @@
 # Fiction Writing Studio
 
-A comprehensive AI-powered platform for writing, managing, and publishing fiction books. Built with React, Node.js, Redis, and powered by OpenAI and Google Gemini.
+A comprehensive AI-powered platform for writing, managing, and publishing fiction books. Built with React, Node.js, PostgreSQL, and powered by OpenAI and Google Gemini.
 
 **Live at:** [story-writing.com](https://story-writing.com)
+**Version:** 2.18.11
+**Status:** ✅ Production
 
 ## ✨ Features
 
@@ -354,3 +356,36 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 ---
 
 Built with ❤️ for writers, by writers.
+
+
+## 📚 Documentation
+
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Deployment guide and CI/CD
+- **[docs/AWS_DEPLOYMENT_REFERENCE.md](docs/AWS_DEPLOYMENT_REFERENCE.md)** - AWS infrastructure guide
+- **[docs/AWS_SERVICES.md](docs/AWS_SERVICES.md)** - AWS services overview
+- **[docs/FEATURES_AND_ROLES.md](docs/FEATURES_AND_ROLES.md)** - Feature list and user roles
+- **[docs/SECURITY_TEST_CHECKLIST.md](docs/SECURITY_TEST_CHECKLIST.md)** - Security testing guide
+- **[docs/SECURITY_TEST_REPORT.md](docs/SECURITY_TEST_REPORT.md)** - Latest security audit
+
+## 🎯 Current Status (v2.18.11)
+
+### Recent Features
+- ✅ Template Books - Quick-start with sample books (Fantasy, Romance, Sci-Fi)
+- ✅ Custom Focus Areas - User-defined continuity analysis areas
+- ✅ Analysis History - Track continuity improvements over time
+- ✅ AI Cost Tracking - Monitor token usage and costs
+- ✅ Incremental Analysis - Selective chapter-by-chapter checking
+
+### Infrastructure
+- **Backend**: AWS ECS Fargate (Node.js 20)
+- **Frontend**: AWS ECS Fargate (Nginx + React)
+- **Database**: AWS RDS PostgreSQL
+- **Load Balancer**: AWS ALB with HTTPS
+- **DNS**: Cloudflare
+- **Storage**: AWS S3 for media files
+
+### Known Issues
+None currently - All critical hotfixes deployed
+
+
