@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle, Lock, LogOut, TrendingUp, Database, Cpu, Image, FileText, DollarSign } from 'lucide-react';
+import { User, Key, Bell, Palette, Save, ArrowLeft, Mail, Calendar, Shield, Zap, AlertCircle, Lock, LogOut, TrendingUp, Database, Cpu, Image, FileText, DollarSign, Target } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import UserAICosts from './UserAICosts';
+import WritingGoals from './WritingGoals';
+import StatisticsDashboard from './StatisticsDashboard';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -415,6 +417,17 @@ const ProfilePage = ({ onBack }) => {
                 >
                   <DollarSign className="w-5 h-5" />
                   AI Costs
+                </button>
+                <button
+                  onClick={() => setActiveTab('writing-goals')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                    activeTab === 'writing-goals'
+                      ? 'bg-purple-600 text-white'
+                      : 'text-gray-700 hover:bg-purple-50'
+                  }`}
+                >
+                  <Target className="w-5 h-5" />
+                  Writing Goals
                 </button>
               </nav>
             </div>
@@ -1030,6 +1043,14 @@ const ProfilePage = ({ onBack }) => {
               {activeTab === 'ai-costs' && (
                 <div>
                   <UserAICosts />
+                </div>
+              )}
+
+              {/* Writing Goals Tab */}
+              {activeTab === 'writing-goals' && (
+                <div className="space-y-6">
+                  <WritingGoals />
+                  <StatisticsDashboard />
                 </div>
               )}
             </div>

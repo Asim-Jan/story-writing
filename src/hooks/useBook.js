@@ -109,6 +109,26 @@ export const useBook = (bookId) => {
 
       const savedBook = await response.json();
 
+      // Update local state with server response to prevent "unsaved changes" after save
+      setData(prev => ({
+        ...prev,
+        ...savedBook,
+        // Ensure arrays exist
+        characters: savedBook.characters || [],
+        locations: savedBook.locations || [],
+        plotlines: savedBook.plotlines || [],
+        timelines: savedBook.timelines || [],
+        chapters: savedBook.chapters || [],
+        notes: savedBook.notes || [],
+        visuals: savedBook.visuals || [],
+        comicPages: savedBook.comicPages || [],
+        animationProjects: savedBook.animationProjects || [],
+        collaborators: savedBook.collaborators || [],
+        // Ensure objects exist
+        audioFiles: savedBook.audioFiles || {},
+        characterRefs: savedBook.characterRefs || {},
+      }));
+
       // If this was a new book, update the URL with the new ID
       if (!bookId && savedBook.id) {
         window.history.pushState({}, '', `?book=${savedBook.id}`);
