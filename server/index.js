@@ -5779,6 +5779,13 @@ app.get('/api/books/:bookId/chapters/:chapterId/versions', authenticateToken, as
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // Check if chapterId is a valid UUID (PostgreSQL chapters only)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(chapterId)) {
+      // This is an old Redis chapter (numeric ID) - no version history available
+      return res.json({ versions: [] });
+    }
+
     // Get chapter to verify it belongs to this book
     const chapter = await ChapterRepository.findById(chapterId);
     if (!chapter) {
@@ -5820,6 +5827,12 @@ app.post('/api/books/:bookId/chapters/:chapterId/versions/:versionId/restore', a
     const hasAccess = await checkBookAccess(bookId, userId);
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Check if chapterId is a valid UUID (PostgreSQL chapters only)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(chapterId)) {
+      return res.status(400).json({ error: 'Version control not available for this chapter' });
     }
 
     // Get chapter to verify it belongs to this book and get current version
