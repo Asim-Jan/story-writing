@@ -5829,8 +5829,10 @@ app.post('/api/users/stats', authenticateToken, async (req, res) => {
     const { date, wordsWritten, timeSpent, chaptersEdited } = req.body;
 
     const statsKey = `user:${userId}:stats`;
-    let statsData = await getStats(statsKey);
-    let stats = statsData ? JSON.parse(statsData) : { daily: [], goals: {} };
+    let stats = await getStats(statsKey);
+    if (!stats) {
+      stats = { daily: [], goals: {} };
+    }
 
     // Find or create entry for this date
     const existingIndex = stats.daily.findIndex(s => s.date === date);
@@ -5869,8 +5871,10 @@ app.get('/api/users/stats', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const statsKey = `user:${userId}:stats`;
 
-    let statsData = await getStats(statsKey);
-    let stats = statsData ? JSON.parse(statsData) : { daily: [], goals: {} };
+    let stats = await getStats(statsKey);
+    if (!stats) {
+      stats = { daily: [], goals: {} };
+    }
 
     res.json(stats);
   } catch (error) {
@@ -5886,8 +5890,10 @@ app.put('/api/users/goals', authenticateToken, async (req, res) => {
     const { dailyWordGoal, weeklyWordGoal, monthlyWordGoal } = req.body;
 
     const statsKey = `user:${userId}:stats`;
-    let statsData = await getStats(statsKey);
-    let stats = statsData ? JSON.parse(statsData) : { daily: [], goals: {} };
+    let stats = await getStats(statsKey);
+    if (!stats) {
+      stats = { daily: [], goals: {} };
+    }
 
     stats.goals = {
       dailyWordGoal: dailyWordGoal || 500,

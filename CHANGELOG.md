@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.4] - 2026-02-17
+
+### Fixed
+- **CRITICAL**: Fixed double JSON parsing in stats endpoints
+  - getStats() already returns parsed object, removed duplicate JSON.parse() calls
+  - Fixes 500 errors when saving goals or loading statistics
+  - Applied fix to GET /api/users/stats, POST /api/users/stats, and PUT /api/users/goals
+
 ## [2.19.2] - 2026-02-17
 
 ### Fixed
