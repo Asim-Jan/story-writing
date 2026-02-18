@@ -160,104 +160,110 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
       <div className="container mx-auto px-4 py-12">
         {/* Header */}
-        <div className="text-center mb-12">
-          <div className="flex items-center justify-center gap-3 mb-2 relative">
-            <Book className="w-12 h-12 text-amber-700" />
-            <h1 className="text-5xl font-bold text-gray-900">Book Writing Studio</h1>
-            <div className="absolute right-0 flex gap-2">
+        <div className="text-center mb-8 sm:mb-12">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3 mb-2 relative">
+            <Book className="w-8 h-8 sm:w-12 sm:h-12 text-amber-700" />
+            <h1 className="text-2xl sm:text-4xl lg:text-5xl font-bold text-gray-900">Book Writing Studio</h1>
+            <div className="absolute top-0 right-0 sm:relative sm:ml-auto flex gap-1 sm:gap-2">
               {onOpenAdmin && (
                 <button
                   onClick={onOpenAdmin}
-                  className="p-3 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  className="p-2 sm:p-3 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                   title="Admin Dashboard"
                 >
-                  <Shield className="w-6 h-6" />
+                  <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
                 </button>
               )}
               <button
                 onClick={() => setShowProfile(true)}
-                className="p-3 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
+                className="p-2 sm:p-3 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
                 title="Profile"
               >
-                <User className="w-6 h-6" />
+                <User className="w-5 h-5 sm:w-6 sm:h-6" />
               </button>
               <button
                 onClick={() => setShowSettings(true)}
-                className="p-3 text-gray-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                className="p-2 sm:p-3 text-gray-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
                 title="Quick Settings"
               >
-                <Settings className="w-6 h-6" />
+                <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
               </button>
             </div>
           </div>
           {quotas && (
-            <div className="mb-2 text-sm text-gray-600">
+            <div className="mb-2 text-xs sm:text-sm text-gray-600 px-4">
               <span className={`font-semibold ${quotas.usage.current_books >= quotas.limits.max_books ? 'text-red-600' : 'text-amber-700'}`}>
                 {quotas.usage.current_books} / {quotas.limits.max_books}
               </span>
               {' '}books used
               {quotas.usage.current_books >= quotas.limits.max_books && (
-                <span className="ml-2 text-red-600 font-medium">
+                <span className="block sm:inline sm:ml-2 text-red-600 font-medium">
                   (Limit reached - delete a book or upgrade to create more)
                 </span>
               )}
             </div>
           )}
-          <p className="text-xl text-gray-600">Create and manage your fiction writing projects</p>
+          <p className="text-sm sm:text-lg lg:text-xl text-gray-600 px-4">Create and manage your fiction writing projects</p>
         </div>
 
         {/* Search and New Book */}
-        <div className="max-w-4xl mx-auto mb-8">
-          <div className="flex gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+        <div className="max-w-4xl mx-auto mb-6 sm:mb-8">
+          {/* Search bar - full width on mobile */}
+          <div className="mb-3 sm:mb-4">
+            <div className="relative">
+              <Search className="absolute left-3 sm:left-4 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
               <input
                 type="text"
                 placeholder="Search your books..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 rounded-xl border-2 border-amber-200 bg-white text-lg focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none shadow-sm"
+                className="w-full pl-10 sm:pl-12 pr-4 py-3 sm:py-4 rounded-xl border-2 border-amber-200 bg-white text-base sm:text-lg focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none shadow-sm"
               />
             </div>
+          </div>
+
+          {/* Action buttons - grid on mobile, flex on desktop */}
+          <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-3 lg:gap-4">
             <button
               onClick={() => setShowImport(true)}
-              className="px-8 py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-xl hover:from-green-700 hover:to-teal-700 transition-all flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+              className="px-3 sm:px-6 lg:px-8 py-3 sm:py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-lg sm:rounded-xl hover:from-green-700 hover:to-teal-700 transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl text-sm sm:text-base lg:text-lg font-semibold"
             >
-              <Upload size={24} />
-              Import
+              <Upload size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
+              <span className="hidden sm:inline">Import</span>
+              <span className="sm:hidden">Import</span>
             </button>
             <button
               onClick={() => setShowTemplateGallery(true)}
-              className="px-8 py-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+              className="px-3 sm:px-6 lg:px-8 py-3 sm:py-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg sm:rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl text-sm sm:text-base lg:text-lg font-semibold"
             >
-              <BookTemplate size={24} />
-              Templates
+              <BookTemplate size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
+              <span>Templates</span>
             </button>
             <button
               onClick={() => setShowAIGenerator(true)}
               disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-              className={`px-8 py-4 ${
+              className={`px-3 sm:px-6 lg:px-8 py-3 sm:py-4 ${
                 quotas && quotas.usage.current_books >= quotas.limits.max_books
                   ? 'bg-gray-400 cursor-not-allowed opacity-60'
                   : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
-              } text-white rounded-xl transition-all flex items-center gap-3 text-lg font-semibold`}
+              } text-white rounded-lg sm:rounded-xl transition-all flex items-center justify-center gap-2 text-sm sm:text-base lg:text-lg font-semibold`}
               title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Generate book with AI'}
             >
-              <Wand2 size={24} />
-              AI Generate
+              <Wand2 size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
+              <span>AI Generate</span>
             </button>
             <button
               onClick={onNewBook}
               disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-              className={`px-8 py-4 ${
+              className={`px-3 sm:px-6 lg:px-8 py-3 sm:py-4 ${
                 quotas && quotas.usage.current_books >= quotas.limits.max_books
                   ? 'bg-gray-400 cursor-not-allowed opacity-60'
                   : 'bg-amber-600 hover:bg-amber-700 shadow-lg hover:shadow-xl'
-              } text-white rounded-xl transition-colors flex items-center gap-3 text-lg font-semibold`}
+              } text-white rounded-lg sm:rounded-xl transition-colors flex items-center justify-center gap-2 text-sm sm:text-base lg:text-lg font-semibold`}
               title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Create a new book'}
             >
-              <Plus size={24} />
-              New Book
+              <Plus size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
+              <span>New Book</span>
             </button>
           </div>
         </div>
@@ -271,47 +277,47 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
 
         {/* Books Grid */}
         {filteredBooks.length === 0 ? (
-          <div className="max-w-4xl mx-auto text-center py-20">
-            <Book className="w-24 h-24 text-gray-300 mx-auto mb-6" />
-            <h2 className="text-3xl font-bold text-gray-700 mb-4">
+          <div className="max-w-4xl mx-auto text-center py-12 sm:py-20 px-4">
+            <Book className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
+            <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-700 mb-3 sm:mb-4">
               {searchTerm ? 'No books found' : 'No books yet'}
             </h2>
-            <p className="text-xl text-gray-500 mb-8">
+            <p className="text-base sm:text-lg lg:text-xl text-gray-500 mb-6 sm:mb-8">
               {searchTerm
                 ? 'Try a different search term'
                 : 'Start your writing journey by creating your first book'}
             </p>
             {!searchTerm && (
-              <div className="flex gap-4 justify-center flex-wrap">
+              <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center items-stretch sm:items-center max-w-md sm:max-w-none mx-auto">
                 <button
                   onClick={() => setShowImport(true)}
-                  className="px-8 py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-xl hover:from-green-700 hover:to-teal-700 transition-all inline-flex items-center gap-3 shadow-lg hover:shadow-xl text-lg font-semibold"
+                  className="px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-lg sm:rounded-xl hover:from-green-700 hover:to-teal-700 transition-all inline-flex items-center justify-center gap-2 sm:gap-3 shadow-lg hover:shadow-xl text-base sm:text-lg font-semibold"
                 >
-                  <Upload size={24} />
+                  <Upload size={20} className="sm:w-6 sm:h-6" />
                   Import Book
                 </button>
                 <button
                   onClick={() => setShowAIGenerator(true)}
                   disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-                  className={`px-8 py-4 ${
+                  className={`px-6 sm:px-8 py-3 sm:py-4 ${
                     quotas && quotas.usage.current_books >= quotas.limits.max_books
                       ? 'bg-gray-400 cursor-not-allowed opacity-60'
                       : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
-                  } text-white rounded-xl transition-all inline-flex items-center gap-3 text-lg font-semibold`}
+                  } text-white rounded-lg sm:rounded-xl transition-all inline-flex items-center justify-center gap-2 sm:gap-3 text-base sm:text-lg font-semibold`}
                 >
-                  <Wand2 size={24} />
+                  <Wand2 size={20} className="sm:w-6 sm:h-6" />
                   AI Generate Book
                 </button>
                 <button
                   onClick={onNewBook}
                   disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-                  className={`px-8 py-4 ${
+                  className={`px-6 sm:px-8 py-3 sm:py-4 ${
                     quotas && quotas.usage.current_books >= quotas.limits.max_books
                       ? 'bg-gray-400 cursor-not-allowed opacity-60'
                       : 'bg-amber-600 hover:bg-amber-700 shadow-lg hover:shadow-xl'
-                  } text-white rounded-xl transition-colors inline-flex items-center gap-3 text-lg font-semibold`}
+                  } text-white rounded-lg sm:rounded-xl transition-colors inline-flex items-center justify-center gap-2 sm:gap-3 text-base sm:text-lg font-semibold`}
                 >
-                  <Plus size={24} />
+                  <Plus size={20} className="sm:w-6 sm:h-6" />
                   Create Manually
                 </button>
               </div>
