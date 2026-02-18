@@ -74,19 +74,19 @@ const AIBookGeneratorModal = ({ onClose, onBookCreated }) => {
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Wand2 className="w-8 h-8" />
-            <div>
-              <h2 className="text-2xl font-bold">AI Book Generator</h2>
-              <p className="text-indigo-100 text-sm">Let AI create your story from start to finish</p>
+        <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 sm:p-6 flex items-center justify-between">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <Wand2 className="w-6 h-6 sm:w-8 sm:h-8 flex-shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-lg sm:text-2xl font-bold truncate">AI Book Generator</h2>
+              <p className="text-indigo-100 text-xs sm:text-sm truncate">Let AI create your story from start to finish</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 transition-colors"
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 sm:p-3 transition-colors flex-shrink-0 ml-2"
           >
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
         </div>
 
@@ -136,7 +136,7 @@ const AIBookGeneratorModal = ({ onClose, onBookCreated }) => {
                 </button>
 
                 {showOptions && (
-                  <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
                     <div>
                       <label className="block text-xs font-semibold text-gray-700 mb-1">
                         Number of Characters

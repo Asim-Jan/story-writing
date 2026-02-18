@@ -50,16 +50,16 @@ const TemplateGalleryModal = ({ isOpen, onClose, onTemplateSelected }) => {
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white p-6 flex justify-between items-center">
-          <div>
-            <h2 className="text-3xl font-bold mb-2">Template Gallery</h2>
-            <p className="text-purple-100">Choose a template to jumpstart your writing</p>
+        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white p-4 sm:p-6 flex justify-between items-center">
+          <div className="min-w-0">
+            <h2 className="text-xl sm:text-3xl font-bold mb-1 sm:mb-2 truncate">Template Gallery</h2>
+            <p className="text-purple-100 text-sm sm:text-base truncate">Choose a template to jumpstart your writing</p>
           </div>
           <button
             onClick={onClose}
-            className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 transition-colors"
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 sm:p-3 transition-colors flex-shrink-0 ml-2"
           >
-            <X size={24} />
+            <X size={20} className="sm:w-6 sm:h-6" />
           </button>
         </div>
 
