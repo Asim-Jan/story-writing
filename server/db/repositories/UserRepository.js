@@ -122,8 +122,12 @@ export class UserRepository {
    * @returns {Promise<boolean>} Success
    */
   static async delete(userId) {
+    // Anonymize email so it can be reused, then soft-delete
     const result = await query(
-      'UPDATE users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL',
+      `UPDATE users
+       SET deleted_at = NOW(),
+           email = 'deleted_' || id || '@deleted.invalid'
+       WHERE id = $1 AND deleted_at IS NULL`,
       [userId]
     );
     return result.rowCount > 0;
