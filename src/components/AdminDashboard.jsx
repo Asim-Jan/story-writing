@@ -717,104 +717,105 @@ const AdminDashboard = ({ onBack }) => {
 
         {/* Tabs */}
         <div className="mb-6 border-b border-gray-200">
-          <nav className="flex gap-6">
+          <nav className="flex flex-wrap gap-4 lg:gap-6">
             <button
               onClick={() => { setActiveTab('overview'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'overview'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Activity className="w-5 h-5 inline mr-2" />
-              Overview
+              <Activity className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">Overview</span>
+              <span className="sm:hidden">Overview</span>
             </button>
             <button
               onClick={() => { setActiveTab('users'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'users'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Users className="w-5 h-5 inline mr-2" />
+              <Users className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Users
             </button>
             <button
               onClick={() => { setActiveTab('audit'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'audit'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <FileText className="w-5 h-5 inline mr-2" />
+              <FileText className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Audit Log
             </button>
             <button
               onClick={() => { setActiveTab('security'); setSecuritySubtab('login'); setCurrentPage(1); setSearchTerm(''); setFilterSuccess(''); setFilterActivityType(''); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'security'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Shield className="w-5 h-5 inline mr-2" />
+              <Shield className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Security
             </button>
             <button
               onClick={() => { setActiveTab('moderation'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'moderation'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <AlertCircle className="w-5 h-5 inline mr-2" />
+              <AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Content Moderation
             </button>
             <button
               onClick={() => { setActiveTab('subscriptions'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'subscriptions'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <CreditCard className="w-5 h-5 inline mr-2" />
+              <CreditCard className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Subscriptions
             </button>
             <button
               onClick={() => { setActiveTab('revenue'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'revenue'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <DollarSign className="w-5 h-5 inline mr-2" />
+              <DollarSign className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Revenue
             </button>
             <button
               onClick={() => { setActiveTab('analytics'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'analytics'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Activity className="w-5 h-5 inline mr-2" />
+              <Activity className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               Analytics
             </button>
             <button
               onClick={() => { setActiveTab('ai-costs'); setCurrentPage(1); }}
-              className={`pb-4 px-2 font-medium transition-colors ${
+              className={`pb-3 sm:pb-4 px-2 sm:px-3 font-medium transition-colors text-sm sm:text-base whitespace-nowrap ${
                 activeTab === 'ai-costs'
                   ? 'border-b-2 border-purple-600 text-purple-600'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Cpu className="w-5 h-5 inline mr-2" />
+              <Cpu className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               AI Costs
             </button>
           </nav>
