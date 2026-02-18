@@ -36,6 +36,13 @@ export const useAutosave = (data, saveFunction, options = {}) => {
       return;
     }
 
+    // If we're currently saving or just saved, update the reference without marking as unsaved
+    // This handles the case where the parent component updates data from server response after save
+    if (saveStatus === 'saving' || saveStatus === 'saved') {
+      previousDataRef.current = dataString;
+      return;
+    }
+
     // Mark as unsaved
     if (previousDataRef.current !== null) {
       setSaveStatus('unsaved');
@@ -76,7 +83,7 @@ export const useAutosave = (data, saveFunction, options = {}) => {
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [data, delay, enabled, saveFunction, onSaveStart, onSaveSuccess, onSaveError]);
+  }, [data, delay, enabled, saveFunction, onSaveStart, onSaveSuccess, onSaveError, saveStatus]);
 
   // Manual save function
   const saveNow = async () => {
