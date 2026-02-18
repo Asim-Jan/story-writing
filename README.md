@@ -3,7 +3,7 @@
 A comprehensive AI-powered platform for writing, managing, and publishing fiction books. Built with React, Node.js, PostgreSQL, and powered by OpenAI and Google Gemini.
 
 **Live at:** [story-writing.com](https://story-writing.com)
-**Version:** 2.18.11
+**Version:** 2.20.6
 **Status:** ✅ Production
 
 ## ✨ Features
@@ -351,7 +351,7 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
-**Current Version:** 1.0.4 (API Key Security Update)
+**Current Version:** 2.20.6 (Chapter Version Control + Autosave Fix)
 
 ---
 
@@ -368,14 +368,15 @@ Built with ❤️ for writers, by writers.
 - **[docs/SECURITY_TEST_CHECKLIST.md](docs/SECURITY_TEST_CHECKLIST.md)** - Security testing guide
 - **[docs/SECURITY_TEST_REPORT.md](docs/SECURITY_TEST_REPORT.md)** - Latest security audit
 
-## 🎯 Current Status (v2.18.11)
+## 🎯 Current Status (v2.20.6)
 
 ### Recent Features
+- ✅ Chapter Version Control - Complete version history with smart versioning
+- ✅ Writing Goals & Progress Tracking - Daily/weekly/monthly goals with streaks
 - ✅ Template Books - Quick-start with sample books (Fantasy, Romance, Sci-Fi)
 - ✅ Custom Focus Areas - User-defined continuity analysis areas
 - ✅ Analysis History - Track continuity improvements over time
 - ✅ AI Cost Tracking - Monitor token usage and costs
-- ✅ Incremental Analysis - Selective chapter-by-chapter checking
 
 ### Infrastructure
 - **Backend**: AWS ECS Fargate (Node.js 20)
