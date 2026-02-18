@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.7] - 2026-02-18
+
+### Fixed
+- **Admin Dashboard Navigation** - Fixed tab navigation wrapping on mobile and smaller screens
+  - Added `flex-wrap` to allow tabs to wrap instead of horizontal scroll
+  - Made tab buttons responsive (smaller text/icons on mobile)
+  - Reduced gap from 6 to 4 on mobile for better spacing
+  - Added `whitespace-nowrap` to prevent text breaking within buttons
+- **Notes Tab** - Fixed "+ New Note" button not showing the form
+  - Added `isCreatingNew` state to track when creating new notes
+  - Form now appears correctly when clicking the button
+
+## [2.21.6] - 2026-02-18
+
+### Fixed
+- **Notes Tab** - Fixed "+ New Note" button functionality
+  - Added explicit state tracking for new note creation
+  - Detail panel now shows empty form when creating new note
+
+## [2.21.5] - 2026-02-18
+
+### Fixed
+- **Timeline Tab Desktop Layout** - Fixed button overlap with heading
+  - Separated timeline heading from action buttons
+  - Changed button container to responsive grid (2 cols mobile, 3 tablet, 5 desktop)
+  - Fixed multi-branch timeline to stack vertically on mobile, horizontal on desktop
+  - Added proper padding on desktop (px-3 sm:px-4 lg:px-6)
+
+## [2.21.4] - 2026-02-18
+
+### Changed
+- **Usage Toolbar** - Minimized by default to reduce UI clutter
+  - QuotaBanner now starts collapsed on page load
+  - Users can still expand to view full quota details
+
+## [2.21.3] - 2026-02-18
+
+### Fixed
+- **Mobile Responsiveness** - Comprehensive mobile UI improvements
+  - Characters, Locations, Plotlines, Notes, Timeline tabs now mobile-friendly
+  - Added JavaScript-based viewport detection (useMediaQuery hook)
+  - Full-screen detail views on mobile with back button navigation
+  - Improved character detail view readability (larger text, better spacing)
+  - Card-style layout for character appearance attributes
+
 ## [2.20.6] - 2026-02-18
 
 ### Fixed
