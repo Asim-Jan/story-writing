@@ -5,18 +5,21 @@ import { useIsMobile } from '../hooks/useMediaQuery';
 const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem }) => {
   const [selectedNote, setSelectedNote] = useState(null);
   const [viewMode, setViewMode] = useState('list');
+  const [isCreatingNew, setIsCreatingNew] = useState(false);
 
   const isMobile = useIsMobile();
-  const showingDetail = selectedNote !== null || (noteForm.title || noteForm.content);
+  const showingDetail = selectedNote !== null || isCreatingNew || (noteForm.title || noteForm.content);
 
   const resetForm = () => {
     setNoteForm({ title: '', content: '', category: 'general' });
     setSelectedNote(null);
+    setIsCreatingNew(false);
   };
 
   const handleAddNew = () => {
     setSelectedNote(null);
     resetForm();
+    setIsCreatingNew(true);
   };
 
   const getCategoryColor = (category) => {
@@ -224,6 +227,7 @@ const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem })
                 onClick={() => {
                   addNote();
                   resetForm();
+                  setIsCreatingNew(false);
                 }}
                 disabled={!noteForm.title || !noteForm.content}
                 className="px-6 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
