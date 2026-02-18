@@ -213,10 +213,12 @@ const ChaptersTabView = ({
     }
   };
 
+  const showingDetail = selectedChapter !== null || editingId;
+
   return (
-    <div className="flex h-full">
+    <div className="flex h-full relative">
       {/* Left sidebar - Chapters list */}
-      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-96'} bg-white border-r border-gray-200 flex flex-col`}>
+      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-full lg:w-96'} ${showingDetail ? 'hidden lg:flex' : 'flex'} bg-white border-r border-gray-200 flex-col`}>
         <div className="p-4 border-b border-gray-200">
           <div className="flex flex-col gap-2 mb-3">
             <div className="flex gap-2">
@@ -348,39 +350,49 @@ const ChaptersTabView = ({
 
       {/* Right panel - Details or form */}
       {viewMode === 'list' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`${showingDetail ? 'fixed inset-0 lg:relative lg:flex-1 z-50 bg-white' : 'hidden lg:block lg:flex-1'} overflow-y-auto p-4 sm:p-6`}>
           {selectedChapter ? (
             // Detailed view
           <div className="max-w-4xl">
-            <div className="flex items-start justify-between mb-6">
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-start justify-between mb-4 sm:mb-6">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 sm:gap-3 mb-2 flex-wrap">
+                  {/* Mobile back button */}
+                  <button
+                    onClick={() => setSelectedChapter(null)}
+                    className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                    title="Back to chapters"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
                   {selectedChapter.number && (
-                    <span className="px-3 py-1 bg-indigo-600 text-white rounded-full text-sm font-bold">
+                    <span className="px-2 sm:px-3 py-1 bg-indigo-600 text-white rounded-full text-xs sm:text-sm font-bold">
                       Chapter {selectedChapter.number}
                     </span>
                   )}
-                  <h2 className="text-3xl font-bold text-gray-800">{selectedChapter.title}</h2>
+                  <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-800 truncate">{selectedChapter.title}</h2>
                 </div>
                 {selectedChapter.wordCount > 0 && (
-                  <p className="text-indigo-600 font-semibold">{selectedChapter.wordCount.toLocaleString()} words</p>
+                  <p className="text-indigo-600 font-semibold text-sm sm:text-base">{selectedChapter.wordCount.toLocaleString()} words</p>
                 )}
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 flex-shrink-0">
                 <button
                   onClick={() => handleGenerateImage(selectedChapter)}
                   disabled={generatingImage === selectedChapter.id}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-1 sm:gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
                 >
-                  <Image size={16} className={generatingImage === selectedChapter.id ? 'animate-spin' : ''} />
-                  {generatingImage === selectedChapter.id ? 'Generating...' : 'Generate'}
+                  <Image size={16} className={`${generatingImage === selectedChapter.id ? 'animate-spin' : ''} flex-shrink-0`} />
+                  <span className="hidden sm:inline">{generatingImage === selectedChapter.id ? 'Generating...' : 'Generate'}</span>
                 </button>
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm sm:text-base"
                 >
-                  <Upload size={16} />
-                  Upload
+                  <Upload size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Upload</span>
                 </button>
                 <input
                   ref={fileInputRef}
@@ -391,28 +403,28 @@ const ChaptersTabView = ({
                 />
                 <button
                   onClick={() => setShowVersionHistory(true)}
-                  className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm sm:text-base"
                   title="Version History"
                 >
-                  <History size={16} />
-                  History
+                  <History size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">History</span>
                 </button>
                 <button
                   onClick={() => handleEdit(selectedChapter)}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm sm:text-base"
                 >
-                  <Edit3 size={16} />
-                  Edit
+                  <Edit3 size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Edit</span>
                 </button>
                 <button
                   onClick={() => {
                     deleteItem('chapters', selectedChapter.id);
                     setSelectedChapter(null);
                   }}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm sm:text-base"
                 >
-                  <Trash2 size={16} />
-                  Delete
+                  <Trash2 size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Delete</span>
                 </button>
               </div>
             </div>
@@ -466,19 +478,31 @@ const ChaptersTabView = ({
         ) : (
           // Form view
           <div className="max-w-4xl">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-gray-800">
-                {editingId ? 'Edit Chapter' : 'Add New Chapter'}
-              </h2>
+            <div className="flex justify-between items-center mb-4 sm:mb-6 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {/* Mobile back button */}
+                <button
+                  onClick={resetForm}
+                  className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                  title="Back to chapters"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-800 truncate">
+                  {editingId ? 'Edit Chapter' : 'Add New Chapter'}
+                </h2>
+              </div>
               <button
                 onClick={() => {
                   setShowAIHelper(!showAIHelper);
                   setAiContext('chapter');
                 }}
-                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
+                className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm sm:text-base flex-shrink-0"
               >
-                <Sparkles size={18} />
-                AI Assistant
+                <Sparkles size={16} className="sm:w-5 sm:h-5" />
+                <span className="hidden sm:inline">AI Assistant</span>
               </button>
             </div>
 
