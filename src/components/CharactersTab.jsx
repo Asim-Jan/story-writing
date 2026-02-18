@@ -308,50 +308,53 @@ const CharactersTab = ({
           {selectedCharacter ? (
           // View existing character
           <div className="max-w-4xl mx-auto">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 sm:p-8">
-              <div className="flex justify-between items-start mb-4 sm:mb-6">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 sm:gap-3 mb-2 flex-wrap">
-                    {/* Mobile back button */}
-                    <button
-                      onClick={() => setSelectedCharacter(null)}
-                      className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
-                      title="Back to characters"
-                    >
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                      </svg>
-                    </button>
-                    <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900">{selectedCharacter.name}</h2>
-                  </div>
-                  <div className="flex gap-2">
-                    {selectedCharacter.role && (
-                      <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">
-                        {selectedCharacter.role}
-                      </span>
-                    )}
-                    {selectedCharacter.age && (
-                      <span className="px-3 py-1 bg-gray-100 text-gray-800 rounded-full text-sm">
-                        Age {selectedCharacter.age}
-                      </span>
-                    )}
-                  </div>
+            <div className="bg-white lg:rounded-lg lg:shadow-sm lg:border lg:border-gray-200 p-3 sm:p-6 lg:p-8">
+              {/* Mobile-optimized header */}
+              <div className="mb-4 sm:mb-6">
+                {/* Back button and title on mobile */}
+                <div className="flex items-center gap-3 mb-3">
+                  <button
+                    onClick={() => setSelectedCharacter(null)}
+                    className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                    title="Back to characters"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 flex-1">{selectedCharacter.name}</h2>
                 </div>
-                <div className="flex flex-wrap gap-2 flex-shrink-0">
+
+                {/* Badges */}
+                <div className="flex gap-2 mb-4 flex-wrap">
+                  {selectedCharacter.role && (
+                    <span className="px-3 py-1.5 bg-blue-100 text-blue-800 rounded-full text-sm sm:text-base font-medium">
+                      {selectedCharacter.role}
+                    </span>
+                  )}
+                  {selectedCharacter.age && (
+                    <span className="px-3 py-1.5 bg-gray-100 text-gray-800 rounded-full text-sm sm:text-base">
+                      Age {selectedCharacter.age}
+                    </span>
+                  )}
+                </div>
+
+                {/* Action buttons - full width on mobile */}
+                <div className="grid grid-cols-2 lg:flex gap-2">
                   <button
                     onClick={() => handleGenerateImage(selectedCharacter)}
                     disabled={generatingImage === selectedCharacter.id}
-                    className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base font-medium"
                   >
-                    <Image size={16} className={`flex-shrink-0 ${generatingImage === selectedCharacter.id ? 'animate-spin' : ''}`} />
-                    <span className="hidden sm:inline">{generatingImage === selectedCharacter.id ? 'Generating...' : 'Generate'}</span>
+                    <Image size={18} className={`flex-shrink-0 ${generatingImage === selectedCharacter.id ? 'animate-spin' : ''}`} />
+                    <span>{generatingImage === selectedCharacter.id ? 'Generating...' : 'Generate Image'}</span>
                   </button>
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                    className="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 text-sm sm:text-base font-medium"
                   >
-                    <Upload size={16} className="flex-shrink-0" />
-                    <span className="hidden sm:inline">Upload</span>
+                    <Upload size={18} className="flex-shrink-0" />
+                    <span>Upload Image</span>
                   </button>
                   <input
                     ref={fileInputRef}
@@ -365,10 +368,10 @@ const CharactersTab = ({
                       editCharacter(selectedCharacter);
                       setSelectedCharacter(null);
                     }}
-                    className="px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                    className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 text-sm sm:text-base font-medium"
                   >
-                    <Edit3 size={16} className="flex-shrink-0" />
-                    <span className="hidden sm:inline">Edit</span>
+                    <Edit3 size={18} className="flex-shrink-0" />
+                    <span>Edit Character</span>
                   </button>
                   <button
                     onClick={() => {
@@ -377,69 +380,77 @@ const CharactersTab = ({
                         setSelectedCharacter(null);
                       }
                     }}
-                    className="px-3 sm:px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                    className="px-4 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2 text-sm sm:text-base font-medium"
                   >
-                    <Trash2 size={16} className="flex-shrink-0" />
-                    <span className="hidden sm:inline">Delete</span>
+                    <Trash2 size={18} className="flex-shrink-0" />
+                    <span>Delete</span>
                   </button>
                 </div>
               </div>
 
               {/* Character Image */}
               {selectedCharacter.imageUrl && (
-                <div className="mb-6">
+                <div className="mb-6 sm:mb-8">
                   <img
                     src={selectedCharacter.imageUrl}
                     alt={selectedCharacter.name}
-                    className="w-full max-h-96 object-cover rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity"
+                    className="w-full max-h-64 sm:max-h-96 object-cover rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity"
                     onClick={() => setSelectedImage({ imageUrl: selectedCharacter.imageUrl, description: selectedCharacter.name })}
                   />
                 </div>
               )}
 
-              <div className="space-y-6">
+              <div className="space-y-6 sm:space-y-8">
                 {(selectedCharacter.gender || selectedCharacter.skinColor || selectedCharacter.hairColor || selectedCharacter.eyeColor) && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <h3 className="font-bold text-gray-800 text-lg mb-3">Appearance</h3>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-4">Appearance</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 text-base">
                       {selectedCharacter.gender && (
-                        <div>
-                          <span className="text-gray-600">Gender:</span> <span className="text-gray-900">{selectedCharacter.gender}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Gender</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.gender}</span>
                         </div>
                       )}
                       {selectedCharacter.age && (
-                        <div>
-                          <span className="text-gray-600">Age:</span> <span className="text-gray-900">{selectedCharacter.age}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Age</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.age}</span>
                         </div>
                       )}
                       {selectedCharacter.skinColor && (
-                        <div>
-                          <span className="text-gray-600">Skin:</span> <span className="text-gray-900">{selectedCharacter.skinColor}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Skin</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.skinColor}</span>
                         </div>
                       )}
                       {selectedCharacter.hairColor && (
-                        <div>
-                          <span className="text-gray-600">Hair:</span> <span className="text-gray-900">{selectedCharacter.hairColor}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Hair</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.hairColor}</span>
                         </div>
                       )}
                       {selectedCharacter.eyeColor && (
-                        <div>
-                          <span className="text-gray-600">Eyes:</span> <span className="text-gray-900">{selectedCharacter.eyeColor}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Eyes</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.eyeColor}</span>
                         </div>
                       )}
                       {selectedCharacter.height && (
-                        <div>
-                          <span className="text-gray-600">Height:</span> <span className="text-gray-900">{selectedCharacter.height}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Height</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.height}</span>
                         </div>
                       )}
                       {selectedCharacter.weight && (
-                        <div>
-                          <span className="text-gray-600">Weight:</span> <span className="text-gray-900">{selectedCharacter.weight}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Weight</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.weight}</span>
                         </div>
                       )}
                       {selectedCharacter.build && (
-                        <div>
-                          <span className="text-gray-600">Build:</span> <span className="text-gray-900">{selectedCharacter.build}</span>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <span className="text-gray-600 font-medium block mb-1">Build</span>
+                          <span className="text-gray-900 text-lg">{selectedCharacter.build}</span>
                         </div>
                       )}
                     </div>
@@ -447,23 +458,23 @@ const CharactersTab = ({
                 )}
 
                 {selectedCharacter.background && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <h3 className="font-bold text-gray-800 text-lg mb-2">Background</h3>
-                    <p className="text-gray-700 leading-relaxed">{selectedCharacter.background}</p>
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-3 sm:mb-4">Background</h3>
+                    <p className="text-gray-700 text-base sm:text-lg leading-relaxed">{selectedCharacter.background}</p>
                   </div>
                 )}
 
                 {selectedCharacter.personality && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <h3 className="font-bold text-gray-800 text-lg mb-2">Personality</h3>
-                    <p className="text-gray-700 leading-relaxed">{selectedCharacter.personality}</p>
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-3 sm:mb-4">Personality</h3>
+                    <p className="text-gray-700 text-base sm:text-lg leading-relaxed">{selectedCharacter.personality}</p>
                   </div>
                 )}
 
                 {selectedCharacter.arc && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-bold text-gray-800 text-lg">Character Arc</h3>
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <div className="flex items-center justify-between mb-3 sm:mb-4">
+                      <h3 className="font-bold text-gray-900 text-xl sm:text-2xl">Character Arc</h3>
                       <ImproveButton
                         content={selectedCharacter.arc}
                         contentType="character arc"
@@ -484,50 +495,50 @@ const CharactersTab = ({
                         }}
                       />
                     </div>
-                    <p className="text-gray-700 leading-relaxed">{selectedCharacter.arc}</p>
+                    <p className="text-gray-700 text-base sm:text-lg leading-relaxed">{selectedCharacter.arc}</p>
                   </div>
                 )}
 
                 {selectedCharacter.motivations && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <h3 className="font-bold text-gray-800 text-lg mb-2">Motivations</h3>
-                    <p className="text-gray-700 leading-relaxed">{selectedCharacter.motivations}</p>
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-3 sm:mb-4">Motivations</h3>
+                    <p className="text-gray-700 text-base sm:text-lg leading-relaxed">{selectedCharacter.motivations}</p>
                   </div>
                 )}
 
                 {selectedCharacter.fears && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <h3 className="font-bold text-gray-800 text-lg mb-2">Fears & Vulnerabilities</h3>
-                    <p className="text-gray-700 leading-relaxed">{selectedCharacter.fears}</p>
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-3 sm:mb-4">Fears & Vulnerabilities</h3>
+                    <p className="text-gray-700 text-base sm:text-lg leading-relaxed">{selectedCharacter.fears}</p>
                   </div>
                 )}
 
                 {selectedCharacter.quirks && (
-                  <div className="pb-6 border-b border-gray-200">
-                    <h3 className="font-bold text-gray-800 text-lg mb-2">Quirks & Mannerisms</h3>
-                    <p className="text-gray-700 leading-relaxed">{selectedCharacter.quirks}</p>
+                  <div className="pb-6 sm:pb-8 border-b border-gray-200">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-3 sm:mb-4">Quirks & Mannerisms</h3>
+                    <p className="text-gray-700 text-base sm:text-lg leading-relaxed">{selectedCharacter.quirks}</p>
                   </div>
                 )}
 
                 {selectedCharacter.relationships && selectedCharacter.relationships.length > 0 && (
                   <div>
-                    <h3 className="font-bold text-gray-800 text-lg mb-3">Relationships</h3>
-                    <div className="space-y-3">
+                    <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-4">Relationships</h3>
+                    <div className="space-y-3 sm:space-y-4">
                       {selectedCharacter.relationships.map((rel, index) => {
                         const relatedChar = data.characters.find(c => c.id === rel.characterId);
                         return (
-                          <div key={index} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div key={index} className="flex items-start gap-3 p-4 bg-gray-50 rounded-lg border border-gray-200">
                             <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-semibold text-gray-800">
+                              <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                <span className="font-semibold text-gray-900 text-base sm:text-lg">
                                   {relatedChar?.name || 'Unknown Character'}
                                 </span>
-                                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-semibold">
+                                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-semibold">
                                   {rel.type}
                                 </span>
                               </div>
                               {rel.description && (
-                                <p className="text-sm text-gray-600">{rel.description}</p>
+                                <p className="text-base text-gray-600 leading-relaxed">{rel.description}</p>
                               )}
                             </div>
                           </div>
