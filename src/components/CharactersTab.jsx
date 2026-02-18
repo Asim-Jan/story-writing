@@ -6,6 +6,7 @@ import BatchAISuggestionBox from './BatchAISuggestionBox';
 import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
+import { useIsMobile } from '../hooks/useMediaQuery';
 
 const CharactersTab = ({
   data,
@@ -172,12 +173,13 @@ const CharactersTab = ({
     }
   };
 
+  const isMobile = useIsMobile();
   const showingDetail = selectedCharacter !== null || editingId;
 
   return (
     <div className="flex flex-col md:flex-row h-full relative">
       {/* Left sidebar - Character list */}
-      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-full lg:w-80'} ${showingDetail ? 'hidden lg:flex' : 'flex'} bg-white md:border-r border-gray-200 flex-col ${viewMode === 'list' ? 'md:max-h-full' : ''}`}>
+      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-full lg:w-80'} ${isMobile && showingDetail ? 'hidden' : 'flex'} bg-white md:border-r border-gray-200 flex-col ${viewMode === 'list' ? 'md:max-h-full' : ''}`}>
         <div className="p-4 border-b border-gray-200">
           <div className="flex gap-2 mb-3">
             <button
@@ -302,7 +304,7 @@ const CharactersTab = ({
 
       {/* Right panel - Character details or form */}
       {viewMode === 'list' && (
-        <div className={`${showingDetail ? 'fixed inset-0 lg:relative lg:flex-1 z-50 bg-white' : 'hidden lg:block lg:flex-1'} overflow-y-auto p-4 sm:p-6`}>
+        <div className={`${isMobile && showingDetail ? 'fixed inset-0 z-50 bg-white' : isMobile ? 'hidden' : 'flex-1'} overflow-y-auto p-4 sm:p-6`}>
           {selectedCharacter ? (
           // View existing character
           <div className="max-w-4xl mx-auto">
