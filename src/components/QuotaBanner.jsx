@@ -5,7 +5,7 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
   const [quotas, setQuotas] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(true);
   const [isMinimized, setIsMinimized] = useState(false);
   const API_URL = import.meta.env.VITE_API_URL;
 
