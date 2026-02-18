@@ -64,7 +64,7 @@ function validatePassword(password) {
   };
 }
 
-module.exports = {
+export {
   validatePassword,
   PASSWORD_REQUIREMENTS
 };
