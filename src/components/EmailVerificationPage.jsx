@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle, AlertCircle, Loader, Mail, ArrowRight } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const EmailVerificationPage = () => {
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
   const [status, setStatus] = useState('verifying'); // 'verifying', 'success', 'error'
   const [message, setMessage] = useState('');
-  const token = searchParams.get('token');
+
+  // Get token from URL params
+  const urlParams = new URLSearchParams(window.location.search);
+  const token = urlParams.get('token');
 
   useEffect(() => {
     if (!token) {
@@ -45,7 +45,7 @@ const EmailVerificationPage = () => {
 
         // Redirect to app after 3 seconds
         setTimeout(() => {
-          navigate('/');
+          window.location.href = '/';
         }, 3000);
       } else {
         setStatus('error');
@@ -106,7 +106,7 @@ const EmailVerificationPage = () => {
                 </p>
               </div>
               <button
-                onClick={() => navigate('/')}
+                onClick={() => window.location.href = '/'}
                 className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
               >
                 Go to App Now
@@ -128,7 +128,7 @@ const EmailVerificationPage = () => {
                 </ul>
               </div>
               <button
-                onClick={() => navigate('/')}
+                onClick={() => window.location.href = '/'}
                 className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
               >
                 Go to App
