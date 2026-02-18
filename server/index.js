@@ -8284,6 +8284,37 @@ app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req
     `);
 
     console.log('✅ Phase 8 migration completed successfully');
+
+    // Phase 9: Email Verification
+    console.log('🔧 Running Phase 9 migration (email_verification)...');
+
+    await getPool().query(`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS email_verification_token VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS email_verification_token_expires TIMESTAMPTZ;
+    `);
+
+    await getPool().query(`
+      CREATE INDEX IF NOT EXISTS idx_users_email_verification_token
+        ON users(email_verification_token)
+        WHERE email_verification_token IS NOT NULL;
+    `);
+
+    await getPool().query(`
+      CREATE TABLE IF NOT EXISTS email_verification_log (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        email VARCHAR(255) NOT NULL,
+        action VARCHAR(50) NOT NULL,
+        token VARCHAR(255),
+        ip_address VARCHAR(45),
+        user_agent TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    console.log('✅ Phase 9 migration completed successfully');
   } catch (error) {
     console.error('⚠️  Migration warning:', error.message);
     // Don't fail startup if migration fails
