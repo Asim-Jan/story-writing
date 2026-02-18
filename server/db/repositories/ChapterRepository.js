@@ -152,20 +152,53 @@ export class ChapterRepository {
       const updatedChapter = result.rows[0];
 
       // Save version history if content or scenes changed
+      // Only create versions periodically to avoid excessive version creation
       if (newContent !== null || newScenes !== null) {
-        const versionResult = await client.query(
-          `INSERT INTO chapter_versions (chapter_id, version_number, content, scenes, word_count, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING *`,
-          [
-            chapterId,
-            updatedChapter.version,
-            newContent || updatedChapter.content,
-            JSON.stringify(newScenes || updatedChapter.scenes),
-            updatedChapter.word_count,
-            userId
-          ]
+        // Get the most recent version for this chapter
+        const lastVersionResult = await client.query(
+          `SELECT created_at, word_count FROM chapter_versions
+           WHERE chapter_id = $1
+           ORDER BY version_number DESC
+           LIMIT 1`,
+          [chapterId]
         );
+
+        let shouldCreateVersion = false;
+
+        if (lastVersionResult.rows.length === 0) {
+          // No versions exist yet, create the first one
+          shouldCreateVersion = true;
+        } else {
+          const lastVersion = lastVersionResult.rows[0];
+          const timeSinceLastVersion = Date.now() - new Date(lastVersion.created_at).getTime();
+          const minutesSinceLastVersion = timeSinceLastVersion / (1000 * 60);
+
+          // Calculate word count difference
+          const wordCountDiff = Math.abs(updatedChapter.word_count - (lastVersion.word_count || 0));
+
+          // Create a version if:
+          // 1. More than 5 minutes have passed since last version, OR
+          // 2. Word count changed by more than 100 words (significant edit)
+          if (minutesSinceLastVersion >= 5 || wordCountDiff >= 100) {
+            shouldCreateVersion = true;
+          }
+        }
+
+        if (shouldCreateVersion) {
+          await client.query(
+            `INSERT INTO chapter_versions (chapter_id, version_number, content, scenes, word_count, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING *`,
+            [
+              chapterId,
+              updatedChapter.version,
+              newContent || updatedChapter.content,
+              JSON.stringify(newScenes || updatedChapter.scenes),
+              updatedChapter.word_count,
+              userId
+            ]
+          );
+        }
       }
 
       return updatedChapter;

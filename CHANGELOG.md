@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.0] - 2026-02-17
+
+### Added
+- **Chapter Version Control** - Complete version history for chapters
+  - View all past versions with timestamps and word counts
+  - Restore any previous version with one click
+  - Automatic version saving on every chapter edit
+  - Version history UI integrated into ChaptersTabView
+  - PostgreSQL-backed storage (migrated from Redis)
+  - Up to 50 versions kept per chapter
+  - Optimistic locking to prevent concurrent edit conflicts
+
+### Changed
+- Migrated version control endpoints from Redis to PostgreSQL
+- Version history now uses `chapter_versions` table for persistent storage
+- Added authentication headers to version control API calls
+- Version History button added to chapter detail view toolbar
+
 ## [2.19.4] - 2026-02-17
 
 ### Fixed

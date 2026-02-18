@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { FileText, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search } from 'lucide-react';
+import { FileText, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search, History } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
@@ -7,6 +7,7 @@ import ImproveButton from './ImproveButton';
 import ChapterGeneratorModal from './ChapterGeneratorModal';
 import ImagePreviewModal from './ImagePreviewModal';
 import RichTextEditor from './RichTextEditor';
+import VersionHistory from './VersionHistory';
 
 const ChaptersTabView = ({
   data,
@@ -36,6 +37,7 @@ const ChaptersTabView = ({
   const [pendingImage, setPendingImage] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
   const fileInputRef = useRef(null);
 
   const sortedChapters = [...data.chapters].sort((a, b) => {
@@ -152,6 +154,31 @@ const ChaptersTabView = ({
 
   const handleRejectImage = () => {
     setPendingImage(null);
+  };
+
+  const handleVersionRestore = (restoredChapter) => {
+    // Update the chapter in the data
+    setData(prev => ({
+      ...prev,
+      chapters: prev.chapters.map(ch =>
+        ch.id === restoredChapter.id ? {
+          ...ch,
+          content: restoredChapter.content,
+          wordCount: restoredChapter.wordCount,
+          updatedAt: restoredChapter.updatedAt || new Date().toISOString()
+        } : ch
+      )
+    }));
+
+    // Update selected chapter if it's the one being restored
+    if (selectedChapter?.id === restoredChapter.id) {
+      setSelectedChapter(prev => ({
+        ...prev,
+        content: restoredChapter.content,
+        wordCount: restoredChapter.wordCount,
+        updatedAt: restoredChapter.updatedAt || new Date().toISOString()
+      }));
+    }
   };
 
   const handleUploadImage = (event, chapter) => {
@@ -362,6 +389,14 @@ const ChaptersTabView = ({
                   onChange={(e) => handleUploadImage(e, selectedChapter)}
                   className="hidden"
                 />
+                <button
+                  onClick={() => setShowVersionHistory(true)}
+                  className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  title="Version History"
+                >
+                  <History size={16} />
+                  History
+                </button>
                 <button
                   onClick={() => handleEdit(selectedChapter)}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
@@ -577,6 +612,16 @@ const ChaptersTabView = ({
         description={selectedImage?.description}
         onClose={() => setSelectedImage(null)}
       />
+
+      {/* Version History Modal */}
+      {showVersionHistory && selectedChapter && (
+        <VersionHistory
+          bookId={data.id}
+          chapterId={selectedChapter.id}
+          onRestore={handleVersionRestore}
+          onClose={() => setShowVersionHistory(false)}
+        />
+      )}
     </div>
   );
 };

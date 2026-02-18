@@ -14,7 +14,13 @@ export default function VersionHistory({ bookId, chapterId, onRestore, onClose }
   const loadVersions = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/books/${bookId}/chapters/${chapterId}/versions`);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/books/${bookId}/chapters/${chapterId}/versions`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
       if (response.ok) {
         const data = await response.json();
         setVersions(data.versions || []);
@@ -33,8 +39,14 @@ export default function VersionHistory({ bookId, chapterId, onRestore, onClose }
 
     try {
       setRestoring(true);
+      const token = localStorage.getItem('token');
       const response = await fetch(`/api/books/${bookId}/chapters/${chapterId}/versions/${version.id}/restore`, {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include'
       });
 
       if (response.ok) {
@@ -42,7 +54,8 @@ export default function VersionHistory({ bookId, chapterId, onRestore, onClose }
         onRestore(data.chapter);
         onClose();
       } else {
-        alert('Failed to restore version');
+        const errorData = await response.json();
+        alert(`Failed to restore version: ${errorData.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Restore error:', error);
