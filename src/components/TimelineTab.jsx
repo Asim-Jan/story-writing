@@ -527,52 +527,57 @@ const TimelineTab = ({ data, setData, onGenerateTimeline, generatingAI }) => {
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-6xl mx-auto px-3 sm:px-0">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-3xl font-bold text-gray-800 mb-2">Story Timeline</h2>
-            <p className="text-gray-600">Chronological events from your story</p>
+      <div className="mb-4 sm:mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-800 mb-1 sm:mb-2">Story Timeline</h2>
+            <p className="text-sm sm:text-base text-gray-600">Chronological events from your story</p>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="grid grid-cols-2 sm:flex gap-2 flex-wrap">
           <button
             onClick={() => setShowAddForm(!showAddForm)}
-            className="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2 font-semibold text-sm sm:text-base"
           >
-            <Plus size={20} />
-            Add Scene
+            <Plus size={18} className="sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">Add Scene</span>
+            <span className="sm:hidden">Add</span>
           </button>
           <button
             onClick={() => setShowAIEventGenerator(!showAIEventGenerator)}
-            className="px-4 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center gap-2 font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center justify-center gap-2 font-semibold text-sm sm:text-base"
           >
-            <Wand2 size={20} />
-            AI Generate Scene
+            <Wand2 size={18} className="sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">AI Generate Scene</span>
+            <span className="sm:hidden">AI Scene</span>
           </button>
           <button
             onClick={handleGenerate}
             disabled={isGenerating || generatingAI}
-            className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+            className="px-3 sm:px-6 py-2 sm:py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-sm sm:text-base"
           >
-            <Sparkles size={20} className={isGenerating ? 'animate-spin' : ''} />
-            {isGenerating ? 'Generating Timeline...' : 'Auto-Generate Timeline'}
+            <Sparkles size={18} className={`sm:w-5 sm:h-5 ${isGenerating ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{isGenerating ? 'Generating Timeline...' : 'Auto-Generate Timeline'}</span>
+            <span className="sm:hidden">Auto</span>
           </button>
           <button
             onClick={() => setShowChapterGenerator(true)}
             disabled={data.timelines.length === 0}
-            className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+            className="px-3 sm:px-6 py-2 sm:py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-sm sm:text-base"
           >
-            <BookOpen size={20} />
-            Generate Chapters
+            <BookOpen size={18} className="sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">Generate Chapters</span>
+            <span className="sm:hidden">Chapters</span>
           </button>
           <button
             onClick={handleExportPDF}
             disabled={data.timelines.length === 0}
-            className="px-6 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+            className="px-3 sm:px-6 py-2 sm:py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-sm sm:text-base"
           >
-            <Download size={20} />
-            Export PDF
+            <Download size={18} className="sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">Export PDF</span>
+            <span className="sm:hidden">PDF</span>
           </button>
           </div>
         </div>

@@ -5,6 +5,8 @@ const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem })
   const [selectedNote, setSelectedNote] = useState(null);
   const [viewMode, setViewMode] = useState('list');
 
+  const showingDetail = selectedNote !== null || (noteForm.title || noteForm.content);
+
   const resetForm = () => {
     setNoteForm({ title: '', content: '', category: 'general' });
     setSelectedNote(null);
@@ -36,9 +38,9 @@ const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem })
   );
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full relative">
       {/* Left sidebar - Notes list */}
-      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-80'} bg-white border-r border-gray-200 flex flex-col`}>
+      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-full lg:w-80'} ${showingDetail ? 'hidden lg:flex' : 'flex'} bg-white border-r border-gray-200 flex-col`}>
         <div className="p-4 border-b border-gray-200">
           <div className="flex gap-2">
             <button
@@ -126,13 +128,25 @@ const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem })
 
       {/* Right panel - Details or form */}
       {viewMode === 'list' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`${showingDetail ? 'fixed inset-0 lg:relative lg:flex-1 z-50 bg-white' : 'hidden lg:block lg:flex-1'} overflow-y-auto p-4 sm:p-6`}>
           {selectedNote ? (
           // Detailed view
           <div className="max-w-4xl">
-            <div className="flex items-start justify-between mb-6">
-              <div className="flex-1">
-                <h2 className="text-3xl font-bold text-gray-800 mb-2">{selectedNote.title}</h2>
+            <div className="flex items-start justify-between mb-4 sm:mb-6">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 sm:gap-3 mb-2 flex-wrap">
+                  {/* Mobile back button */}
+                  <button
+                    onClick={() => setSelectedNote(null)}
+                    className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                    title="Back to notes"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-800">{selectedNote.title}</h2>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold ${getCategoryColor(selectedNote.category)}`}>
                     {selectedNote.category}
@@ -147,10 +161,10 @@ const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem })
                   deleteItem('notes', selectedNote.id);
                   setSelectedNote(null);
                 }}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                className="px-3 sm:px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 flex-shrink-0"
               >
-                <Trash2 size={16} />
-                Delete
+                <Trash2 size={16} className="flex-shrink-0" />
+                <span className="hidden sm:inline">Delete</span>
               </button>
             </div>
 
@@ -163,7 +177,19 @@ const NotesTab = ({ data, setData, noteForm, setNoteForm, addNote, deleteItem })
         ) : (
           // Form view
           <div className="max-w-4xl">
-            <h2 className="text-2xl font-bold text-gray-800 mb-6">Add New Note</h2>
+            <div className="flex items-center gap-2 mb-4 sm:mb-6">
+              {/* Mobile back button */}
+              <button
+                onClick={resetForm}
+                className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                title="Back to notes"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-800">Add New Note</h2>
+            </div>
 
             <div className="space-y-4">
               <input
