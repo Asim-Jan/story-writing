@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.6] - 2026-02-18
+
+### Fixed
+- **Autosave Indicator** - Fixed "Unsaved changes" persisting after manual save
+  - Updated useAutosave hook to handle server response updates gracefully
+  - Prevents marking as unsaved when data updates from save response
+  - Added saveStatus dependency to useEffect for proper state tracking
+
+## [2.20.5] - 2026-02-18
+
+### Fixed
+- **Smart Version Creation** - Reduced excessive version creation from autosave
+  - Only creates versions every 5 minutes OR when 100+ words changed
+  - Prevents version spam from frequent autosaves (every 30 seconds)
+  - Implemented intelligent thresholds in ChapterRepository.update()
+
+## [2.20.4] - 2026-02-18
+
+### Fixed
+- **UUID Validation** - Added backward compatibility for Redis chapters
+  - Old numeric chapter IDs now gracefully return empty versions
+  - Prevents UUID validation errors when opening legacy chapters
+  - Non-UUID chapters show "No versions saved yet" instead of crashing
+
+## [2.20.3] - 2026-02-18
+
+### Fixed
+- **Version Creation Logic** - Implemented smart versioning to prevent excessive saves
+  - Time-based threshold: 5+ minutes since last version
+  - Change-based threshold: 100+ words changed (significant edit)
+  - Always creates first version for new chapters
+
+## [2.20.2] - 2026-02-18
+
+### Fixed
+- **Version Control Endpoints** - Fixed ChapterDataService.findById error
+  - Replaced ChapterDataService with ChapterRepository in all endpoints
+  - Fixed GET /versions endpoint crash
+  - Fixed POST /restore endpoint crash
+
+## [2.20.1] - 2026-02-18
+
+### Fixed
+- **PostgreSQL Migration** - Migrated version control from Redis to PostgreSQL
+  - Updated GET /api/books/:bookId/chapters/:chapterId/versions
+  - Updated POST /api/books/:bookId/chapters/:chapterId/versions/:versionId/restore
+  - Added proper authentication and error handling
+
 ## [2.20.0] - 2026-02-17
 
 ### Added
