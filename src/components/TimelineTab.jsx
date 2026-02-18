@@ -527,54 +527,57 @@ const TimelineTab = ({ data, setData, onGenerateTimeline, generatingAI }) => {
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-6xl mx-auto px-3 sm:px-4 lg:px-6">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-3xl font-bold text-gray-800 mb-2">Story Timeline</h2>
-            <p className="text-gray-600">Chronological events from your story</p>
-          </div>
-          <div className="flex gap-2 flex-wrap">
+      <div className="mb-4 sm:mb-6">
+        <div className="mb-4">
+          <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-800 mb-1 sm:mb-2">Story Timeline</h2>
+          <p className="text-sm sm:text-base text-gray-600">Chronological events from your story</p>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 lg:gap-3">
           <button
             onClick={() => setShowAddForm(!showAddForm)}
-            className="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2 font-semibold text-sm sm:text-base whitespace-nowrap"
           >
-            <Plus size={20} />
-            Add Scene
+            <Plus size={18} className="sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="hidden lg:inline">Add Scene</span>
+            <span className="lg:hidden">Add</span>
           </button>
           <button
             onClick={() => setShowAIEventGenerator(!showAIEventGenerator)}
-            className="px-4 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center gap-2 font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center justify-center gap-2 font-semibold text-sm sm:text-base whitespace-nowrap"
           >
-            <Wand2 size={20} />
-            AI Generate Scene
+            <Wand2 size={18} className="sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="hidden lg:inline">AI Generate Scene</span>
+            <span className="lg:hidden">AI Scene</span>
           </button>
           <button
             onClick={handleGenerate}
             disabled={isGenerating || generatingAI}
-            className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-sm sm:text-base whitespace-nowrap"
           >
-            <Sparkles size={20} className={isGenerating ? 'animate-spin' : ''} />
-            {isGenerating ? 'Generating Timeline...' : 'Auto-Generate Timeline'}
+            <Sparkles size={18} className={`sm:w-5 sm:h-5 flex-shrink-0 ${isGenerating ? 'animate-spin' : ''}`} />
+            <span className="hidden lg:inline">{isGenerating ? 'Generating...' : 'Auto-Generate'}</span>
+            <span className="lg:hidden">Auto</span>
           </button>
           <button
             onClick={() => setShowChapterGenerator(true)}
             disabled={data.timelines.length === 0}
-            className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-sm sm:text-base whitespace-nowrap"
           >
-            <BookOpen size={20} />
-            Generate Chapters
+            <BookOpen size={18} className="sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="hidden lg:inline">Generate Chapters</span>
+            <span className="lg:hidden">Chapters</span>
           </button>
           <button
             onClick={handleExportPDF}
             disabled={data.timelines.length === 0}
-            className="px-6 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+            className="px-3 sm:px-4 py-2 sm:py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-sm sm:text-base whitespace-nowrap"
           >
-            <Download size={20} />
-            Export PDF
+            <Download size={18} className="sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="hidden lg:inline">Export PDF</span>
+            <span className="lg:hidden">PDF</span>
           </button>
-          </div>
         </div>
         {/* Search Input */}
         {data.timelines.length > 0 && (
@@ -835,9 +838,9 @@ const TimelineTab = ({ data, setData, onGenerateTimeline, generatingAI }) => {
           {hasBranches ? (
             // Multi-branch timeline
             <div className="relative">
-              <div className="flex gap-12">
+              <div className="flex flex-col lg:flex-row gap-8 lg:gap-12 overflow-x-auto">
                 {branches.map((branch, branchIndex) => (
-                  <div key={branch} className="flex-1">
+                  <div key={branch} className="flex-1 min-w-0 lg:min-w-[300px]">
                     {/* Branch header */}
                     <div className="mb-6 sticky top-0 bg-white z-10 pb-2">
                       <div className="flex items-center gap-2 mb-2">
@@ -854,7 +857,7 @@ const TimelineTab = ({ data, setData, onGenerateTimeline, generatingAI }) => {
                         {groupedEvents[branch].map((event, index) => (
                           <div
                             key={event.id}
-                            className="relative pl-20"
+                            className="relative pl-16 sm:pl-20"
                             draggable
                             onDragStart={(e) => handleDragStart(e, event)}
                             onDragOver={(e) => handleDragOver(e, event)}

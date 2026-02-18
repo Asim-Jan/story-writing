@@ -5,6 +5,7 @@ import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
 import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
+import { useIsMobile } from '../hooks/useMediaQuery';
 
 const LocationsTab = ({
   data,
@@ -36,6 +37,9 @@ const LocationsTab = ({
   const [selectedImage, setSelectedImage] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef(null);
+
+  const isMobile = useIsMobile();
+  const showingDetail = selectedLocation !== null || editingId;
 
   // Filter locations based on search query
   const filteredLocations = data.locations.filter(loc => {
@@ -176,9 +180,9 @@ const LocationsTab = ({
   };
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full relative">
       {/* Left sidebar - Locations list */}
-      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-80'} bg-white border-r border-gray-200 flex flex-col`}>
+      <div className={`${viewMode === 'grid' ? 'w-full' : 'w-full lg:w-80'} ${isMobile && showingDetail ? 'hidden' : 'flex'} bg-white border-r border-gray-200 flex-col`}>
         <div className="p-4 border-b border-gray-200">
           <div className="flex gap-2 mb-3">
             <button
@@ -292,34 +296,46 @@ const LocationsTab = ({
 
       {/* Right panel - Details or form */}
       {viewMode === 'list' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`${isMobile && showingDetail ? 'fixed inset-0 z-50 bg-white' : isMobile ? 'hidden' : 'flex-1'} overflow-y-auto p-4 sm:p-6`}>
           {selectedLocation ? (
             // Detailed view
           <div className="max-w-4xl">
-            <div className="flex items-start justify-between mb-6">
-              <div className="flex-1">
-                <h2 className="text-3xl font-bold text-gray-800 mb-2">{selectedLocation.name}</h2>
+            <div className="flex items-start justify-between mb-4 sm:mb-6">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 sm:gap-3 mb-2 flex-wrap">
+                  {/* Mobile back button */}
+                  <button
+                    onClick={() => setSelectedLocation(null)}
+                    className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                    title="Back to locations"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-800">{selectedLocation.name}</h2>
+                </div>
                 {selectedLocation.type && (
                   <span className="inline-block px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-semibold">
                     {selectedLocation.type}
                   </span>
                 )}
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 flex-shrink-0">
                 <button
                   onClick={() => handleGenerateImage(selectedLocation)}
                   disabled={generatingImage === selectedLocation.id}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Image size={16} className={generatingImage === selectedLocation.id ? 'animate-spin' : ''} />
-                  {generatingImage === selectedLocation.id ? 'Generating...' : 'Generate'}
+                  <Image size={16} className={`flex-shrink-0 ${generatingImage === selectedLocation.id ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">{generatingImage === selectedLocation.id ? 'Generating...' : 'Generate'}</span>
                 </button>
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
                 >
-                  <Upload size={16} />
-                  Upload
+                  <Upload size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Upload</span>
                 </button>
                 <input
                   ref={fileInputRef}
@@ -330,20 +346,20 @@ const LocationsTab = ({
                 />
                 <button
                   onClick={() => handleEdit(selectedLocation)}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
                 >
-                  <Edit3 size={16} />
-                  Edit
+                  <Edit3 size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Edit</span>
                 </button>
                 <button
                   onClick={() => {
                     deleteItem('locations', selectedLocation.id);
                     setSelectedLocation(null);
                   }}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
                 >
-                  <Trash2 size={16} />
-                  Delete
+                  <Trash2 size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Delete</span>
                 </button>
               </div>
             </div>
@@ -421,30 +437,42 @@ const LocationsTab = ({
         ) : (
           // Form view
           <div className="max-w-4xl">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-gray-800">
-                {editingId ? 'Edit Location' : 'Add New Location'}
-              </h2>
-              <div className="flex gap-2">
+            <div className="flex justify-between items-center mb-4 sm:mb-6">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                {/* Mobile back button */}
+                <button
+                  onClick={() => setEditingId(null)}
+                  className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                  title="Back to locations"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-800">
+                  {editingId ? 'Edit Location' : 'Add New Location'}
+                </h2>
+              </div>
+              <div className="flex gap-2 flex-shrink-0">
                 <button
                   onClick={() => {
                     setShowAIHelper(!showAIHelper);
                     setAiContext('location');
                   }}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
                 >
-                  <Sparkles size={18} />
-                  AI Assistant
+                  <Sparkles size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">AI Assistant</span>
                 </button>
                 <button
                   onClick={() => {
                     setShowAIHelper(!showAIHelper);
                     setAiContext('location-batch');
                   }}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                  className="px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
                 >
-                  <Sparkles size={18} />
-                  Batch Generate
+                  <Sparkles size={16} className="flex-shrink-0" />
+                  <span className="hidden sm:inline">Batch Generate</span>
                 </button>
               </div>
             </div>

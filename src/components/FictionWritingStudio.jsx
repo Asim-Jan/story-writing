@@ -591,7 +591,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
       {/* Sidebar */}
       <div className={`${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      } lg:translate-x-0 fixed lg:relative z-50 lg:z-0 w-64 bg-amber-50 border-r border-amber-200 transition-transform duration-300 h-full flex flex-col`}>
+      } lg:translate-x-0 fixed lg:relative z-50 lg:z-0 w-72 sm:w-64 bg-amber-50 border-r border-amber-200 transition-transform duration-300 h-full flex flex-col`}>
         <div className="p-6 border-b border-amber-200">
           <div className="flex items-center gap-2 mb-4">
             <Book className="text-amber-700" size={24} />

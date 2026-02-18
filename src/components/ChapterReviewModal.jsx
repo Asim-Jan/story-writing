@@ -116,18 +116,18 @@ const ChapterReviewModal = ({ isOpen, importData, onClose, onComplete }) => {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-hidden">
       <div className="bg-gray-800 rounded-lg shadow-xl max-w-6xl w-full h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-700">
-          <div>
-            <h2 className="text-2xl font-bold text-white">Review Chapters</h2>
-            <p className="text-gray-400 text-sm mt-1">
+        <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-700">
+          <div className="min-w-0">
+            <h2 className="text-lg sm:text-2xl font-bold text-white truncate">Review Chapters</h2>
+            <p className="text-gray-400 text-xs sm:text-sm mt-1 truncate">
               {chapters.length} chapters detected • {stats.totalWords?.toLocaleString()} words
             </p>
           </div>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors"
+            className="text-gray-400 hover:text-white transition-colors flex-shrink-0 ml-2 p-2"
           >
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
         </div>
 
