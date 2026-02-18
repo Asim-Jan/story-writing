@@ -826,15 +826,16 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
       email_verification_token_expires: verificationExpires.toISOString()
     };
 
-    // Store user data
-    await createUser(user);
+    // Store user data - use the returned user to get the actual DB-assigned ID
+    const createdUser = await createUser(user);
+    const actualUserId = createdUser?.id || userId;
 
     // Log verification email sent
     try {
       await getPool().query(
         `INSERT INTO email_verification_log (user_id, email, action, token, ip_address, user_agent)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [userId, email, 'sent', verificationToken, req.ip, req.get('user-agent')]
+        [actualUserId, email, 'sent', verificationToken, req.ip, req.get('user-agent')]
       );
     } catch (err) {
       console.error('Failed to log verification action:', err);
@@ -849,8 +850,8 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
       // Continue with registration even if email fails
     }
 
-    // Generate JWT token
-    const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '7d' });
+    // Generate JWT token using the actual DB user ID
+    const token = jwt.sign({ userId: actualUserId, email }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
     res.cookie('token', token, {
@@ -862,7 +863,7 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
 
     res.json({
       user: {
-        id: user.id,
+        id: actualUserId,
         email: user.email,
         name: user.name,
         role: 'user',
