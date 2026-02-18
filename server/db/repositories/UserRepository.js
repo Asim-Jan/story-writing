@@ -3,17 +3,25 @@ import { query, transaction } from '../postgres.js';
 export class UserRepository {
   /**
    * Create a new user
-   * @param {object} userData - User data (email, name, password_hash, tier)
+   * @param {object} userData - User data (email, name, password_hash, tier, email_verified, email_verification_token, email_verification_token_expires)
    * @returns {Promise<object>} Created user
    */
   static async create(userData) {
-    const { email, name, password_hash, tier = 'free' } = userData;
+    const {
+      email,
+      name,
+      password_hash,
+      tier = 'free',
+      email_verified = false,
+      email_verification_token = null,
+      email_verification_token_expires = null
+    } = userData;
 
     const result = await query(
-      `INSERT INTO users (email, name, password_hash, tier)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (email, name, password_hash, tier, email_verified, email_verification_token, email_verification_token_expires)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [email, name, password_hash, tier]
+      [email, name, password_hash, tier, email_verified, email_verification_token, email_verification_token_expires]
     );
 
     const user = result.rows[0];
@@ -119,6 +127,75 @@ export class UserRepository {
       [userId]
     );
     return result.rowCount > 0;
+  }
+
+  /**
+   * Set email verification token
+   * @param {string} userId - User UUID
+   * @param {string} token - Verification token
+   * @param {Date} expiresAt - Token expiration time
+   * @returns {Promise<boolean>} Success
+   */
+  static async setVerificationToken(userId, token, expiresAt) {
+    const result = await query(
+      `UPDATE users
+       SET email_verification_token = $1,
+           email_verification_token_expires = $2,
+           updated_at = NOW()
+       WHERE id = $3`,
+      [token, expiresAt, userId]
+    );
+    return result.rowCount > 0;
+  }
+
+  /**
+   * Verify email with token
+   * @param {string} token - Verification token
+   * @returns {Promise<object|null>} Verified user or null if invalid/expired
+   */
+  static async verifyEmail(token) {
+    const result = await query(
+      `UPDATE users
+       SET email_verified = true,
+           email_verification_token = NULL,
+           email_verification_token_expires = NULL,
+           updated_at = NOW()
+       WHERE email_verification_token = $1
+         AND email_verification_token_expires > NOW()
+         AND email_verified = false
+       RETURNING *`,
+      [token]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Find user by verification token
+   * @param {string} token - Verification token
+   * @returns {Promise<object|null>} User or null
+   */
+  static async findByVerificationToken(token) {
+    const result = await query(
+      `SELECT * FROM users
+       WHERE email_verification_token = $1
+         AND email_verification_token_expires > NOW()`,
+      [token]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Log email verification action
+   * @param {object} logData - Log data (user_id, email, action, token, ip_address, user_agent)
+   * @returns {Promise<void>}
+   */
+  static async logVerificationAction(logData) {
+    const { user_id, email, action, token, ip_address, user_agent } = logData;
+    await query(
+      `INSERT INTO email_verification_log (user_id, email, action, token, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [user_id, email, action, token, ip_address, user_agent]
+    );
   }
 
   /**

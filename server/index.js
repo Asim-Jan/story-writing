@@ -48,6 +48,8 @@ import {
   updateQuotaUsage
 } from './middleware/quotaEnforcement.js';
 import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
+import { validatePassword } from './utils/passwordValidation.js';
+import { sendVerificationEmail, sendWelcomeEmail } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
@@ -526,6 +528,18 @@ const authLimiter = rateLimit({
   },
 });
 
+// SECURITY: Rate limit registration endpoint to prevent spam/bot accounts
+const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // 3 registrations per hour per IP
+  message: 'Too many accounts created from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return `register:${req.ip}`;
+  },
+});
+
 // Redis client - MUST be created before session middleware
 // Initialize Redis Client (via Data Adapter for session, jobs, etc.)
 let redisClient;
@@ -770,12 +784,18 @@ async function searchWeb(query) {
 // ============ AUTHENTICATION ROUTES ============
 
 // Register new user
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', registrationLimiter, async (req, res) => {
   try {
     const { email, password, name } = req.body;
 
     if (!email || !password || !name) {
       return res.status(400).json({ error: 'Email, password, and name are required' });
+    }
+
+    // Validate password strength
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({ error: passwordValidation.error });
     }
 
     // Check if user already exists
@@ -787,6 +807,11 @@ app.post('/api/auth/register', async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Generate email verification token
+    const verificationToken = uuidv4();
+    const verificationExpires = new Date();
+    verificationExpires.setHours(verificationExpires.getHours() + 24); // 24 hours from now
+
     // Create user with UUID (secure, non-predictable ID)
     const userId = uuidv4();
     const user = {
@@ -795,11 +820,34 @@ app.post('/api/auth/register', async (req, res) => {
       name,
       password: hashedPassword,
       createdAt: new Date().toISOString(),
-      books: []
+      books: [],
+      email_verified: false,
+      email_verification_token: verificationToken,
+      email_verification_token_expires: verificationExpires.toISOString()
     };
 
     // Store user data
     await createUser(user);
+
+    // Log verification email sent
+    try {
+      await getPool().query(
+        `INSERT INTO email_verification_log (user_id, email, action, token, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [userId, email, 'sent', verificationToken, req.ip, req.get('user-agent')]
+      );
+    } catch (err) {
+      console.error('Failed to log verification action:', err);
+    }
+
+    // Send verification email (non-blocking - don't fail registration if email fails)
+    try {
+      await sendVerificationEmail(email, name, verificationToken);
+      console.log(`✅ Verification email sent to ${email}`);
+    } catch (err) {
+      console.error('Failed to send verification email:', err);
+      // Continue with registration even if email fails
+    }
 
     // Generate JWT token
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '7d' });
@@ -820,9 +868,11 @@ app.post('/api/auth/register', async (req, res) => {
         role: 'user',
         tier: 'free',
         status: 'active',
+        emailVerified: false,
         books: []
       },
-      token
+      token,
+      message: 'Registration successful! Please check your email to verify your account.'
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -1093,6 +1143,123 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// ============ EMAIL VERIFICATION ROUTES ============
+
+// Verify email with token
+app.post('/api/auth/verify-email', async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'Verification token is required' });
+    }
+
+    // Verify the token and update user
+    const result = await getPool().query(
+      `UPDATE users
+       SET email_verified = true,
+           email_verification_token = NULL,
+           email_verification_token_expires = NULL,
+           updated_at = NOW()
+       WHERE email_verification_token = $1
+         AND email_verification_token_expires > NOW()
+         AND email_verified = false
+       RETURNING id, email, name`,
+      [token]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
+    }
+
+    const user = result.rows[0];
+
+    // Log verification
+    await getPool().query(
+      `INSERT INTO email_verification_log (user_id, email, action, token, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [user.id, user.email, 'verified', token, req.ip, req.get('user-agent')]
+    );
+
+    // Send welcome email
+    try {
+      await sendWelcomeEmail(user.email, user.name);
+    } catch (err) {
+      console.error('Failed to send welcome email:', err);
+    }
+
+    res.json({
+      message: 'Email verified successfully!',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        emailVerified: true
+      }
+    });
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+// Resend verification email
+app.post('/api/auth/resend-verification', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // Get user
+    const user = await getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if already verified
+    const pgUser = await getPool().query(
+      'SELECT email_verified FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (pgUser.rows[0]?.email_verified) {
+      return res.status(400).json({ error: 'Email already verified' });
+    }
+
+    // Generate new verification token
+    const verificationToken = uuidv4();
+    const verificationExpires = new Date();
+    verificationExpires.setHours(verificationExpires.getHours() + 24);
+
+    // Update user with new token
+    await getPool().query(
+      `UPDATE users
+       SET email_verification_token = $1,
+           email_verification_token_expires = $2,
+           updated_at = NOW()
+       WHERE id = $3`,
+      [verificationToken, verificationExpires, userId]
+    );
+
+    // Log resend action
+    await getPool().query(
+      `INSERT INTO email_verification_log (user_id, email, action, token, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, user.email, 'resent', verificationToken, req.ip, req.get('user-agent')]
+    );
+
+    // Send verification email
+    try {
+      await sendVerificationEmail(user.email, user.name, verificationToken);
+      res.json({ message: 'Verification email sent! Please check your inbox.' });
+    } catch (err) {
+      console.error('Failed to send verification email:', err);
+      res.status(500).json({ error: 'Failed to send verification email' });
+    }
+  } catch (error) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({ error: 'Failed to resend verification email' });
   }
 });
 
