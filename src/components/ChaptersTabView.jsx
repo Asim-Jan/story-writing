@@ -181,35 +181,36 @@ const ChaptersTabView = ({
     }
   };
 
-  const handleUploadImage = (event, chapter) => {
+  const handleUploadImage = async (event, chapter) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Check if it's an image
     if (!file.type.startsWith('image/')) {
       alert('Please upload an image file');
       return;
     }
 
-    // Create a local URL for the image
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const imageUrl = e.target.result;
+    if (fileInputRef.current) fileInputRef.current.value = '';
 
-      // Show pending image for approval
-      setPendingImage({
-        chapterId: chapter.id,
-        imageUrl,
-        filename: file.name,
-        description: `Chapter ${chapter.number}: ${chapter.title}`,
-        isUpload: true
+    setGeneratingImage(chapter.id);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('bucketType', 'images');
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/media/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include',
+        body: formData,
       });
-    };
-    reader.readAsDataURL(file);
-
-    // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      if (!response.ok) throw new Error('Upload failed');
+      const { url, filename } = await response.json();
+      setPendingImage({ chapterId: chapter.id, imageUrl: url, filename, description: `Chapter ${chapter.number}: ${chapter.title}`, isUpload: true });
+    } catch (error) {
+      alert(`Failed to upload image: ${error.message}`);
+    } finally {
+      setGeneratingImage(null);
     }
   };
 

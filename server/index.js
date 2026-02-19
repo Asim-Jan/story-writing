@@ -3997,11 +3997,14 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // Image Generation endpoint using OpenAI DALL-E
 app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, async (req, res) => {
   try {
-    const { prompt, context } = req.body;
+    const { prompt, context, size } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
     }
+
+    const ALLOWED_SIZES = ['1024x1024', '1792x1024', '1024x1792'];
+    const imageSize = ALLOWED_SIZES.includes(size) ? size : '1024x1024';
 
     // Get user's OpenAI client (validates key exists)
     const userOpenai = await getUserOpenAI(req.user.userId);
@@ -4056,7 +4059,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
       model: 'dall-e-3',
       prompt: enhancedPrompt,
       n: 1,
-      size: '1024x1024',
+      size: imageSize,
       quality: 'standard',
       response_format: 'b64_json'
     });

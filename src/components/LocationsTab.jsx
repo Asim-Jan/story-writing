@@ -147,35 +147,36 @@ const LocationsTab = ({
     setPendingImage(null);
   };
 
-  const handleUploadImage = (event, location) => {
+  const handleUploadImage = async (event, location) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Check if it's an image
     if (!file.type.startsWith('image/')) {
       alert('Please upload an image file');
       return;
     }
 
-    // Create a local URL for the image
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const imageUrl = e.target.result;
+    if (fileInputRef.current) fileInputRef.current.value = '';
 
-      // Show pending image for approval
-      setPendingImage({
-        locationId: location.id,
-        imageUrl,
-        filename: file.name,
-        description: location.name,
-        isUpload: true
+    setGeneratingImage(location.id);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('bucketType', 'images');
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/media/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include',
+        body: formData,
       });
-    };
-    reader.readAsDataURL(file);
-
-    // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      if (!response.ok) throw new Error('Upload failed');
+      const { url, filename } = await response.json();
+      setPendingImage({ locationId: location.id, imageUrl: url, filename, description: location.name, isUpload: true });
+    } catch (error) {
+      alert(`Failed to upload image: ${error.message}`);
+    } finally {
+      setGeneratingImage(null);
     }
   };
 
