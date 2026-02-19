@@ -24,24 +24,37 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
-  // For development: use ethereal email (test email service)
-  if (process.env.NODE_ENV === 'development' && !process.env.SMTP_HOST) {
-    console.log('⚠️  Using development email mode (emails logged to console)');
-    return null;
+  // Resend SMTP (preferred)
+  if (process.env.RESEND_API_KEY) {
+    transporter = nodemailer.createTransport({
+      host: 'smtp.resend.com',
+      port: 465,
+      secure: true,
+      auth: {
+        user: 'resend',
+        pass: process.env.RESEND_API_KEY,
+      },
+    });
+    return transporter;
   }
 
-  // Production: use real SMTP
-  transporter = nodemailer.createTransporter({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
+  // Generic SMTP fallback
+  if (process.env.SMTP_HOST) {
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+    return transporter;
+  }
 
-  return transporter;
+  // Development mode: log emails to console
+  console.log('⚠️  No SMTP configured (emails logged to console)');
+  return null;
 }
 
 /**
