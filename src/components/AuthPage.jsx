@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Book, Mail, Lock, User, LogIn, UserPlus, BookOpen } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Book, Mail, Lock, User, LogIn, UserPlus, BookOpen, Eye, EyeOff, Check, X } from 'lucide-react';
+import { validatePassword, getPasswordStrength, getPasswordError } from '../utils/passwordValidation';
 
 const AuthPage = ({ onAuthSuccess }) => {
   const [isLogin, setIsLogin] = useState(true);
@@ -14,11 +15,23 @@ const AuthPage = ({ onAuthSuccess }) => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordValidation, setPasswordValidation] = useState(null);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
+
+    // Validate password strength on registration
+    if (!isLogin) {
+      const validation = validatePassword(formData.password);
+      if (!validation.isValid) {
+        setError(getPasswordError(validation));
+        setLoading(false);
+        return;
+      }
+    }
 
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
@@ -56,6 +69,15 @@ const AuthPage = ({ onAuthSuccess }) => {
       [e.target.name]: e.target.value
     });
   };
+
+  // Validate password in real-time for registration
+  useEffect(() => {
+    if (!isLogin && formData.password) {
+      setPasswordValidation(validatePassword(formData.password));
+    } else {
+      setPasswordValidation(null);
+    }
+  }, [formData.password, isLogin]);
 
   const handleForgotPassword = async (e) => {
     e.preventDefault();
@@ -219,18 +241,78 @@ const AuthPage = ({ onAuthSuccess }) => {
                 <Lock className="inline-block w-4 h-4 mr-1" />
                 Password
               </label>
-              <input
-                type="password"
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                required
-                placeholder="••••••••"
-                minLength="6"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
-              />
-              {!isLogin && (
-                <p className="text-xs text-gray-500 mt-1">Minimum 6 characters</p>
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  name="password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  required
+                  placeholder="••••••••"
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                </button>
+              </div>
+
+              {/* Password Strength Indicator for Registration */}
+              {!isLogin && formData.password && passwordValidation && (
+                <div className="mt-3 space-y-2">
+                  {/* Strength Bar */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          passwordValidation.strength === 100 ? 'bg-green-500' :
+                          passwordValidation.strength >= 80 ? 'bg-green-400' :
+                          passwordValidation.strength >= 60 ? 'bg-yellow-400' :
+                          passwordValidation.strength >= 40 ? 'bg-orange-400' :
+                          'bg-red-400'
+                        }`}
+                        style={{ width: `${passwordValidation.strength}%` }}
+                      />
+                    </div>
+                    <span className={`text-xs font-semibold ${
+                      passwordValidation.strength === 100 ? 'text-green-600' :
+                      passwordValidation.strength >= 80 ? 'text-green-500' :
+                      passwordValidation.strength >= 60 ? 'text-yellow-500' :
+                      passwordValidation.strength >= 40 ? 'text-orange-500' :
+                      'text-red-500'
+                    }`}>
+                      {getPasswordStrength(passwordValidation.strength).label}
+                    </span>
+                  </div>
+
+                  {/* Requirements Checklist */}
+                  <div className="space-y-1 text-xs">
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.minLength ? 'text-green-600' : 'text-gray-500'}`}>
+                      {passwordValidation.requirements.minLength ? <Check size={14} /> : <X size={14} />}
+                      <span>At least 8 characters</span>
+                    </div>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasUppercase ? 'text-green-600' : 'text-gray-500'}`}>
+                      {passwordValidation.requirements.hasUppercase ? <Check size={14} /> : <X size={14} />}
+                      <span>One uppercase letter</span>
+                    </div>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasLowercase ? 'text-green-600' : 'text-gray-500'}`}>
+                      {passwordValidation.requirements.hasLowercase ? <Check size={14} /> : <X size={14} />}
+                      <span>One lowercase letter</span>
+                    </div>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasNumber ? 'text-green-600' : 'text-gray-500'}`}>
+                      {passwordValidation.requirements.hasNumber ? <Check size={14} /> : <X size={14} />}
+                      <span>One number</span>
+                    </div>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasSpecialChar ? 'text-green-600' : 'text-gray-500'}`}>
+                      {passwordValidation.requirements.hasSpecialChar ? <Check size={14} /> : <X size={14} />}
+                      <span>One special character (!@#$%^&*...)</span>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
 

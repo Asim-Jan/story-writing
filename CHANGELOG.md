@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.1] - 2026-02-19
+
+### Fixed
+- **Email Service** - Configured Resend SMTP as the primary email transport
+  - Uses `smtp.resend.com:465` when `RESEND_API_KEY` is set
+  - Falls back to generic SMTP config or console logging in dev mode
+
+## [2.22.0] - 2026-02-19
+
+### Added
+- **Email Verification** - New email verification flow for all new accounts
+  - Sends verification email on registration via nodemailer (Resend provider)
+  - `EmailVerificationBanner` shown to unverified users on all pages
+  - `/verify-email?token=...` page to complete verification
+  - Welcome email sent after successful verification
+  - `email_verified`, `email_verification_token`, `email_verification_token_expires` columns added to users table (Phase 9 migration)
+  - `email_verification_log` audit table for tracking verification events
+- **Password Validation** - Strong password requirements enforced on registration and password change
+  - Minimum 8 characters, uppercase, lowercase, number, and special character required
+  - Validated on both frontend (real-time feedback) and backend
+- **Admin Dashboard - Delete User** - Admins can now soft-delete users from the Users tab
+  - Trash icon button per user row with confirmation dialog
+  - Soft-delete anonymises email (`deleted_<uuid>@deleted.invalid`) so it can be immediately reused
+  - Existing `DELETE /api/admin/users/:userId` endpoint wired up to the UI
+
+### Fixed
+- **Registration JWT Bug** - Fixed "fail to load books" error immediately after sign-up
+  - JWT was being signed with a pre-generated UUID rather than the actual DB-assigned user ID
+  - Now captures the ID returned by `UserRepository.create()` and uses it for the JWT
+
 ## [2.21.7] - 2026-02-18
 
 ### Fixed

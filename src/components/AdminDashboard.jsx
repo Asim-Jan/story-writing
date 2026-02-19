@@ -3,7 +3,7 @@ import {
   Users, Shield, Activity, BookOpen, TrendingUp,
   Search, ChevronDown, CheckCircle, XCircle,
   AlertCircle, ArrowLeft, FileText, RefreshCw, Settings,
-  CreditCard, DollarSign, TrendingDown, Download, Cpu
+  CreditCard, DollarSign, TrendingDown, Download, Cpu, Trash2
 } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import AICostAnalytics from './AICostAnalytics';
@@ -243,6 +243,30 @@ const AdminDashboard = ({ onBack }) => {
     } catch (error) {
       console.error('Error updating status:', error);
       alert('Error updating status');
+    }
+  };
+
+  const handleDeleteUser = async (userId, userName, userEmail) => {
+    if (!confirm(`Are you sure you want to delete "${userName}" (${userEmail})?\n\nThis will soft-delete their account. They will no longer be able to log in and their email can be reused.`)) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        fetchUsers();
+        fetchStats();
+      } else {
+        const error = await response.json();
+        alert(`Failed to delete user: ${error.message || error.error}`);
+      }
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert('Error deleting user');
     }
   };
 
@@ -1084,6 +1108,13 @@ const AdminDashboard = ({ onBack }) => {
                               <CheckCircle size={18} />
                             </button>
                           )}
+                          <button
+                            onClick={() => handleDeleteUser(user.id, user.name, user.email)}
+                            className="text-red-500 hover:text-red-700"
+                            title="Delete user"
+                          >
+                            <Trash2 size={18} />
+                          </button>
                         </div>
                       </td>
                     </tr>

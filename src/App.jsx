@@ -8,16 +8,27 @@ import BooksList from './components/BooksList';
 import AuthPage from './components/AuthPage';
 import GlobalAudioPlayer from './components/GlobalAudioPlayer';
 import AdminDashboard from './components/AdminDashboard';
+import EmailVerificationPage from './components/EmailVerificationPage';
+import EmailVerificationBanner from './components/EmailVerificationBanner';
 
 function AppContent() {
   const { user, loading, login, isAuthenticated } = useAuth();
   const [currentView, setCurrentView] = useState('list'); // 'list', 'editor', or 'admin'
   const [selectedBookId, setSelectedBookId] = useState(null);
 
-  // Check URL on mount to see if we should open a specific book or admin panel
+  // Check URL on mount to see if we should open a specific book, admin panel, or verification page
   useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const verifyToken = urlParams.get('token');
+    const path = window.location.pathname;
+
+    // Handle email verification page (public route)
+    if (path === '/verify-email' || verifyToken) {
+      setCurrentView('verify-email');
+      return;
+    }
+
     if (isAuthenticated) {
-      const urlParams = new URLSearchParams(window.location.search);
       const bookId = urlParams.get('book');
       const admin = urlParams.get('admin');
 
@@ -66,6 +77,11 @@ function AppContent() {
     window.history.pushState({}, '', '?admin=true');
   };
 
+  // Show email verification page (public route - no auth required)
+  if (currentView === 'verify-email') {
+    return <EmailVerificationPage />;
+  }
+
   // Show loading spinner while checking auth
   if (loading) {
     return (
@@ -86,6 +102,9 @@ function AppContent() {
   // Show main app
   return (
     <>
+      {/* Email Verification Banner - shown on all pages if email not verified */}
+      <EmailVerificationBanner user={user} />
+
       {currentView === 'list' ? (
         <BooksList
           onSelectBook={handleSelectBook}
