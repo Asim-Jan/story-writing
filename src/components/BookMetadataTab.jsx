@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BookOpen, Image as ImageIcon, Upload, X, Users, Plus, Trash2, Mail, Key } from 'lucide-react';
+import { BookOpen, Image as ImageIcon, Upload, X, Users, Plus, Trash2, Mail, Key, Sparkles, Loader } from 'lucide-react';
 import ImagePreviewModal from './ImagePreviewModal';
 import APIKeysManager from './APIKeysManager';
 
@@ -7,6 +7,8 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
   const [selectedPreviewImage, setSelectedPreviewImage] = useState(null);
   const [newCollaboratorEmail, setNewCollaboratorEmail] = useState('');
   const [newCollaboratorRole, setNewCollaboratorRole] = useState('editor');
+  const [generatingCover, setGeneratingCover] = useState(false);
+  const [pendingCoverImage, setPendingCoverImage] = useState(null);
 
   const handleMetadataChange = (field, value) => {
     setData(prev => ({
@@ -16,6 +18,55 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
         [field]: value
       }
     }));
+  };
+
+  const handleGenerateCover = async () => {
+    setGeneratingCover(true);
+    try {
+      const token = localStorage.getItem('token');
+      const prompt = `Book cover for "${data.bookTitle || 'Untitled'}"${metadata.genre ? `. Genre: ${metadata.genre}` : ''}. ${data.overview || ''}. Portrait orientation, professional book cover design, visually striking.`;
+      const response = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        credentials: 'include',
+        body: JSON.stringify({
+          prompt,
+          size: '1024x1792',
+          context: {
+            bookTitle: data.bookTitle,
+            overview: data.overview,
+            characters: data.characters,
+            locations: data.locations,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.message || err.error || 'Failed to generate cover');
+      }
+      const { imageUrl, filename } = await response.json();
+      setPendingCoverImage({ imageUrl, filename });
+    } catch (error) {
+      alert(`Failed to generate cover: ${error.message}`);
+    } finally {
+      setGeneratingCover(false);
+    }
+  };
+
+  const handleAcceptCover = () => {
+    if (!pendingCoverImage) return;
+    handleMetadataChange('coverImage', pendingCoverImage.imageUrl);
+    setData(prev => ({
+      ...prev,
+      visuals: [...(prev.visuals || []), {
+        id: Date.now(),
+        description: `Cover - ${data.bookTitle || 'Book'}`,
+        url: pendingCoverImage.imageUrl,
+        filename: pendingCoverImage.filename,
+        createdAt: new Date().toISOString(),
+      }],
+    }));
+    setPendingCoverImage(null);
   };
 
   const handleAddCollaborator = () => {
@@ -65,7 +116,32 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Cover Preview */}
           <div>
-            {metadata.coverImage ? (
+            {pendingCoverImage ? (
+              <div>
+                <p className="text-sm font-semibold text-gray-700 mb-2">Generated cover — keep it?</p>
+                <div className="relative">
+                  <img
+                    src={pendingCoverImage.imageUrl}
+                    alt="Pending book cover"
+                    className="w-full rounded-lg shadow-md"
+                  />
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={handleAcceptCover}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold text-sm"
+                  >
+                    Set as Cover
+                  </button>
+                  <button
+                    onClick={() => setPendingCoverImage(null)}
+                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            ) : metadata.coverImage ? (
               <div className="relative group">
                 <img
                   src={metadata.coverImage}
@@ -79,13 +155,27 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
                 >
                   <X size={16} />
                 </button>
+                <button
+                  onClick={handleGenerateCover}
+                  disabled={generatingCover}
+                  className="absolute bottom-2 right-2 bg-blue-600 text-white rounded-lg px-3 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 text-xs font-semibold"
+                >
+                  {generatingCover ? <Loader size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                  {generatingCover ? 'Generating...' : 'Regenerate'}
+                </button>
               </div>
             ) : (
-              <div className="w-full h-64 bg-gray-100 rounded-lg flex items-center justify-center border-2 border-dashed border-gray-300">
-                <div className="text-center">
-                  <ImageIcon className="w-16 h-16 text-gray-400 mx-auto mb-2" />
-                  <p className="text-gray-500">No cover image selected</p>
-                </div>
+              <div className="w-full h-64 bg-gray-100 rounded-lg flex flex-col items-center justify-center border-2 border-dashed border-gray-300 gap-3">
+                <ImageIcon className="w-12 h-12 text-gray-400" />
+                <p className="text-gray-500 text-sm">No cover image selected</p>
+                <button
+                  onClick={handleGenerateCover}
+                  disabled={generatingCover}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {generatingCover ? <Loader size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                  {generatingCover ? 'Generating...' : 'Generate with AI'}
+                </button>
               </div>
             )}
           </div>
