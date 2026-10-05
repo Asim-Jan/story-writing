@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { saiVideoStart, saiVideoStatus } from '../saiClient.js';
 import dotenv from 'dotenv';
 import { mediaStorage } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
@@ -7,45 +7,23 @@ dotenv.config();
 
 /**
  * AI Video Generator Service
- * Generates video clips using Veo 3 (Google Gemini API)
+ * Generates video clips through the SAI media bridge (async job + poll).
  */
 export class VideoGenerator {
-  constructor(genaiClient = null, bookId = null) {
-    // Accept provided Gemini client (user's key) or fall back to env var for backward compatibility
-    if (genaiClient) {
-      this.genai = genaiClient;
-    } else if (process.env.GEMINI_API_KEY) {
-      console.warn('⚠️ VideoGenerator: Using system Gemini key. Consider passing user API client.');
-      this.genai = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-      });
-    } else {
-      console.warn('⚠️ GEMINI_API_KEY not set.');
-      this.genai = null;
-    }
-
-    // Store bookId for media access control
+  constructor(_unusedClient = null, bookId = null) {
+    // Kept for call-site stability; the bridge needs no client object.
     this.bookId = bookId;
   }
 
-  getGenAI() {
-    if (!this.genai) {
-      throw new Error('Gemini client not configured. Please provide API key.');
-    }
-    return this.genai;
-  }
-
   /**
-   * Generate video clip using Veo 3
+   * Generate video clip via the SAI media bridge
    * @param {Object} scene - Scene object with visual prompt
    * @param {Object} options - Generation options
    * @returns {Promise<Object>} Video result with storage info
    */
   async generateSceneVideo(scene, options = {}) {
     const {
-      duration = 8, // Veo 3 supports 5-8 seconds
-      aspectRatio = '16:9', // 16:9, 9:16, 1:1
-      quality = 'high', // low, medium, high
+      duration = 8, // seconds; the bridge clamps to the model's limits
     } = options;
 
     console.log(`Generating video for scene ${scene.sceneNumber}: ${scene.title}`);
@@ -54,77 +32,41 @@ export class VideoGenerator {
       // Build optimized prompt
       const videoPrompt = this.buildVeo3Prompt(scene);
 
-      console.log('Veo 3 prompt:', videoPrompt.substring(0, 200) + '...');
+      console.log('Video prompt:', videoPrompt.substring(0, 200) + '...');
 
-      // Generate video using Veo 3 (async operation)
-      let operation;
-      try {
-        operation = await this.genai.models.generateVideos({
-          model: 'veo-3.0-generate-001',
-          prompt: videoPrompt,
-          generationConfig: {
-            videoDuration: duration,
-            aspectRatio: aspectRatio,
-          },
-        });
-      } catch (apiError) {
-        // Handle API permission errors with helpful messages
-        if (apiError.message && apiError.message.includes('403')) {
-          const helpfulError = new Error(
-            'Google Generative Language API is not enabled. Please enable it at: https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview'
-          );
-          helpfulError.code = 'API_NOT_ENABLED';
-          helpfulError.originalError = apiError;
-          throw helpfulError;
-        }
-        if (apiError.message && apiError.message.includes('PERMISSION_DENIED')) {
-          const helpfulError = new Error(
-            'API Permission Denied. Please check your Gemini API key has the correct permissions and the Generative Language API is enabled.'
-          );
-          helpfulError.code = 'PERMISSION_DENIED';
-          helpfulError.originalError = apiError;
-          throw helpfulError;
-        }
-        throw apiError;
-      }
+      // Start the render (async job on the bridge)
+      const { jobId } = await saiVideoStart({
+        prompt: videoPrompt,
+        model: 'minimax-h3-fp8',
+        seconds: Math.min(15, Math.max(2, duration)),
+      });
 
-      // Poll until video generation completes
+      // Poll until the job completes
       console.log('Polling for video generation completion...');
       let pollCount = 0;
-      const maxPolls = 60; // Max 10 minutes (60 * 10 seconds)
+      const maxPolls = 90; // Max 15 minutes (90 * 10 seconds)
 
-      while (!operation.done && pollCount < maxPolls) {
+      while (pollCount < maxPolls) {
         await new Promise((resolve) => setTimeout(resolve, 10000)); // Wait 10 seconds
-        operation = await this.genai.operations.getVideosOperation({
-          operation: operation,
-        });
+        const state = await saiVideoStatus(jobId);
         pollCount++;
-        console.log(`Poll ${pollCount}: ${operation.done ? 'Complete!' : 'Still generating...'}`);
+        console.log(`Poll ${pollCount}: ${state.status}`);
+        if (state.status === 'done') {
+          var videoUrl = state.url;
+          break;
+        }
+        if (state.status === 'failed') {
+          throw new Error('Video generation failed on the media bridge');
+        }
       }
 
-      if (!operation.done) {
-        throw new Error('Video generation timed out after 10 minutes');
-      }
-
-      if (!operation.response?.generatedVideos?.[0]?.video) {
-        throw new Error('No video in operation response');
+      if (!videoUrl) {
+        throw new Error('Video generation timed out after 15 minutes');
       }
 
       // Download the generated video
-      const videoFile = operation.response.generatedVideos[0].video;
-      const tempPath = `/tmp/veo-scene-${scene.sceneNumber}-${Date.now()}.mp4`;
-
-      // Get the video URI and download it
       const fs = await import('fs');
       const axios = (await import('axios')).default;
-
-      // The video file object should have a URI or downloadUrl
-      const videoUrl = videoFile.uri || videoFile.downloadUrl;
-
-      if (!videoUrl) {
-        console.error('Video file object:', JSON.stringify(videoFile, null, 2));
-        throw new Error('No video URL found in response');
-      }
 
       console.log(`Downloading video from: ${videoUrl}`);
 
@@ -137,6 +79,7 @@ export class VideoGenerator {
       const videoBuffer = Buffer.from(response.data);
 
       // Write to temp file for debugging
+      const tempPath = `/tmp/scene-${scene.sceneNumber}-${Date.now()}.mp4`;
       fs.writeFileSync(tempPath, videoBuffer);
       console.log(`Video downloaded: ${videoBuffer.length} bytes`);
 
@@ -163,7 +106,8 @@ export class VideoGenerator {
         filename,
         duration,
         size: videoBuffer.length,
-        provider: 'veo3',
+        provider: 'sai-h3',
+        jobId,
       };
     } catch (error) {
       console.error(`Video generation error for scene ${scene.sceneNumber}:`, error);
@@ -172,7 +116,7 @@ export class VideoGenerator {
   }
 
   /**
-   * Build optimized prompt for Veo 3
+   * Build optimized prompt for the video model
    */
   buildVeo3Prompt(scene) {
     let prompt = '';

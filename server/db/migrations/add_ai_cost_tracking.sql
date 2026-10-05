@@ -99,10 +99,24 @@ COMMENT ON COLUMN ai_pricing.unit_price IS 'Price per unit for non-token-based m
 COMMENT ON COLUMN ai_pricing.unit_type IS 'Unit of measurement (image, minute, character)';
 
 -- ============================================================================
--- 4. Insert current OpenAI pricing (as of January 2024)
+-- 4. SAI gateway pricing (the app's AI backend) + legacy OpenAI rows kept so
+--    historical generations still cost correctly.
 -- ============================================================================
 
--- GPT models (token-based pricing)
+-- SAI models (token-based pricing; matches the gateway rate card 2026-10)
+INSERT INTO ai_pricing (model_name, input_price_per_1m, output_price_per_1m) VALUES
+('sai-chat', 0.100, 0.300),               -- Qwen3.8-Flash-Next via SAI gateway
+('sai-chat-fast', 0.075, 0.250)           -- GLM-5.3-Flash via SAI gateway
+ON CONFLICT (model_name) DO NOTHING;
+
+-- SAI image/speech (per-unit pricing; bridge rates)
+INSERT INTO ai_pricing (model_name, unit_price, unit_type, input_price_per_1m, output_price_per_1m) VALUES
+('flux2-klein-9b', 0.025, 'image', 0, 0),   -- $0.025 per image (gateway image.*)
+('character-sheet', 0.025, 'image', 0, 0),  -- $0.025 per sheet
+('tts-1', 15.00, '1M_chars', 0, 0),         -- $0.015/1k chars = $15.00 per 1M
+ON CONFLICT (model_name) DO NOTHING;
+
+-- GPT models (token-based pricing) — historical
 INSERT INTO ai_pricing (model_name, input_price_per_1m, output_price_per_1m) VALUES
 ('gpt-4o-mini', 0.150, 0.600),            -- $0.150/$0.600 per 1M tokens
 ('gpt-4o', 5.00, 15.00),                  -- $5/$15 per 1M tokens

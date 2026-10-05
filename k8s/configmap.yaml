@@ -29,14 +29,16 @@ data:
   MINIO_BUCKET_VIDEOS: "story-videos"
 
   # App URLs
-  CLIENT_URL: "https://storywriting.solutionsai.co.uk"
-  API_URL: "https://storywriting.solutionsai.co.uk"
+  CLIENT_URL: "https://story-writing.solutionsai.co.uk"
+  API_URL: "https://story-writing.solutionsai.co.uk"
 
   # Email
-  FROM_EMAIL: "noreply@storywriting.solutionsai.co.uk"
+  FROM_EMAIL: "noreply@story-writing.solutionsai.co.uk"
 
-  # OpenAI defaults
-  OPENAI_MODEL: "gpt-4o-mini"
+  # SAI gateway (the AI backend) — pooled app key, group "apps"
+  SAI_API_BASE_URL: "https://api.solutionsai.co.uk/v1"
+  SAI_CHAT_MODEL: "sai-chat"
+  SAI_CHAT_FAST_MODEL: "sai-chat-fast"
   OPENAI_MAX_TOKENS: "16384"
 
   # Database feature flags

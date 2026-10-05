@@ -22,12 +22,12 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, saveBook, bookId }) 
 
   // Voice options with descriptions
   const voices = [
-    { id: 'alloy', name: 'Alloy', description: 'Neutral, balanced voice' },
-    { id: 'echo', name: 'Echo', description: 'Clear, professional male voice' },
-    { id: 'fable', name: 'Fable', description: 'Warm, expressive British accent' },
-    { id: 'onyx', name: 'Onyx', description: 'Deep, authoritative male voice' },
-    { id: 'nova', name: 'Nova', description: 'Energetic, friendly female voice' },
-    { id: 'shimmer', name: 'Shimmer', description: 'Soft, gentle female voice' },
+    { id: 'alloy', name: 'Davis', description: 'Neutral, balanced male voice' },
+    { id: 'echo', name: 'Carter', description: 'Clear, professional male voice' },
+    { id: 'fable', name: 'Frank', description: 'Warm, relaxed male voice' },
+    { id: 'onyx', name: 'Mike', description: 'Deep, authoritative male voice' },
+    { id: 'nova', name: 'Emma', description: 'Energetic, friendly female voice' },
+    { id: 'shimmer', name: 'Grace', description: 'Soft, gentle female voice' },
   ];
 
   const speedOptions = [
@@ -129,7 +129,7 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, saveBook, bookId }) 
     } catch (error) {
       console.error('Error generating audiobook:', error);
       const errorMsg = error.message || 'Unknown error occurred';
-      alert(`Failed to generate audiobook:\n\n${errorMsg}\n\nPlease check:\n- OpenAI API key is configured\n- Server logs for details`);
+      alert(`Failed to generate audiobook:\n\n${errorMsg}\n\nPlease check:\n- Your plan includes AI audio\n- Server logs for details`);
     } finally {
       setGeneratingAll(false);
     }
@@ -389,7 +389,7 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, saveBook, bookId }) 
           <li>• Adjust playback speed from 0.5x to 2.0x</li>
           <li>• Generate individual chapters or the entire book at once</li>
           <li>• Download MP3 files for offline listening</li>
-          <li>• High-quality OpenAI text-to-speech technology</li>
+          <li>• High-quality neural text-to-speech technology</li>
         </ul>
       </div>
     </div>

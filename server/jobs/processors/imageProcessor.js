@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { saiImage } from '../../saiClient.js';
 import { createClient } from 'redis';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
@@ -18,21 +18,13 @@ async function initRedis() {
 }
 
 export async function processImageGeneration(job) {
-  const { userId, bookId, imageType, itemId, prompt, context, geminiApiKey } = job.data;
+  const { userId, bookId, imageType, itemId, prompt, context } = job.data;
 
   try {
     await updateJobStatus(job.id, { status: 'active', progress: 10 });
 
     // Initialize Redis
     await initRedis();
-
-    // Validate user's API key exists
-    if (!geminiApiKey) {
-      throw new Error('Gemini API key is required for image generation');
-    }
-
-    // Create Gemini client with user's API key
-    const userGenai = new GoogleGenAI({ apiKey: geminiApiKey });
 
     // Build enhanced prompt based on image type
     let enhancedPrompt = prompt;
@@ -50,21 +42,16 @@ export async function processImageGeneration(job) {
 
     await updateJobStatus(job.id, { status: 'active', progress: 30, message: 'Generating image with AI...' });
 
-    // Generate image
-    const result = await userGenai.models.generateImages({
-      model: 'gemini-2.5-flash-image',
+    // Generate image via the SAI media bridge
+    const { buffer: imageBuffer } = await saiImage({
       prompt: enhancedPrompt,
-      config: {
-        numberOfImages: 1,
-        aspectRatio: '1:1',
-        outputOptions: { mimeType: 'image/png' },
-      },
+      model: 'flux2-klein-9b',
+      size: '1024x1024',
     });
 
     await updateJobStatus(job.id, { status: 'active', progress: 70, message: 'Uploading image...' });
 
     // Upload to MinIO with access control mapping
-    const imageBuffer = Buffer.from(result.images[0].image.imageBytes);
     const filename = `${imageType}-${itemId || Date.now()}.png`;
 
     const uploadResult = await mediaStorage.upload('images', imageBuffer, filename, {

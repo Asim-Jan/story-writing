@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -9,18 +9,8 @@ dotenv.config();
  */
 export class VideoSceneParser {
   constructor(openaiClient = null) {
-    // Accept provided OpenAI client (user's key) or fall back to env var for backward compatibility
-    if (openaiClient) {
-      this.openai = openaiClient;
-    } else if (process.env.OPENAI_API_KEY) {
-      console.warn('⚠️ VideoSceneParser: Using system OpenAI key. Consider passing user API client.');
-      this.openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-      });
-    } else {
-      console.warn('⚠️ OPENAI_API_KEY not set.');
-      this.openai = null;
-    }
+    // The pooled SAI gateway client (any passed client is honoured for tests)
+    this.openai = openaiClient || getSAIClient();
   }
 
   getOpenAI() {
@@ -84,7 +74,7 @@ Parse this into video-ready scenes with detailed visual prompts for AI video gen
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

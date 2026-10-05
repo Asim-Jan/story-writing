@@ -161,8 +161,8 @@ const UserAICosts = () => {
           <div>
             <h4 className="font-semibold text-blue-900 mb-1">Understanding AI Costs</h4>
             <p className="text-sm text-blue-800">
-              These are <strong>estimated costs</strong> based on OpenAI's pricing for the tokens you consume.
-              Actual costs may vary. We use gpt-4o-mini ($0.15/$0.60 per 1M tokens) for most operations.
+              These are <strong>estimated costs</strong> based on the platform's rate card for the tokens you consume.
+              Actual costs may vary. Most operations use the SAI models (sai-chat / sai-chat-fast).
             </p>
           </div>
         </div>

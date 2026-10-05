@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import { getSAIClient, SAI_CHAT, SAI_CHAT_FAST } from './saiClient.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,17 +10,8 @@ dotenv.config();
 export class AIBookOrchestrator {
   constructor(redisClient, openaiClient = null) {
     this.redisClient = redisClient;
-    // Accept provided OpenAI client (user's key) or fall back to env var
-    if (openaiClient) {
-      this.openai = openaiClient;
-    } else if (process.env.OPENAI_API_KEY) {
-      this.openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-      });
-    } else {
-      console.warn('⚠️ No OpenAI client provided and OPENAI_API_KEY not set.');
-      this.openai = null;
-    }
+    // The pooled SAI gateway client (any passed client is honoured for tests)
+    this.openai = openaiClient || getSAIClient();
   }
 
   getOpenAI() {
@@ -207,7 +198,7 @@ Return ONLY valid JSON in this format:
 }`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `Story Idea: ${description}\n\nDesired Length: ${config.numChapters} chapters` },
@@ -271,7 +262,7 @@ Return an ARRAY of ${count} character objects in this exact format:
 IMPORTANT: Each character should have relationships with 2-3 other characters from the list. Make sure the character names in relationships match exactly with the names you create.`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         {
@@ -316,7 +307,7 @@ Return an ARRAY of ${count} location objects:
     const characterNames = characters.map((c) => c.name).join(', ');
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         {
@@ -362,7 +353,7 @@ Return an ARRAY of ${count} plotline objects:
       .join(', ')}\nLocations: ${bookData.locations.map((l) => l.name).join(', ')}`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: context },
@@ -413,7 +404,7 @@ Return an ARRAY of ${numChapters} chapter outline objects:
       .join('\n')}\n\nPlotlines:\n${bookData.plotlines.map((p) => `- ${p.title} (${p.type}): ${p.description}`).join('\n')}`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: context },
@@ -463,7 +454,7 @@ Return JSON:
       .join('\n')}\n\nPrevious context: ${chapterNumber > 1 ? `This follows chapter ${chapterNumber - 1}. Build on previous events naturally.` : 'This is the opening chapter. Set the scene and introduce key elements.'}`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: context },
@@ -504,7 +495,7 @@ Return JSON:
     const context = `Characters:\n${characters.map((c) => `- ${c.name} (${c.role}): ${c.background} | ${c.personality}`).join('\n')}`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: context },
@@ -541,7 +532,7 @@ Break down into individual scenes (not full chapters). Return an array of timeli
     const context = `Book: ${bookData.bookTitle}\n\nChapters:\n${bookData.chapters.map((ch) => `Chapter ${ch.number}: ${ch.title}\nSummary: ${ch.summary}\n`).join('\n')}`;
 
     const completion = await this.getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: context },
@@ -590,7 +581,7 @@ Return JSON:
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: context },

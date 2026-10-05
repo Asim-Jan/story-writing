@@ -2,12 +2,134 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ORDNANCE — the SAI design system.
+   British instrument/wayfinding lineage: ink on drawing paper, hairline grids,
+   chart-plotter precision. Kit: sai-cluster manifests/_design/ordnance/.
+
+   Hard rules:
+   · no gradients, no glassmorphism/backdrop-filter, no glow, NO SHADOWS
+   · structure = 1px borders + surface value, like a printed sheet
+   · radii: 3px inputs/buttons · 6px panels · 0 tables/tabs/rules
+   · one motion: 120ms cubic-bezier(.4,0,.2,1); no scale, no bounce, no lift
+   · zero emoji in chrome — inline SVG or plain words
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@font-face{font-family:'Archivo';font-style:normal;font-weight:100 900;font-stretch:62% 125%;
+  font-display:swap;src:url('/fonts/archivo-var-latin.woff2') format('woff2')}
+@font-face{font-family:'Commit Mono';font-style:normal;font-weight:400;font-display:swap;
+  src:url('/fonts/commit-mono-400.woff2') format('woff2')}
+@font-face{font-family:'Commit Mono';font-style:normal;font-weight:600;font-display:swap;
+  src:url('/fonts/commit-mono-600.woff2') format('woff2')}
+
+/* ── tokens ──────────────────────────────────────────────────────────────── */
+:root{
+  /* dark — "night chart": deep slate w/ blue-green cast */
+  --bg:#10161A;
+  --bg2:#161E23;
+  --glass:#141B20;
+  --glass2:#1E2930;
+  --line:#3A454C;
+  --line2:#4C5C64;
+  --ink:#E4E7E4; --dim:#8C9BA2; --dim2:#7A8992;
+  --blue:#6EA8D8;
+  --ok:#6FBF8B; --warn:#D9A441;
+  --red:#E2795C;
+  --focus:rgba(110,168,216,.28);
+  --dot:rgba(228,231,228,.05);
+  --sans:'Archivo',ui-sans-serif,system-ui,sans-serif;
+  --mono:'Commit Mono',ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --r:6px;
+  --t:120ms cubic-bezier(.4,0,.2,1);
+}
+:root[data-theme="light"]{
+  /* light — "sheet": drawing paper (the default) */
+  --bg:#F2F0EA; --bg2:#FFFFFF; --glass:#FFFFFF; --glass2:rgba(20,24,27,.06);
+  --line:#C9C6BC; --line2:#A9A69B;
+  --ink:#14181B; --dim:#5A6469; --dim2:#666F73;
+  --blue:#29506E; --ok:#3F6B4F; --warn:#A9721A; --red:#B4472E;
+  --focus:rgba(41,80,110,.22); --dot:rgba(20,24,27,.07);
+}
+
+/* ── base ────────────────────────────────────────────────────────────────── */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+html { background: var(--bg); }
+
 body {
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Map the old Tailwind purple/grey palette onto ORDNANCE tokens, app-wide.
+   The components keep their Tailwind class names; the palette below decides
+   what they actually look like — so the restyle is one file, not 67. */
+:root {
+  --tw-purple-50:  rgba(41,80,110,.08);
+  --tw-purple-100: rgba(41,80,110,.14);
+  --tw-purple-200: var(--line);
+  --tw-purple-300: var(--line2);
+  --tw-purple-400: var(--dim);
+  --tw-purple-500: var(--blue);
+  --tw-purple-600: var(--blue);
+  --tw-purple-700: var(--blue);
+  --tw-purple-800: var(--ink);
+  --tw-purple-900: var(--ink);
+  --tw-gray-50:  var(--glass);
+  --tw-gray-100: var(--glass2);
+  --tw-gray-200: var(--line);
+  --tw-gray-300: var(--line2);
+  --tw-gray-400: var(--dim2);
+  --tw-gray-500: var(--dim);
+  --tw-gray-600: var(--dim);
+  --tw-gray-700: var(--dim);
+  --tw-gray-800: var(--bg2);
+  --tw-gray-900: var(--ink);
+  --tw-green-50:  rgba(111,191,139,.10);
+  --tw-green-200: var(--line);
+  --tw-green-500: var(--ok);
+  --tw-green-600: var(--ok);
+  --tw-green-700: var(--ok);
+  --tw-red-50:  rgba(226,121,92,.10);
+  --tw-red-200: var(--line);
+  --tw-red-500: var(--red);
+  --tw-red-600: var(--red);
+  --tw-red-700: var(--red);
+  --tw-blue-50:  rgba(110,168,216,.10);
+  --tw-blue-200: var(--line);
+  --tw-blue-400: var(--blue);
+  --tw-blue-500: var(--blue);
+  --tw-blue-600: var(--blue);
+  --tw-blue-800: var(--ink);
+  --tw-yellow-50:  rgba(217,164,65,.10);
+  --tw-yellow-100: rgba(217,164,65,.14);
+  --tw-yellow-200: var(--line);
+  --tw-yellow-400: var(--warn);
+  --tw-yellow-500: var(--warn);
+  --tw-yellow-600: var(--warn);
+  --tw-orange-50:  rgba(217,164,65,.10);
+  --tw-orange-500: var(--warn);
+  --tw-orange-600: var(--warn);
+}
+
+/* Kill the old look's shadows and gradients at the source */
+.shadow-sm, .shadow-md, .shadow-lg, .shadow-xl,
+[class*="shadow-"] { box-shadow: none !important; }
+[class*="bg-gradient-"], [class*="bg-clip-text"] { background-image: none !important; }
+
+/* Soften the focus rings to the ORDNANCE focus token */
+*:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus); }
+
+::placeholder { color: var(--dim2); }
+
+@media (prefers-reduced-motion: reduce){
+  *{animation:none!important;transition:none!important}
 }
