@@ -1,4 +1,5 @@
 import { getSAIClient, SAI_CHAT, SAI_CHAT_FAST } from './saiClient.js';
+import { extractJSON } from './utils/extractJSON.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -205,16 +206,11 @@ Return ONLY valid JSON in this format:
       ],
       temperature: 0.7,
       max_tokens: 1000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -272,16 +268,11 @@ IMPORTANT: Each character should have relationships with 2-3 other characters fr
       ],
       temperature: 0.8,
       max_tokens: 4000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -317,16 +308,11 @@ Return an ARRAY of ${count} location objects:
       ],
       temperature: 0.8,
       max_tokens: 3000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -360,16 +346,11 @@ Return an ARRAY of ${count} plotline objects:
       ],
       temperature: 0.8,
       max_tokens: 2000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -411,16 +392,11 @@ Return an ARRAY of ${numChapters} chapter outline objects:
       ],
       temperature: 0.7,
       max_tokens: 6000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -461,16 +437,12 @@ Return JSON:
       ],
       temperature: 0.8,
       max_tokens: 16000, // Increased for much longer chapters
+      chat_template_kwargs: { enable_thinking: false },
+      timeout: 300000, // 5 min — long-form generation
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -502,11 +474,11 @@ Return JSON:
       ],
       temperature: 0.7,
       max_tokens: 2000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const result = JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const result = extractJSON(responseText);
     return result.relationships || [];
   }
 
@@ -516,7 +488,7 @@ Return JSON:
   async generateTimeline(bookData) {
     const systemPrompt = `Create a scene-based timeline for the story based on the chapters.
 
-Break down into individual scenes (not full chapters). Return an array of timeline events:
+Break down into individual scenes (not full chapters). Respond with ONLY the JSON array, no prose before or after. Return an array of timeline events:
 [
   {
     "event": "Scene title",
@@ -529,7 +501,7 @@ Break down into individual scenes (not full chapters). Return an array of timeli
   }
 ]`;
 
-    const context = `Book: ${bookData.bookTitle}\n\nChapters:\n${bookData.chapters.map((ch) => `Chapter ${ch.number}: ${ch.title}\nSummary: ${ch.summary}\n`).join('\n')}`;
+    const context = `Book: ${bookData.bookTitle}\n\nChapters:\n${bookData.chapters.map((ch) => `Chapter ${ch.number}: ${ch.title}\nSummary: ${ch.summary || ch.content?.slice(0, 300) || '(no summary available)'}\n`).join('\n')}`;
 
     const completion = await this.getOpenAI().chat.completions.create({
       model: SAI_CHAT,
@@ -539,16 +511,11 @@ Break down into individual scenes (not full chapters). Return an array of timeli
       ],
       temperature: 0.7,
       max_tokens: 4000,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content;
-    // Remove markdown code blocks
-    let cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    // Remove control characters that break JSON parsing
-    cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    // Fix escaped newlines in strings that break JSON
-    cleaned = cleaned.replace(/\\n/g, ' ');
-    return JSON.parse(cleaned);
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    return extractJSON(responseText);
   }
 
   /**
@@ -577,7 +544,7 @@ Return JSON:
   ]
 }`;
 
-    const context = `Book: ${bookData.bookTitle}\n\nCharacters: ${JSON.stringify(bookData.characters, null, 2)}\nLocations: ${JSON.stringify(bookData.locations, null, 2)}\nChapters: ${bookData.chapters.map((ch) => `Chapter ${ch.number}: ${ch.title}\n${ch.summary}\n${ch.content?.substring(0, 500)}...`).join('\n\n')}`;
+    const context = `Book: ${bookData.bookTitle}\n\nCharacters: ${JSON.stringify(bookData.characters, null, 2)}\nLocations: ${JSON.stringify(bookData.locations, null, 2)}\nChapters: ${bookData.chapters.map((ch) => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || '(no summary)'}\n${ch.content?.substring(0, 500) || '(no content yet)'}...`).join('\n\n')}`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
@@ -589,10 +556,11 @@ Return JSON:
         response_format: { type: 'json_object' },
         temperature: 0.3,
         max_tokens: 3000,
+        chat_template_kwargs: { enable_thinking: false },
       });
 
-      const responseText = completion.choices[0].message.content;
-      return JSON.parse(responseText);
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      return extractJSON(responseText);
     } catch (error) {
       console.error('Continuity analysis error:', error);
       return {

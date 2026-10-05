@@ -13,8 +13,8 @@ import OpenAI from 'openai';
  *   SAI_CHAT      — long-form book/chapter generation (Qwen3.8-Flash-Next, 1M ctx)
  */
 
-const BASE_URL = process.env.SAI_API_BASE_URL || 'https://api.solutionsai.co.uk/v1';
-const API_KEY = process.env.SAI_API_KEY || process.env.OPENAI_API_KEY || '';
+const BASE_URL = () => process.env.SAI_API_BASE_URL || 'https://api.solutionsai.co.uk/v1';
+const API_KEY = () => process.env.SAI_API_KEY || process.env.OPENAI_API_KEY || '';
 
 export const SAI_CHAT = process.env.SAI_CHAT_MODEL || 'sai-chat';
 export const SAI_CHAT_FAST = process.env.SAI_CHAT_FAST_MODEL || 'sai-chat-fast';
@@ -23,12 +23,12 @@ let client = null;
 
 export function getSAIClient() {
   if (!client) {
-    if (!API_KEY) {
+    if (!API_KEY()) {
       throw new Error('SAI_API_KEY_NOT_CONFIGURED');
     }
     client = new OpenAI({
-      apiKey: API_KEY,
-      baseURL: BASE_URL,
+      apiKey: API_KEY(),
+      baseURL: BASE_URL(),
       maxRetries: 2,
       timeout: 120000,
     });
@@ -37,7 +37,7 @@ export function getSAIClient() {
 }
 
 export function saiConfigured() {
-  return !!API_KEY;
+  return !!API_KEY();
 }
 
 /**
@@ -119,12 +119,12 @@ export const VOICE_MAP = {
 };
 
 export async function saiSpeech({ text, voice = 'en-davis_man', speed = 1.0 }) {
-  if (!API_KEY) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
 
-  const res = await fetch(`${BASE_URL}/audio/speech`, {
+  const res = await fetch(`${BASE_URL()}/audio/speech`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ model: 'tts-1', voice, input: text, speed }),
@@ -142,16 +142,16 @@ export async function saiSpeech({ text, voice = 'en-davis_man', speed = 1.0 }) {
  * @returns {Promise<{jobId: string}>}
  */
 export async function saiVideoStart({ prompt, model = 'minimax-h3-fp8', seconds = 8, image = undefined, size = undefined }) {
-  if (!API_KEY) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
 
   const body = { model, prompt, seconds, async: true };
   if (image) body.image = image;
   if (size) body.size = size;
 
-  const res = await fetch(`${BASE_URL.replace(/\/v1$/, '')}/v1/video/generations`, {
+  const res = await fetch(`${BASE_URL().replace(/\/v1$/, '')}/v1/video/generations`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -170,10 +170,10 @@ export async function saiVideoStart({ prompt, model = 'minimax-h3-fp8', seconds 
  * Poll a video job. Returns {status: 'running'|'done'|'failed', url?}.
  */
 export async function saiVideoStatus(jobId) {
-  if (!API_KEY) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
 
-  const res = await fetch(`${BASE_URL.replace(/\/v1$/, '')}/v1/video/jobs/${encodeURIComponent(jobId)}`, {
-    headers: { 'Authorization': `Bearer ${API_KEY}` },
+  const res = await fetch(`${BASE_URL().replace(/\/v1$/, '')}/v1/video/jobs/${encodeURIComponent(jobId)}`, {
+    headers: { 'Authorization': `Bearer ${API_KEY()}` },
   });
   if (res.status === 202) return { status: 'running' };
   if (!res.ok) {

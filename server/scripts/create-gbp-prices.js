@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 
-const stripe = new Stripe('sk_test_51SwljiReFoIBAm6QwjxOePiqUiK91bPKDjMf1bJ0yI8pC2ULsy2PrejtFUKTPc2udmx7TovlNP3bHg8VmOV2hCLT00rlVe9Res');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
 async function createGBPPrices() {
   try {
@@ -44,7 +44,7 @@ async function createGBPPrices() {
     console.log('='.repeat(60));
     console.log('Updated Environment Variables for ECS:');
     console.log('='.repeat(60));
-    console.log('STRIPE_SECRET_KEY=sk_test_51SwljiReFoIBAm6QwjxOePiqUiK91bPKDjMf1bJ0yI8pC2ULsy2PrejtFUKTPc2udmx7TovlNP3bHg8VmOV2hCLT00rlVe9Res');
+    console.log('STRIPE_SECRET_KEY=<from your environment>');
     console.log(`STRIPE_PRICE_ID_BASIC=${basicPriceGBP.id}`);
     console.log(`STRIPE_PRICE_ID_PREMIUM=${premiumPriceGBP.id}`);
     console.log('='.repeat(60));

@@ -1,4 +1,5 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
+import { extractJSON } from '../utils/extractJSON.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -102,9 +103,9 @@ Return JSON array of chapter starts.`;
         max_tokens: 2000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const detected = JSON.parse(cleaned);
+      const detected = extractJSON(cleaned);
 
       // Adjust line numbers to account for chunk offset
       return detected.map(boundary => ({

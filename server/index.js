@@ -2,9 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
-import OpenAI from 'openai';
 import axios from 'axios';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
+import { extractJSON } from './utils/extractJSON.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -126,11 +126,6 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// AI backend: the SAI gateway (pooled app key — per-user metering is the app's quota system).
-// Kept as `openai` because the OpenAI SDK client is used directly for chat below;
-// image/speech/video go through saiClient.js (media bridge).
-const openai = getSAIClient();
 
 // Create public/images directory if it doesn't exist
 const imagesDir = path.join(__dirname, '..', 'public', 'images');
@@ -3056,7 +3051,9 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
     // Increment AI counter after successful generation
     await incrementAICounter(req.user.userId);
 
-    // Create book in database with UUID
+    // Create book in database with UUID (the orchestrator produced the payload;
+    // the row must be INSERTed first — an UPDATE on a missing row is a silent no-op
+    // in PostgreSQL-only mode)
     const bookId = uuidv4();
     const bookData = {
       ...result.bookData,
@@ -3077,7 +3074,11 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
       keys: Object.keys(bookData)
     });
 
-    await updateBook(bookId, req.user.id, bookData);
+    await createBook({
+      ...bookData,
+      title: bookData.bookTitle || bookData.title || 'Untitled Story',
+      description: bookData.overview || bookData.description || '',
+    });
 
     // Add book to user's book list
     const updatedUser = {
@@ -3676,7 +3677,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       max_tokens: parseInt(process.env.OPENAI_MAX_TOKENS) || 16384,
     });
 
-    const responseText = completion.choices[0].message.content;
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
 
     // Extract token usage from OpenAI response
     const usage = completion.usage || {};
@@ -3694,7 +3695,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       .replace(/```\n?/g, '')
       .trim();
 
-    const generatedData = JSON.parse(cleanedText);
+    const generatedData = extractJSON(cleanedText);
 
     // Save generation to history database with token usage and cost
     try {
@@ -4013,7 +4014,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = promptEnhancement.choices[0].message.content.trim();
+      enhancedPrompt = (promptEnhancement.choices[0].message.content || promptEnhancement.choices[0].message.reasoning_content || promptEnhancement.choices[0].message.reasoning || '').trim();
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
@@ -4137,7 +4138,7 @@ Aim for 6-12 panels per page worth of content.`;
       max_tokens: 6000,
     });
 
-    const responseText = completion.choices[0].message.content;
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
     const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const panels = JSON.parse(cleaned);
 
@@ -4624,8 +4625,8 @@ Provide a thorough analysis with specific, actionable issues.`;
       temperature: 0.3
     });
 
-    const analysisText = completion.choices[0].message.content;
-    const analysis = JSON.parse(analysisText);
+    const analysisText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const analysis = extractJSON(analysisText);
 
     // Save analysis to database for history
     try {
@@ -6461,7 +6462,7 @@ Format as a JSON dialogue tree with nodes and choices.`;
       max_tokens: 2000
     });
 
-    const dialogueContent = completion.choices[0].message.content;
+    const dialogueContent = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
 
     // Try to parse as JSON, otherwise return as text
     let dialogueTree;
@@ -6545,7 +6546,7 @@ Respond in character as ${npc.name}. Keep the response natural, in-character, an
       max_tokens: 300
     });
 
-    const response = completion.choices[0].message.content;
+    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
     res.json({ success: true, response });
 
   } catch (error) {
@@ -6606,7 +6607,7 @@ Make it interesting and appropriate for the setting.`;
 
     const encounter = {
       id: Date.now(),
-      description: completion.choices[0].message.content,
+      description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
       difficulty,
       createdAt: new Date().toISOString()
     };
@@ -6672,7 +6673,7 @@ Provide 2-3 plot twist options.`;
       max_tokens: 600
     });
 
-    const twist = completion.choices[0].message.content;
+    const twist = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
     res.json({ success: true, twist });
 
   } catch (error) {
@@ -6864,7 +6865,7 @@ Respond to the player's action naturally and engagingly.`;
       max_tokens: 500
     });
 
-    const response = completion.choices[0].message.content;
+    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
 
     res.json({
       success: true,
@@ -6925,11 +6926,11 @@ Format as JSON with: title, description, objectives (array of strings), rewards 
 
     let quest;
     try {
-      quest = JSON.parse(completion.choices[0].message.content);
+      quest = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
     } catch {
       quest = {
         title: 'Procedural Quest',
-        description: completion.choices[0].message.content,
+        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
         objectives: ['Complete the quest'],
         rewards: { experience: partyLevel * 100, gold: partyLevel * 50 }
       };
@@ -6996,10 +6997,10 @@ Return as JSON: { description, enemies: [{name, hp, maxHp, ac, attackBonus, dama
 
     let encounter;
     try {
-      encounter = JSON.parse(completion.choices[0].message.content);
+      encounter = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
     } catch {
       encounter = {
-        description: completion.choices[0].message.content,
+        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
         enemies: []
       };
     }

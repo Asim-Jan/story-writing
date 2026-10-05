@@ -1,4 +1,5 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
+import { extractJSON } from '../utils/extractJSON.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -83,9 +84,9 @@ Parse this into video-ready scenes with detailed visual prompts for AI video gen
         max_tokens: 8000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const scenes = JSON.parse(cleaned);
+      const scenes = extractJSON(cleaned);
 
       console.log(`Parsed ${scenes.length} scenes from transcript`);
       return scenes;

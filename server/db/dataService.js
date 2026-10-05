@@ -421,6 +421,25 @@ export class BookDataService {
     const bookDataWithoutChapters = { ...bookData };
     delete bookDataWithoutChapters.chapters;
 
+    // Accept camelCase payloads (AI orchestrator) — map onto the repository's
+    // snake_case fields. Repository destructures with defaults, so snake_case
+    // callers are unaffected.
+    if (!bookDataWithoutChapters.owner_id && bookDataWithoutChapters.ownerId) {
+      bookDataWithoutChapters.owner_id = bookDataWithoutChapters.ownerId;
+    }
+    if (!bookDataWithoutChapters.title && bookDataWithoutChapters.bookTitle) {
+      bookDataWithoutChapters.title = bookDataWithoutChapters.bookTitle;
+    }
+    if (!bookDataWithoutChapters.description && bookDataWithoutChapters.overview) {
+      bookDataWithoutChapters.description = bookDataWithoutChapters.overview;
+    }
+    if (!bookDataWithoutChapters.target_audience && bookDataWithoutChapters.targetAudience) {
+      bookDataWithoutChapters.target_audience = bookDataWithoutChapters.targetAudience;
+    }
+    if (!bookDataWithoutChapters.audio_files && bookDataWithoutChapters.audioFiles) {
+      bookDataWithoutChapters.audio_files = bookDataWithoutChapters.audioFiles;
+    }
+
     // Write to PostgreSQL if enabled
     if (features.shouldWriteToPostgres()) {
       book = await BookRepository.create(bookDataWithoutChapters);

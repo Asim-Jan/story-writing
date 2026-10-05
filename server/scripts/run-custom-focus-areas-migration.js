@@ -1,4 +1,7 @@
 import pg from 'pg';
+import dotenv from 'dotenv';
+
+dotenv.config();
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -9,12 +12,12 @@ const __dirname = dirname(__filename);
 
 async function runMigration() {
   const client = new Client({
-    host: 'story-writing-postgres.cxsu2memgs31.eu-west-2.rds.amazonaws.com',
-    port: 5432,
-    user: 'story_user',
-    password: 'lg4eC9aS9MAosq4dNZ/HLbZrVqvDqvOR',
-    database: 'story_writing',
-    ssl: { rejectUnauthorized: false }
+    host: process.env.POSTGRES_HOST || 'localhost',
+    port: parseInt(process.env.POSTGRES_PORT || '5432'),
+    user: process.env.POSTGRES_USER || 'story_user',
+    password: process.env.POSTGRES_PASSWORD,
+    database: process.env.POSTGRES_DB || 'story_writing',
+    ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false } : false
   });
 
   try {

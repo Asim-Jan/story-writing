@@ -1,4 +1,5 @@
 import { getSAIClient, SAI_CHAT_FAST } from './saiClient.js';
+import { extractJSON } from './utils/extractJSON.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -114,9 +115,9 @@ Extract all relevant metadata from this chapter.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error(`Chapter analysis error for chapter ${chapter.number}:`, error);
       throw error;
@@ -182,9 +183,9 @@ Identify unique characters and consolidate the information.`;
         max_tokens: 6000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Character consolidation error:', error);
       throw error;
@@ -240,9 +241,9 @@ Identify unique locations and consolidate the information.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Location consolidation error:', error);
       throw error;
@@ -299,9 +300,9 @@ Identify and consolidate plot threads.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Plot thread consolidation error:', error);
       throw error;
@@ -349,7 +350,7 @@ Write a comprehensive book overview.`;
         max_tokens: 800,
       });
 
-      return completion.choices[0].message.content.trim();
+      return completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || ''.trim();
     } catch (error) {
       console.error('Overview generation error:', error);
       return 'Overview generation failed.';
@@ -409,9 +410,9 @@ Extract all significant timeline events.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Timeline generation error:', error);
       return [];
