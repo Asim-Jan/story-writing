@@ -170,7 +170,16 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
 
     try {
       await onProgress({ stage: 'generating', ...base, keyframeUrl });
-      const clip = await generator.generateSceneVideo(scene, { image: keyframe || undefined, stylePrompt: style.prompt, keepBuffer: true });
+      // one retry: a render can fail on a transient Station error (seen
+      // 2026-10-06: "weight is on cpu ... cuda:0"), and the next try usually works
+      let clip;
+      try {
+        clip = await generator.generateSceneVideo(scene, { image: keyframe || undefined, stylePrompt: style.prompt, keepBuffer: true });
+      } catch (err) {
+        console.warn(`Film: scene ${scene.sceneNumber} clip failed, retrying once:`, err.message);
+        await onProgress({ stage: 'generating', ...base, keyframeUrl, retry: true });
+        clip = await generator.generateSceneVideo(scene, { image: keyframe || undefined, stylePrompt: style.prompt, keepBuffer: true });
+      }
       const { buffer, ...stored } = clip;
       try {
         previousFrame = await lastFrame(buffer);
