@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
@@ -15,7 +15,6 @@ import { ListNode, ListItemNode } from '@lexical/list';
 import { LinkNode, AutoLinkNode } from '@lexical/link';
 import { CodeNode, CodeHighlightNode } from '@lexical/code';
 import { TableNode, TableCellNode, TableRowNode } from '@lexical/table';
-import { TRANSFORMERS } from '@lexical/markdown';
 import {
   $getRoot,
   $insertNodes,
@@ -232,31 +231,39 @@ function WordCounterPlugin({ onStatsChange }) {
   return null;
 }
 
-// Load Initial Content Plugin
+// Load Initial Content Plugin — parses the stored markdown representation and
+// reloads when the content changes EXTERNALLY (AI Improve/inline edits write a
+// new chapter body). Reloading must not fight the user's typing: only reload
+// when the serialized editor state differs from the incoming content.
 function LoadContentPlugin({ initialContent }) {
   const [editor] = useLexicalComposerContext();
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const lastLoadedRef = useRef(null);
 
   useEffect(() => {
-    if (initialContent && !hasLoaded) {
-      editor.update(() => {
-        const root = $getRoot();
-        root.clear();
+    if (!initialContent) return;
+    if (lastLoadedRef.current === initialContent) return;
 
-        // Split content into paragraphs and create nodes
-        const paragraphs = initialContent.split(/\n\n+/);
-        const nodes = paragraphs.map(paraText => {
-          const paragraph = $createParagraphNode();
-          const textNode = $createTextNode(paraText);
-          paragraph.append(textNode);
-          return paragraph;
-        });
+    editor.update(() => {
+      const root = $getRoot();
+      // Skip the reload if the editor already holds exactly this content
+      // (self-echo from our own onChange).
+      const current = root.getTextContent();
+      lastLoadedRef.current = initialContent;
+      if (current === initialContent) return;
 
-        root.append(...nodes);
+      root.clear();
+      // plain-text load: paragraphs from blank-line splits (markdown parsing
+      // dropped — see the note in handleChange)
+      const paragraphs = initialContent.split(/\n\n+/);
+      const nodes = paragraphs.map(paraText => {
+        const paragraph = $createParagraphNode();
+        const textNode = $createTextNode(paraText);
+        paragraph.append(textNode);
+        return paragraph;
       });
-      setHasLoaded(true);
-    }
-  }, [editor, initialContent, hasLoaded]);
+      root.append(...nodes);
+    });
+  }, [editor, initialContent]);
 
   return null;
 }
@@ -351,6 +358,16 @@ export default function RichTextEditor({
   const handleChange = (editorState) => {
     editorState.read(() => {
       const root = $getRoot();
+      // Markdown serialization — getTextContent flattened every heading/list/
+      // bold/italic run into plain text and the SAVE dropped all formatting.
+      // Markdown keeps it as data and the MarkdownShortcutPlugin already
+      // accepts markdown input, so load and save use the same representation.
+      // PLAIN TEXT stays the storage format: Lexical 0.37's markdown
+      // serializer escapes prose ('2*3' -> '2\*3'), so round-tripping through
+      // markdown rewrote stored chapters with backslashes, and the exporters
+      // printed raw ** and #. The editor's markdown SHORTCUTS still work
+      // while typing (the plugin parses them into real formatting); the
+      // storage stays plain.
       const text = root.getTextContent();
       setCurrentText(text);
       onChange(text);

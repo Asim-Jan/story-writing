@@ -229,7 +229,11 @@ app.use(helmet({
   contentSecurityPolicy: {
     useDefaults: true,
     directives: {
-      "script-src": ["'self'"],
+      // 'unsafe-eval': epub-gen-memory compiles its EJS templates with
+      // new Function — without it every EPUB export throws (tested in the
+      // bundle). No unsafe-inline for scripts: the theme pre-paint moved to
+      // /theme-init.js.
+      "script-src": ["'self'", "'unsafe-eval'"],
       "style-src": ["'self'", "'unsafe-inline'"],
       "img-src": ["'self'", "data:", "blob:", "https://story-writing.solutionsai.co.uk"],
       "media-src": ["'self'", "blob:", "https://story-writing.solutionsai.co.uk"],
