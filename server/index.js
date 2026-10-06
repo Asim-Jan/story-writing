@@ -42,7 +42,7 @@ import {
   checkBookQuota,
   checkWordQuota,
   checkChapterQuota,
-  checkAIQuota,
+  checkAIQuota, consumeAIQuota, refundAIQuota,
   checkJobQuota,
   requireFeature,
   incrementAICounter,
@@ -61,6 +61,7 @@ import * as revenueAnalytics from './services/revenueAnalytics.js';
 import * as engagementAnalytics from './services/engagementAnalytics.js';
 import * as costTracking from './services/costTracking.js';
 import { toCSV, setCSVHeaders, formatDateForCSV } from './utils/csvExporter.js';
+import { saiTextOf } from './utils/saiText.js';
 import {
   imageQueue,
   audioQueue,
@@ -3098,14 +3099,13 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
       onProgress,
     });
 
-    // Increment AI counter after successful generation
-    await incrementAICounter(req.user.userId);
+    // (the AI request was already reserved atomically by the consumeAIQuota
+    // middleware — no separate increment here, that double-counted)
 
-    // Create book in database with UUID (the orchestrator produced the payload;
-    // the row must be INSERTed first — an UPDATE on a missing row is a silent no-op
-    // in PostgreSQL-only mode)
-    const bookId = uuidv4();
-    const bookData = {
+    // Create the book row. The id sent to the client MUST be the created row's
+    // id — the old code minted its own uuidv4(), never passed it to createBook,
+    // and announced a PHANTOM id (the client then opened ?book=<404>).
+    const created = await createBook({
       ...result.bookData,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -3115,20 +3115,10 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
       visuals: result.bookData.visuals || [],
       audioFiles: result.bookData.audioFiles || {},
       collaborators: result.bookData.collaborators || [],
-    };
-
-    console.log('Saving AI-generated book with data:', {
-      bookId,
-      hasVisuals: !!bookData.visuals,
-      visualsLength: bookData.visuals?.length || 0,
-      keys: Object.keys(bookData)
+      title: result.bookData.bookTitle || result.bookData.title || 'Untitled Story',
+      description: result.bookData.overview || result.bookData.description || '',
     });
-
-    await createBook({
-      ...bookData,
-      title: bookData.bookTitle || bookData.title || 'Untitled Story',
-      description: bookData.overview || bookData.description || '',
-    });
+    const bookId = created?.id;
 
     // Add book to user's book list
     const updatedUser = {
@@ -3495,7 +3485,7 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
 });
 
 // AI Generation endpoint
-app.post('/api/generate', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/generate', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { type, prompt, context, enableWebSearch } = req.body;
 
@@ -3757,7 +3747,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       max_tokens: parseInt(process.env.OPENAI_MAX_TOKENS) || 16384,
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
 
     // Extract token usage from OpenAI response
     const usage = completion.usage || {};
@@ -3803,8 +3793,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       // Don't fail the request if DB save fails
     }
 
-    // Increment AI request counter for quota tracking
-    await incrementAICounter(req.user.userId);
+    // (reserved atomically by consumeAIQuota — no separate increment)
 
     res.json(generatedData);
   } catch (error) {
@@ -3833,14 +3822,18 @@ app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) =
     // Validate quantity (2-5)
     const validQuantity = Math.min(Math.max(parseInt(quantity), 2), 5);
 
-    // Check if user has enough AI quota for batch generation
+    // The batch's own HTTP calls to /api/generate each consume one AI slot
+    // (atomically reserved there) — metering happens per variation. This check
+    // just fails fast with the REAL field names (the old code read
+    // quotas.aiRequestsLimit/aiRequestsUsed, which don't exist: NaN < N is
+    // always false, so the gate never fired).
     const quotas = await getUserQuotas(req.user.userId);
-    const aiRemaining = quotas.aiRequestsLimit - quotas.aiRequestsUsed;
+    const aiRemaining = quotas.limits.max_ai_requests_per_day - quotas.usage.ai_requests_today;
 
     if (aiRemaining < validQuantity) {
       return res.status(403).json({
         error: 'Insufficient AI quota',
-        message: `Batch generation requires ${validQuantity} AI requests, but you only have ${aiRemaining} remaining.`
+        message: `Batch generation requires ${validQuantity} AI requests, but you only have ${aiRemaining} remaining today.`
       });
     }
 
@@ -3896,6 +3889,13 @@ app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, r
   try {
     const { bookId, imageType, itemId, prompt, context } = req.body;
 
+    // The queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and write its output onto that book.
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!prompt || !bookId || !imageType) {
       return res.status(400).json({ error: 'bookId, imageType, and prompt are required' });
     }
@@ -3928,6 +3928,13 @@ app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, r
 app.post('/api/jobs/queue/audio', authenticateToken, aiLimiter, checkJobQuota, requireFeature('media_generation'), async (req, res) => {
   try {
     const { bookId, chapterId, text, voice } = req.body;
+
+    // The queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and write its output onto that book.
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
 
     if (!bookId || !chapterId || !text) {
       return res.status(400).json({ error: 'bookId, chapterId, and text are required' });
@@ -4008,6 +4015,13 @@ app.post('/api/jobs/queue/video', authenticateToken, aiLimiter, checkJobQuota, r
   try {
     const { bookId, transcriptId, config } = req.body;
 
+    // The queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and write its output onto that book.
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!bookId || !transcriptId) {
       return res.status(400).json({ error: 'bookId and transcriptId are required' });
     }
@@ -4040,7 +4054,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // ==================== LEGACY SYNCHRONOUS ENDPOINTS (kept for backward compatibility) ====================
 
 // Image Generation endpoint using OpenAI DALL-E
-app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, async (req, res) => {
+app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { prompt, context, size } = req.body;
 
@@ -4094,7 +4108,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = (promptEnhancement.choices[0].message.content || promptEnhancement.choices[0].message.reasoning_content || promptEnhancement.choices[0].message.reasoning || '').trim();
+      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0])).trim();
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
@@ -4219,7 +4233,7 @@ Aim for 6-12 panels per page worth of content.`;
       max_tokens: 6000,
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const panels = JSON.parse(cleaned);
 
@@ -4235,7 +4249,7 @@ Aim for 6-12 panels per page worth of content.`;
 });
 
 // Generate character reference image for consistent comic panels
-app.post('/api/generate-character-reference', authenticateToken, requireMinIO, async (req, res) => {
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { characterId, character, style = 'comic book art' } = req.body;
 
@@ -4295,7 +4309,7 @@ app.post('/api/generate-character-reference', authenticateToken, requireMinIO, a
 });
 
 // Generate comic panel/scene image with character references
-app.post('/api/generate-comic-panel', authenticateToken, requireMinIO, async (req, res) => {
+app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
 
@@ -4394,7 +4408,7 @@ function chunkText(text, maxLength = 4000) {
 }
 
 // Generate TTS audio for a chapter
-app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, async (req, res) => {
+app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { text, chapterId, voice = 'alloy', speed = 1.0 } = req.body;
 
@@ -4477,9 +4491,15 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
 });
 
 // Generate audiobook for entire book (batch)
-app.post('/api/generate-audiobook', authenticateToken, async (req, res) => {
+app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature('media_generation'), consumeAIQuota, async (req, res) => {
   try {
     const { chapters, voice = 'alloy', speed = 1.0 } = req.body;
+
+    // Input bounds: an audiobook request is metered as ONE AI request — a
+    // 500-chapter payload would make one quota slot buy an hour of TTS.
+    if (Array.isArray(chapters) && chapters.length > 25) {
+      return res.status(400).json({ error: 'Too many chapters per audiobook request (max 25). Split the book.' });
+    }
 
     if (!chapters || !Array.isArray(chapters)) {
       return res.status(400).json({ error: 'Chapters array is required' });
@@ -4626,7 +4646,7 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
 });
 
 // Analyze story continuity
-app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
+app.post('/api/analyze-continuity', authenticateToken, consumeAIQuota, async (req, res) => {
   try {
     const { bookData, focusAreas = [], chapterIds = [] } = req.body;
 
@@ -4712,7 +4732,7 @@ Provide a thorough analysis with specific, actionable issues.`;
       temperature: 0.3
     });
 
-    const analysisText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const analysisText = saiTextOf(completion.choices[0]);
     const analysis = extractJSON(analysisText);
 
     // Save analysis to database for history
@@ -5027,7 +5047,9 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       return res.status(400).json({ error: 'No chapters extracted yet' });
     }
 
-    // Create book from import with UUID
+    // Create book from import. The row must be INSERTed (updateBook on a
+    // missing id is a silent no-op in PostgreSQL-only mode — the old bug that
+    // made every import "succeed" without creating anything).
     const bookId = uuidv4();
     const bookData = {
       bookTitle: bookTitle || importRecord.filename.replace(/\.[^/.]+$/, ''),
@@ -5066,7 +5088,12 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       },
     };
 
-    await updateBook(bookId, req.user.id, bookData);
+    const createdBook = await createBook({
+      ...bookData,
+      id: bookId,
+      title: bookData.bookTitle || bookData.title || 'Untitled Story',
+      description: bookData.overview || bookData.description || '',
+    });
 
     // Add book to user's book list
     const updatedUser = {
@@ -5431,7 +5458,7 @@ app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res
 // ============ VIDEO/ANIMATION GENERATION ROUTES (Protected) ============
 
 // Parse transcript into video scenes
-app.post('/api/video/parse-transcript', authenticateToken, async (req, res) => {
+app.post('/api/video/parse-transcript', authenticateToken, consumeAIQuota, async (req, res) => {
   try {
     const { transcriptId, bookId } = req.body;
 
@@ -5477,7 +5504,7 @@ app.post('/api/video/parse-transcript', authenticateToken, async (req, res) => {
 });
 
 // Generate video for scenes (streaming progress)
-app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireFeature('media_generation'), consumeAIQuota, async (req, res) => {
   try {
     const { bookId, transcriptId, scenes, options = {} } = req.body;
 
@@ -5796,9 +5823,13 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Unknown job type' });
     }
 
-    // Create new job with same data
-    const newJob = await queue.add(job.data || {});
-    await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type, job.data || {});
+    // Re-queue the ORIGINAL payload (kept by storeJobMetadata under jobData).
+    // The old code re-queued job.data — the small descriptor — so a "retry"
+    // enqueued {} and the new job did nothing.
+    const originalData = job.jobData || job.data || {};
+    const newJob = await queue.add(originalData);
+    await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type,
+      { description: `Retry of ${jobId}` }, originalData);
 
     // Clean up old job
     await cleanupJob(jobId, req.user.userId);
@@ -5813,7 +5844,7 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
 // ==================== GRAMMAR CHECK ENDPOINT ====================
 
 // Grammar and spell check using LanguageTool
-app.post('/api/grammar-check', authenticateToken, async (req, res) => {
+app.post('/api/grammar-check', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { text, language = 'en-US' } = req.body;
 
@@ -5822,6 +5853,14 @@ app.post('/api/grammar-check', authenticateToken, async (req, res) => {
     }
 
     // Use LanguageTool's free public API (no API key needed)
+    // Bound the egress: the client debounced at 2s can still send a whole
+    // manuscript per keystroke burst. LanguageTool's own sweet spot is ~4k
+    // chars; larger texts get chunked client-side later — here we refuse
+    // absurd payloads outright.
+    if (typeof req.body.text === 'string' && req.body.text.length > 8000) {
+      return res.status(400).json({ error: 'Text too long for one grammar check (max 8000 chars). Check a section at a time.' });
+    }
+
     const response = await axios.post('https://api.languagetool.org/v2/check',
       new URLSearchParams({
         text,
@@ -6168,7 +6207,7 @@ import {
 } from './utils/rpgConverter.js';
 
 // Generate RPG from book
-app.post('/api/rpg/generate', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/generate', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { bookId, settings } = req.body;
@@ -6187,8 +6226,9 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, async (req, res) => 
 
     
 
-    // Verify ownership
-    if (book.userId !== userId) {
+    // Verify access (owner or collaborator)
+    const access = await checkBookAccess(bookId, userId);
+    if (!access?.has_access) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6230,7 +6270,8 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     }
 
     
-    if (book.userId !== userId) {
+    const access = await checkBookAccess(bookId, userId);
+    if (!access?.has_access) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6266,7 +6307,8 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     }
 
     
-    if (book.userId !== userId) {
+    const access = await checkBookAccess(bookId, userId);
+    if (!access?.has_access) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6297,7 +6339,8 @@ app.delete('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     }
 
     
-    if (book.userId !== userId) {
+    const access = await checkBookAccess(bookId, userId);
+    if (!access?.has_access) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6465,7 +6508,7 @@ app.post('/api/rpg/character/export-pdf', authenticateToken, async (req, res) =>
 });
 
 // Generate AI dialogue for quest
-app.post('/api/rpg/quest/generate-dialogue', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/quest/generate-dialogue', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { quest, characters, ruleSystem } = req.body;
 
@@ -6527,7 +6570,7 @@ Format as a JSON dialogue tree with nodes and choices.`;
       max_tokens: 2000
     });
 
-    const dialogueContent = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const dialogueContent = saiTextOf(completion.choices[0]);
 
     // Try to parse as JSON, otherwise return as text
     let dialogueTree;
@@ -6561,7 +6604,7 @@ Format as a JSON dialogue tree with nodes and choices.`;
 // ============================================================================
 
 // Generate NPC response
-app.post('/api/rpg/gm/generate-npc-response', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/gm/generate-npc-response', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { npc, context, ruleSystem } = req.body;
 
@@ -6611,7 +6654,7 @@ Respond in character as ${npc.name}. Keep the response natural, in-character, an
       max_tokens: 300
     });
 
-    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const response = saiTextOf(completion.choices[0]);
     res.json({ success: true, response });
 
   } catch (error) {
@@ -6621,7 +6664,7 @@ Respond in character as ${npc.name}. Keep the response natural, in-character, an
 });
 
 // Generate random encounter
-app.post('/api/rpg/gm/generate-encounter', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/gm/generate-encounter', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, locations, difficulty, ruleSystem } = req.body;
 
@@ -6672,7 +6715,7 @@ Make it interesting and appropriate for the setting.`;
 
     const encounter = {
       id: Date.now(),
-      description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
+      description: saiTextOf(completion.choices[0]),
       difficulty,
       createdAt: new Date().toISOString()
     };
@@ -6686,7 +6729,7 @@ Make it interesting and appropriate for the setting.`;
 });
 
 // Generate plot twist
-app.post('/api/rpg/gm/generate-plot-twist', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/gm/generate-plot-twist', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, campaign, sessions } = req.body;
 
@@ -6738,7 +6781,7 @@ Provide 2-3 plot twist options.`;
       max_tokens: 600
     });
 
-    const twist = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const twist = saiTextOf(completion.choices[0]);
     res.json({ success: true, twist });
 
   } catch (error) {
@@ -6876,9 +6919,21 @@ app.post('/api/rpg/export/html5', authenticateToken, async (req, res) => {
 // ============================================================================
 
 // AI DM Response
-app.post('/api/rpg/ai-dm/respond', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/ai-dm/respond', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { rpgData, gameState, messages, party, ruleSystem, autoGenerateContent } = req.body;
+
+    // Input bounds: free-chat proxy must not become an unmetered LLM relay.
+    if (Array.isArray(messages)) {
+      if (messages.length > 60) {
+        return res.status(400).json({ error: 'Too many messages in conversation (max 60).' });
+      }
+      for (const m of messages) {
+        if (m && typeof m.content === 'string' && m.content.length > 8000) {
+          return res.status(400).json({ error: 'Message too long (max 8000 chars).' });
+        }
+      }
+    }
 
     // Get user's OpenAI client (validates key exists)
     let userOpenai;
@@ -6930,7 +6985,7 @@ Respond to the player's action naturally and engagingly.`;
       max_tokens: 500
     });
 
-    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const response = saiTextOf(completion.choices[0]);
 
     res.json({
       success: true,
@@ -6991,11 +7046,11 @@ Format as JSON with: title, description, objectives (array of strings), rewards 
 
     let quest;
     try {
-      quest = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
+      quest = JSON.parse(saiTextOf(completion.choices[0]));
     } catch {
       quest = {
         title: 'Procedural Quest',
-        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
+        description: saiTextOf(completion.choices[0]),
         objectives: ['Complete the quest'],
         rewards: { experience: partyLevel * 100, gold: partyLevel * 50 }
       };
@@ -7062,10 +7117,10 @@ Return as JSON: { description, enemies: [{name, hp, maxHp, ac, attackBonus, dama
 
     let encounter;
     try {
-      encounter = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
+      encounter = JSON.parse(saiTextOf(completion.choices[0]));
     } catch {
       encounter = {
-        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
+        description: saiTextOf(completion.choices[0]),
         enemies: []
       };
     }

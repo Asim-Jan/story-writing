@@ -50,24 +50,52 @@ export function saiConfigured() {
  * @param {Object}  opts.response_format  e.g. { type: 'json_object' }
  * @returns {Promise<{text: string, usage: Object, model: string}>}
  */
-export async function saiChat({ model = SAI_CHAT, messages, max_tokens = 4096, temperature = 0.7, response_format = undefined }) {
+export async function saiChat({ model = SAI_CHAT, messages, max_tokens = 4096, temperature = 0.7, response_format = undefined, timeoutMs = 120000, jsonMode = false }) {
   const openai = getSAIClient();
-  const completion = await openai.chat.completions.create({
+
+  const params = {
     model,
     messages,
     max_tokens,
     temperature,
     ...(response_format ? { response_format } : {}),
-  });
+    // JSON calls get thinking explicitly disabled — the reasoning stream was
+    // parking JSON fragments in reasoning_content and the caller parsed the
+    // chain-of-thought as data ('No parsable JSON' / prompt-leak bugs).
+    ...(jsonMode ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+    // maxRetries 0: the SDK's default 2 retries × 120s timeout turned one hung
+    // generation into a 6-minute request that had already burned its SSE stage.
+    // Long generations get their own generous timeoutMs instead.
+    timeout: timeoutMs,
+    maxRetries: 0,
+  };
 
-  const msg = completion.choices?.[0]?.message || {};
-  // Some SAI models park text in reasoning_content when the token budget is
-  // spent before content starts — treat real content as authoritative and
-  // fall back so short JSON calls never come back empty.
-  const text = msg.content || msg.reasoning_content || msg.reasoning || '';
+  const completion = await openai.chat.completions.create(params);
+
+  const choice = completion.choices?.[0] || {};
+  const msg = choice.message || {};
+
+  // content is authoritative. reasoning_content is the model's CHAIN OF
+  // THOUGHT — it must NEVER be served as answer text. The old
+  // content || reasoning_content fallback shipped reasoning to users whenever
+  // the budget ran out mid-content (the 'prompt-leak' bug class).
+  let text = typeof msg.content === 'string' ? msg.content : '';
+  let reasoningOnly = false;
+  if (!text.trim() && (msg.reasoning_content || msg.reasoning)) {
+    // The model spent the whole budget thinking and produced no answer:
+    // honest empty result + a signal the caller can retry/escalate on,
+    // rather than silently returning the chain-of-thought.
+    text = '';
+    reasoningOnly = true;
+  }
+
+  const finish = choice.finish_reason || choice.finish_reason;
 
   return {
     text,
+    reasoningOnly,
+    finishReason: finish,
+    truncated: finish === 'length',
     usage: completion.usage || {},
     model: completion.model || model,
   };

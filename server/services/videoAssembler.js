@@ -126,13 +126,14 @@ export class VideoAssembler {
         bookId: this.bookId, // For access control
       }, setMediaBookMapping);
 
+      // Size BEFORE cleanup — the old code deleted the file, then statSync'd
+      // it (undefined size / thrown ENOENT depending on timing).
+      const size = fs.statSync(outputPath).size;
+
       // Cleanup temp files
       this.cleanupTempFiles([...tempFiles, concatFile, outputPath]);
 
       console.log('✓ Final film uploaded to MinIO:', uploadResult.storageKey);
-
-      // Get video duration and metadata
-      const stats = fs.statSync(outputPath);
 
       return {
         success: true,
@@ -141,7 +142,7 @@ export class VideoAssembler {
         bucket: uploadResult.bucket,
         filename: outputFilename,
         sceneCount: tempFiles.length,
-        size: stats.size,
+        size,
       };
     } catch (error) {
       console.error('Video assembly error:', error);

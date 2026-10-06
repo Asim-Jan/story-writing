@@ -1,8 +1,8 @@
 import { saiImage } from '../../saiClient.js';
-import { createClient } from 'redis';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
 import { setMediaBookMapping } from '../../utils/mediaMapping.js';
+import { BookDataService } from '../../db/dataService.js';
 
 // Redis client for book data
 let redisClient;
@@ -25,9 +25,6 @@ export async function processImageGeneration(job) {
 
   try {
     await updateJobStatus(job.id, { status: 'active', progress: 10 });
-
-    // Initialize Redis
-    await initRedis();
 
     // Build enhanced prompt based on image type
     let enhancedPrompt = prompt;
@@ -66,26 +63,45 @@ export async function processImageGeneration(job) {
 
     await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });
 
-    // Update book data
-    const bookData = await redisClient.get(`book:${bookId}`);
-    if (bookData) {
-      const book = JSON.parse(bookData);
-
-      // Update the appropriate field based on imageType
-      if (imageType === 'cover') {
-        book.coverImage = uploadResult;
-      } else if (imageType === 'character' && itemId) {
-        const character = book.characters?.find(c => c.id === itemId);
-        if (character) character.visual = uploadResult;
-      } else if (imageType === 'location' && itemId) {
-        const location = book.locations?.find(l => l.id === itemId);
-        if (location) location.visual = uploadResult;
-      } else if (imageType === 'chapter' && itemId) {
-        const chapter = book.chapters?.find(c => c.id === itemId);
-        if (chapter) chapter.visual = uploadResult;
+    // Persist through the data service. The old code wrote book:{id} in Redis —
+    // a store that has been EMPTY since DUAL_WRITE=false, so every generated
+    // image's book update was silently discarded.
+    try {
+      const book = await BookDataService.findById(bookId);
+      if (book) {
+        const updates = {};
+        if (imageType === 'character' && itemId) {
+          const character = (book.characters || []).find(c => c.id === itemId);
+          if (character) {
+            character.visual = uploadResult;
+            updates.characters = book.characters;
+          }
+        } else if (imageType === 'location' && itemId) {
+          const location = (book.locations || []).find(l => l.id === itemId);
+          if (location) {
+            location.visual = uploadResult;
+            updates.locations = book.locations;
+          }
+        } else if (imageType === 'chapter' && itemId) {
+          const chapters = book.chapters || [];
+          const chapter = chapters.find(c => c.id === itemId);
+          if (chapter) {
+            chapter.coverImage = uploadResult;
+            updates.chapters = chapters;
+          }
+        }
+        if (Object.keys(updates).length) {
+          await BookDataService.update(bookId, userId, updates, book.version);
+        }
       }
-
-      await redisClient.set(`book:${bookId}`, JSON.stringify(book));
+    } catch (err) {
+      // The image itself is safe in MinIO; the book-reference update failing
+      // must not fail the job — but it must be LOUD.
+      console.error('Image generated but book update failed:', err.message);
+      await updateJobStatus(job.id, {
+        status: 'active', progress: 95,
+        message: 'Image generated; book update failed — attach it manually',
+      });
     }
 
     await updateJobStatus(job.id, {

@@ -35,7 +35,7 @@ export async function queueImageGeneration(userId, bookId, imageType, itemId, pr
     imageType,
     itemId,
     description: `Generating ${imageType} image`,
-  });
+  }, jobData);
 
   return job.id.toString();
 }
@@ -61,7 +61,7 @@ export async function queueAudioGeneration(userId, bookId, chapterId, text, voic
   await storeJobMetadata(job.id.toString(), userId, bookId, 'audio', {
     chapterId,
     description: `Generating audio for chapter`,
-  });
+  }, jobData);
 
   return job.id.toString();
 }
@@ -88,7 +88,7 @@ export async function queueContentGeneration(userId, bookId, contentType, itemId
     contentType,
     itemId,
     description: `Generating ${contentType}`,
-  });
+  }, jobData);
 
   return job.id.toString();
 }
@@ -113,7 +113,7 @@ export async function queueImportAnalysis(userId, bookId, chapterIndex, chapter)
   await storeJobMetadata(job.id.toString(), userId, bookId, 'import', {
     chapterIndex,
     description: `Analyzing chapter ${chapterIndex + 1}`,
-  });
+  }, jobData);
 
   return job.id.toString();
 }
@@ -138,7 +138,7 @@ export async function queueVideoGeneration(userId, bookId, transcriptId, config)
   await storeJobMetadata(job.id.toString(), userId, bookId, 'video', {
     transcriptId,
     description: `Generating animation from transcript`,
-  });
+  }, jobData);
 
   return job.id.toString();
 }
