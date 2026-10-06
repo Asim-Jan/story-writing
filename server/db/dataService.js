@@ -586,22 +586,48 @@ export class BookDataService {
     // blank-book client save could hard-delete chapters with no way back.
     // Errors now propagate: conflict -> 409, anything else -> 500. Never a silent 200.
     if (features.shouldWriteToPostgres()) {
+      let finalVersion = null;
+      let finalUpdatedAt = null;
       book = await transaction(async (client) => {
-        let updated = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1);
+        // The book row runs ON the transaction client (blocker (a)/(d): the
+        // pool call let the stats UPDATE commit its own version bump outside
+        // the transaction and returned a version the DB had already left).
+        let updated = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1, client);
         if (updated) {
           updated = this.mapBookFieldsFromPostgres(updated);
         }
 
+        let updatedChapters = null;
         if (chapters && Array.isArray(chapters)) {
           await this.syncChaptersInClient(client, bookId, chapters);
           // reload ON THE TRANSACTION CLIENT — a pool read here would see the
           // pre-commit snapshot (versions one step behind what was just written)
-          const updatedChapters = (await client.query(
+          updatedChapters = (await client.query(
             'SELECT * FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number ASC',
             [bookId]
           )).rows;
           if (updated) {
             updated.chapters = (updatedChapters || []).map(ch => this.mapChapterFromPostgres(ch));
+          }
+        }
+
+        // FINAL version read, after every statement in this save: the books
+        // trigger bumps the version on EVERY UPDATE of the row (the field
+        // update AND the stats update = two bumps per save). The client must
+        // store the REAL final version or its next save 409s against a
+        // version that never existed from its point of view.
+        if (updated) {
+          const final = (await client.query(
+            'SELECT version, updated_at FROM books WHERE id = $1',
+            [bookId]
+          )).rows[0];
+          if (final) {
+            updated.version = final.version;
+            updated.updatedAt = final.updated_at;
+          }
+          for (const ch of (updated.chapters || [])) {
+            const cv = (updatedChapters || []).find(c => c.id === ch.id);
+            if (cv) ch.version = cv.version;
           }
         }
 

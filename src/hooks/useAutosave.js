@@ -81,8 +81,14 @@ export const useAutosave = (data, saveFunction, options = {}) => {
         if (isMountedRef.current) {
           setSaveStatus('saved');
           setLastSaved(new Date());
-          previousDataRef.current = JSON.stringify(data);
-          if (onSaveSuccess) onSaveSuccess();
+          // onSaveSuccess may re-baseline (the save merged server-owned fields
+          // into state); run it BEFORE the stale-closure baseline write, or
+          // its markBaseline is overwritten and autosave loops.
+          if (onSaveSuccess) {
+            onSaveSuccess(); // may call markBaseline with the merged state
+          } else {
+            previousDataRef.current = JSON.stringify(data);
+          }
         }
       } catch (error) {
         if (isMountedRef.current) {
@@ -113,8 +119,11 @@ export const useAutosave = (data, saveFunction, options = {}) => {
       await saveFunction();
       setSaveStatus('saved');
       setLastSaved(new Date());
-      previousDataRef.current = JSON.stringify(data);
-      if (onSaveSuccess) onSaveSuccess();
+      if (onSaveSuccess) {
+        onSaveSuccess(); // may call markBaseline with the merged state
+      } else {
+        previousDataRef.current = JSON.stringify(data);
+      }
     } catch (error) {
       setSaveStatus('error');
       if (onSaveError) onSaveError(error);
@@ -122,10 +131,16 @@ export const useAutosave = (data, saveFunction, options = {}) => {
     }
   };
 
+  // The save flow MERGES server-owned fields into the book state (version
+  // bumps) — that merge must not itself look like an edit. useBook calls
+  // markBaseline(postMergeState) in its onSaveSuccess; without it autosave
+  // re-saves the merged version every cycle.
+
   return {
     saveStatus,
     lastSaved,
     saveNow,
+    markBaseline,
     isUnsaved: saveStatus === 'unsaved',
     isSaving: saveStatus === 'saving',
   };
