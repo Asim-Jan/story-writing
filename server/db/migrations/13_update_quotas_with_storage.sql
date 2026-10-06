@@ -24,7 +24,8 @@ SET
 FROM users u
 WHERE q.user_id = u.id
   AND u.tier = 'free'
-  AND u.role != 'admin'; -- Don't update admins
+  AND u.role != 'admin' -- Don't update admins
+  AND q.max_storage_mb = 50 AND q.current_storage_mb = 0; -- fresh rows only: never clobber customised quotas
 
 -- Update basic tier users
 UPDATE quotas q
@@ -38,7 +39,8 @@ SET
 FROM users u
 WHERE q.user_id = u.id
   AND u.tier = 'basic'
-  AND u.role != 'admin';
+  AND u.role != 'admin'
+  AND q.max_storage_mb = 50 AND q.current_storage_mb = 0; -- fresh rows only
 
 -- Update premium tier users
 UPDATE quotas q
@@ -52,7 +54,8 @@ SET
 FROM users u
 WHERE q.user_id = u.id
   AND u.tier = 'premium'
-  AND u.role != 'admin';
+  AND u.role != 'admin'
+  AND q.max_storage_mb = 50 AND q.current_storage_mb = 0; -- fresh rows only
 
 -- Keep admin quotas unlimited (they already have high values)
 UPDATE quotas q
@@ -60,7 +63,8 @@ SET
   max_storage_mb = 999999
 FROM users u
 WHERE q.user_id = u.id
-  AND u.role = 'admin';
+  AND u.role = 'admin'
+  AND q.max_storage_mb = 50 AND q.current_storage_mb = 0; -- fresh rows only
 
 -- Create function to automatically set quotas when tier changes
 CREATE OR REPLACE FUNCTION sync_quotas_on_tier_change()

@@ -17,9 +17,9 @@ CREATE TABLE IF NOT EXISTS user_activity_log (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_user_activity_log_user_id ON user_activity_log(user_id);
-CREATE INDEX idx_user_activity_log_created_at ON user_activity_log(created_at DESC);
-CREATE INDEX idx_user_activity_log_activity_type ON user_activity_log(activity_type);
+CREATE INDEX IF NOT EXISTS idx_user_activity_log_user_id ON user_activity_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_activity_log_created_at ON user_activity_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_activity_log_activity_type ON user_activity_log(activity_type);
 
 COMMENT ON TABLE user_activity_log IS 'Tracks user activities for admin monitoring';
 COMMENT ON COLUMN user_activity_log.activity_type IS 'Type of activity: book_created, chapter_updated, ai_request, etc.';
@@ -39,10 +39,10 @@ CREATE TABLE IF NOT EXISTS login_history (
   failure_reason VARCHAR(255)
 );
 
-CREATE INDEX idx_login_history_user_id ON login_history(user_id);
-CREATE INDEX idx_login_history_login_at ON login_history(login_at DESC);
-CREATE INDEX idx_login_history_success ON login_history(success);
-CREATE INDEX idx_login_history_email ON login_history(email);
+CREATE INDEX IF NOT EXISTS idx_login_history_user_id ON login_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_login_history_login_at ON login_history(login_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_history_success ON login_history(success);
+CREATE INDEX IF NOT EXISTS idx_login_history_email ON login_history(email);
 
 COMMENT ON TABLE login_history IS 'Tracks all login attempts for security monitoring';
 COMMENT ON COLUMN login_history.success IS 'Whether the login attempt was successful';
@@ -64,9 +64,9 @@ CREATE TABLE IF NOT EXISTS content_flags (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_content_flags_content_type_id ON content_flags(content_type, content_id);
-CREATE INDEX idx_content_flags_status ON content_flags(status);
-CREATE INDEX idx_content_flags_created_at ON content_flags(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_content_flags_content_type_id ON content_flags(content_type, content_id);
+CREATE INDEX IF NOT EXISTS idx_content_flags_status ON content_flags(status);
+CREATE INDEX IF NOT EXISTS idx_content_flags_created_at ON content_flags(created_at DESC);
 
 COMMENT ON TABLE content_flags IS 'User-reported content for admin review';
 COMMENT ON COLUMN content_flags.content_type IS 'Type of content being flagged';
@@ -86,9 +86,9 @@ CREATE TABLE IF NOT EXISTS quota_violations (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_quota_violations_user_id ON quota_violations(user_id);
-CREATE INDEX idx_quota_violations_quota_type ON quota_violations(quota_type);
-CREATE INDEX idx_quota_violations_created_at ON quota_violations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quota_violations_user_id ON quota_violations(user_id);
+CREATE INDEX IF NOT EXISTS idx_quota_violations_quota_type ON quota_violations(quota_type);
+CREATE INDEX IF NOT EXISTS idx_quota_violations_created_at ON quota_violations(created_at DESC);
 
 COMMENT ON TABLE quota_violations IS 'Tracks attempts to exceed quota limits';
 COMMENT ON COLUMN quota_violations.quota_type IS 'Type of quota violated: books, words, chapters, ai_requests, concurrent_jobs';
@@ -120,10 +120,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX idx_subscriptions_user_id ON subscriptions(user_id);
-CREATE INDEX idx_subscriptions_stripe_subscription_id ON subscriptions(stripe_subscription_id);
-CREATE INDEX idx_subscriptions_stripe_customer_id ON subscriptions(stripe_customer_id);
-CREATE INDEX idx_subscriptions_status ON subscriptions(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_subscription_id ON subscriptions(stripe_subscription_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer_id ON subscriptions(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
 
 COMMENT ON TABLE subscriptions IS 'Stripe subscription management';
 COMMENT ON COLUMN subscriptions.cancel_at_period_end IS 'If true, subscription will cancel at end of current period';
@@ -143,10 +143,10 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_payments_user_id ON payments(user_id);
-CREATE INDEX idx_payments_subscription_id ON payments(subscription_id);
-CREATE INDEX idx_payments_stripe_payment_intent_id ON payments(stripe_payment_intent_id);
-CREATE INDEX idx_payments_created_at ON payments(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_payments_subscription_id ON payments(subscription_id);
+CREATE INDEX IF NOT EXISTS idx_payments_stripe_payment_intent_id ON payments(stripe_payment_intent_id);
+CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at DESC);
 
 COMMENT ON TABLE payments IS 'Payment transaction history';
 COMMENT ON COLUMN payments.amount IS 'Payment amount in cents (e.g., 999 = $9.99)';

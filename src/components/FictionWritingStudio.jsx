@@ -40,7 +40,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });
 
-  const { data, setData, loading, saving, error, saveBook, autosave } = useBook(bookId);
+  const { data, setData, loading, loadError, saving, error, saveBook, autosave } = useBook(bookId);
   const { tier, hasFeature, loading: subLoading } = useSubscription();
 
   // Quota tracking state
@@ -115,10 +115,16 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   };
 
   // Dispatch quota refresh event after successful save
+  // Save Now goes through autosave so its status, baseline and error handling
+  // stay in step (calling saveBook directly left "Unsaved changes" showing,
+  // sent a second PUT 30 s later, and let a failed save escape uncaught).
   const handleSaveBook = async () => {
-    await saveBook();
-    // Dispatch custom event to refresh quotas
-    window.dispatchEvent(new Event('quotaRefresh'));
+    try {
+      await autosave.saveNow();
+      window.dispatchEvent(new Event('quotaRefresh'));
+    } catch {
+      // the error is already on screen (useBook's onSaveError / saveBook)
+    }
   };
 
   // Warn on navigation if unsaved changes
@@ -313,10 +319,18 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           )
         }));
       } else {
-        setData(prev => ({
-          ...prev,
-          chapters: [...prev.chapters, { id: Date.now(), ...chapterForm, wordCount }]
-        }));
+        setData(prev => {
+          // A blank Chapter Number used to become 0 for every new chapter: the
+          // second one collided with the first and every save failed. Default
+          // to the next number.
+          const given = parseInt(chapterForm.number, 10);
+          const next = (prev.chapters || []).reduce((m, c) => Math.max(m, parseInt(c.number, 10) || 0), 0) + 1;
+          const number = given > 0 ? String(given) : String(next);
+          return {
+            ...prev,
+            chapters: [...prev.chapters, { id: Date.now(), ...chapterForm, number, wordCount }]
+          };
+        });
       }
       setChapterForm({ number: '', title: '', summary: '', content: '' });
       setEditingId(null);
@@ -361,8 +375,12 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     alert('Metadata refreshed! Word counts recalculated.');
   };
 
-  const generateWithAI = async (type) => {
-    if (!aiPrompt.trim()) return;
+  const generateWithAI = async (type, promptOverride = null) => {
+    // promptOverride: callers like ChapterGeneratorModal pass THEIR prompt —
+    // the old signature dropped it and read the shared aiPrompt (empty in that
+    // flow → the call returned early: the 'From Timeline' generator was a no-op).
+    const effectivePrompt = promptOverride ?? aiPrompt;
+    if (!effectivePrompt.trim()) return;
 
     setGeneratingAI(true);
     setAiSuggestion(null);
@@ -375,7 +393,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         },
         body: JSON.stringify({
           type,
-          prompt: aiPrompt,
+          prompt: effectivePrompt,
           context: {
             bookTitle: data.bookTitle,
             overview: data.overview,
@@ -580,6 +598,20 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     return <ProfilePage onBack={() => setShowProfile(false)} />;
   }
 
+  // A failed load is a hard stop — the old code rendered the EMPTY book on top
+  // of the failed GET, and one Save click overwrote the real book with blanks.
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center">
+        <div className="card p-8 max-w-md text-center">
+          <h2 className="text-lg font-bold text-[var(--ink)] mb-2">{loadError}</h2>
+          <p className="text-sm text-[var(--dim)] mb-5">The book could not be loaded, so editing is disabled to protect your data.</p>
+          <button onClick={onBack} className="btn pri">Back to Books</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-[var(--bg)] overflow-hidden">
       {/* Mobile overlay */}
@@ -635,6 +667,10 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                     return;
                   }
                   setActiveTab(tab.id);
+                  // The editingId is per-tab state (a character id must not be
+                  // interpreted as a location id after switching tabs); clear
+                  // it with the tab so every form starts fresh.
+                  setEditingId(null);
                   if (window.innerWidth < 1024) {
                     setSidebarOpen(false);
                   }
@@ -734,6 +770,15 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             </button>
           </div>
         </header>
+
+        {/* Save errors are DATA-LOSS warnings — they must be seen. The old
+            code set error and rendered nothing, so a failed save silently
+            looked like a save. */}
+        {error && (
+          <div className="mx-4 sm:mx-6 mt-2 border border-[var(--red)] text-[var(--red)] text-sm px-3 py-2" role="alert">
+            {error}
+          </div>
+        )}
 
         {/* Quota Banner */}
         <QuotaBanner onNavigateToProfile={() => setShowProfile(true)} />
@@ -941,6 +986,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               resetCharacterForm={resetCharacterForm}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -967,6 +1013,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               editLocation={editLocation}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -993,6 +1040,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               editPlotline={editPlotline}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -1021,12 +1069,17 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             <ChaptersTabView
               data={data}
               setData={setData}
+              onUpgrade={(props) => {
+                setUpgradeModalProps(props);
+                setShowUpgradeModal(true);
+              }}
               chapterForm={chapterForm}
               setChapterForm={setChapterForm}
               addChapter={addChapter}
               editChapter={editChapter}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -1175,6 +1228,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           {activeTab === 'continuity' && (
             <ContinuityTab
               data={data}
+              setData={setData}
               onAnalyze={handleContinuityAnalysis}
               analyzing={generatingAI}
             />
@@ -1196,6 +1250,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               data={data}
               bookId={bookId}
               setData={setData}
+              saveBook={saveBook}
             />
           )}
 

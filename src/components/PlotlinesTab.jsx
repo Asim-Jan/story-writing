@@ -15,8 +15,10 @@ const PlotlinesTab = ({
   editPlotline,
   deleteItem,
   editingId,
+  setEditingId,
   generateWithAI,
   aiSuggestion,
+  setAiSuggestion,
   acceptAISuggestion,
   rejectAISuggestion,
   regenerateAISuggestion,
@@ -297,6 +299,15 @@ const PlotlinesTab = ({
                     <ImproveButton
                       content={selectedPlotline.description}
                       contentType="plotline description"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          plotlines: prev.plotlines.map(p =>
+                            p.id === selectedPlotline.id ? { ...p, description: improved } : p
+                          ),
+                        }));
+                        setSelectedPlotline({ ...selectedPlotline, description: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -311,6 +322,15 @@ const PlotlinesTab = ({
                     <ImproveButton
                       content={selectedPlotline.themes}
                       contentType="themes"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          plotlines: prev.plotlines.map(p =>
+                            p.id === selectedPlotline.id ? { ...p, themes: improved } : p
+                          ),
+                        }));
+                        setSelectedPlotline({ ...selectedPlotline, themes: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -325,6 +345,15 @@ const PlotlinesTab = ({
                     <ImproveButton
                       content={selectedPlotline.conflicts}
                       contentType="conflicts"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          plotlines: prev.plotlines.map(p =>
+                            p.id === selectedPlotline.id ? { ...p, conflicts: improved } : p
+                          ),
+                        }));
+                        setSelectedPlotline({ ...selectedPlotline, conflicts: improved });
+                      }}
                       context={data}
                     />
                   </div>

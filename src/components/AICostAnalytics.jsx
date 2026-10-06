@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { DollarSign, TrendingUp, Users, Cpu, BarChart3, Download, RefreshCw } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { ordnanceChartColors } from '../utils/chartPalette';
 
 const AICostAnalytics = () => {
   const [loading, setLoading] = useState(true);

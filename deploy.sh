@@ -1,17 +1,16 @@
 #!/bin/bash
 
-# Deployment script — builds images and pushes to DockerHub + GHCR, deploys to k3s
+# Deployment script — builds the ONE app image (backend + SPA), pushes to the
+# SAI registry (registry.solutionsai.co.uk), pins the exact digest in the cluster.
 # Usage: ./deploy.sh [frontend|backend|all] [patch|minor|major]
 
 set -e
 
-DOCKERHUB_REGISTRY="solutionsai"
-DOCKERHUB_BACKEND="$DOCKERHUB_REGISTRY/story-writing-backend"
-DOCKERHUB_FRONTEND="$DOCKERHUB_REGISTRY/story-writing-frontend"
+# The SAI registry (in-cluster Zot) is the home of app images. Docker Hub is a
+# PUBLIC surface — pushing app images there was blocked in the 2026-10-06 review.
+SAI_REGISTRY="registry.solutionsai.co.uk/solutionsai"
+SAI_IMAGE="$SAI_REGISTRY/story-writing-backend"
 
-GHCR_REGISTRY="ghcr.io/asim-jan"
-GHCR_BACKEND="$GHCR_REGISTRY/story-writing-backend"
-GHCR_FRONTEND="$GHCR_REGISTRY/story-writing-frontend"
 
 VITE_API_URL="https://story-writing.solutionsai.co.uk"
 K8S_NAMESPACE="story-writing"
@@ -68,29 +67,28 @@ fi
 # Update VERSION file
 echo "$NEW_VERSION" > VERSION
 
-# Get credentials
-if [ -z "$DOCKERHUB_TOKEN" ]; then
-    echo -e "${YELLOW}DOCKERHUB_TOKEN not set. Enter DockerHub password/token for 'solutionsai':${NC}"
-    read -rs DOCKERHUB_TOKEN
-    echo
-fi
-
-# Build inline Docker config with credentials (bypasses macOS keychain — builder containers can't access it)
+# Credentials: the SAI registry login comes from the user's own docker
+# credentials (docker login registry.solutionsai.co.uk — no token plumbing in
+# this script; the keychain-holding config is used read-only via a copy).
 DOCKER_AUTH_DIR=$(mktemp -d)
 trap "rm -rf $DOCKER_AUTH_DIR" EXIT
 
-DH_AUTH=$(echo -n "solutionsai:$DOCKERHUB_TOKEN" | base64)
-AUTH_JSON="{\"auths\":{\"https://index.docker.io/v1/\":{\"auth\":\"$DH_AUTH\"}"
-
-if [ -n "$GITHUB_TOKEN" ]; then
-    GHCR_AUTH=$(echo -n "asim-jan:$GITHUB_TOKEN" | base64)
-    AUTH_JSON="$AUTH_JSON,\"ghcr.io\":{\"auth\":\"$GHCR_AUTH\"}"
-else
-    echo -e "${YELLOW}GITHUB_TOKEN not set — skipping GHCR push${NC}"
+if ! docker-credential-desktop get <<< "https://registry.solutionsai.co.uk" > "$DOCKER_AUTH_DIR/cred.json" 2>/dev/null; then
+    echo -e "${RED}No registry.solutionsai.co.uk credentials in the keychain. Run: docker login registry.solutionsai.co.uk${NC}"
+    exit 1
 fi
-AUTH_JSON="$AUTH_JSON}}"
+CRED=$(cat "$DOCKER_AUTH_DIR/cred.json")
 
-echo "$AUTH_JSON" > "$DOCKER_AUTH_DIR/config.json"
+if [ -z "$CRED" ]; then
+    echo -e "${RED}No registry.solutionsai.co.uk credentials found. Run: docker login registry.solutionsai.co.uk${NC}"
+    exit 1
+fi
+
+REG_URL="https://registry.solutionsai.co.uk"
+USERNAME=$(echo "$CRED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Username',''))")
+SECRET=$(echo "$CRED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Secret',''))")
+REG_AUTH=$(printf '%s:%s' "$USERNAME" "$SECRET" | base64)
+echo "{\"auths\":{\"$REG_URL\":{\"auth\":\"$REG_AUTH\"}}}" > "$DOCKER_AUTH_DIR/config.json"
 
 # Symlink the buildx CLI plugin into the temp config dir.
 # When DOCKER_CONFIG is overridden, Docker looks for plugins in
@@ -125,33 +123,42 @@ DOCKER_CONFIG="$DOCKER_AUTH_DIR" docker buildx create --name sw-builder --driver
 
 # Build helper — passes inline auth config so builder container can push without macOS keychain
 build_and_push() {
-    local dh_tag=$1
-    local ghcr_tag=$2
-    shift 2
     local extra_args=("$@")
 
-    local tags=(-t "$dh_tag:$NEW_VERSION" -t "$dh_tag:latest")
-    if [ -n "$GITHUB_TOKEN" ]; then
-        tags+=(-t "$ghcr_tag:$NEW_VERSION" -t "$ghcr_tag:latest")
-    fi
+    local tags=(-t "$SAI_IMAGE:$NEW_VERSION" -t "$SAI_IMAGE:latest")
 
     DOCKER_CONFIG="$DOCKER_AUTH_DIR" docker buildx build \
         --platform linux/amd64 \
         --provenance=false \
         --sbom=false \
         "${tags[@]}" "${extra_args[@]}" --push
+
+    # Capture the pushed digest — the k8s manifests pin by digest, never by tag.
+    local digest
+    digest=$(docker buildx imagetools inspect "$SAI_IMAGE:$NEW_VERSION" 2>/dev/null | awk '/^Digest:/ {print $2}')
+    if [ -z "$digest" ]; then
+        echo -e "${RED}✗ Could not read the pushed digest — refusing to roll out an unpinned ref${NC}"
+        exit 1
+    fi
+    echo "$SAI_IMAGE@$digest" > /tmp/sw-image-ref.txt
+    echo -e "${GREEN}✓ Pushed $SAI_IMAGE:$NEW_VERSION (digest $digest)${NC}"
 }
 
 # k3s rollout helper — skips gracefully if kubectl not configured
 k3s_rollout() {
     local deployment=$1
+    local image_ref=${2:-}
     if kubectl config current-context &>/dev/null; then
         echo -e "${GREEN}Rolling out $deployment in k3s...${NC}"
-        kubectl rollout restart deployment/$deployment -n $K8S_NAMESPACE
-        kubectl rollout status deployment/$deployment -n $K8S_NAMESPACE --timeout=120s
+        if [ -n "$image_ref" ]; then
+            kubectl set image deployment/$deployment "$deployment=$image_ref" -n $K8S_NAMESPACE
+        else
+            kubectl rollout restart deployment/$deployment -n $K8S_NAMESPACE
+        fi
+        kubectl rollout status deployment/$deployment -n $K8S_NAMESPACE --timeout=300s
     else
         echo -e "${YELLOW}kubectl not configured — skipping k3s rollout for $deployment${NC}"
-        echo -e "${YELLOW}Run 'kubectl rollout restart deployment/$deployment -n $K8S_NAMESPACE' manually once cluster is set up${NC}"
+        echo -e "${YELLOW}Run 'kubectl set image deployment/$deployment -n $K8S_NAMESPACE' manually once cluster is set up${NC}"
     fi
 }
 
@@ -159,12 +166,16 @@ k3s_rollout() {
 # the nginx frontend deployment is gone — SAI-Cloud shape)
 deploy_app() {
     echo -e "${GREEN}Building app v$NEW_VERSION (VITE_API_URL=$VITE_API_URL)...${NC}"
-    build_and_push "$DOCKERHUB_BACKEND" "$GHCR_BACKEND" \
+    build_and_push \
         --build-arg VITE_API_URL=$VITE_API_URL \
         -f Dockerfile.backend .
-    k3s_rollout backend
-    k3s_rollout worker
+    IMAGE_REF=$(cat /tmp/sw-image-ref.txt 2>/dev/null)
+    # The k8s manifests pin images BY DIGEST in Solutions-AI-LTD/story-writing —
+    # a kubectl set image here would be reverted by the next manifest apply.
+    # The pin is changed by a PR there (the deploy.sh in that repo's
+    # pipeline does the rollout); this script only builds + pushes + reports.
     echo -e "${GREEN}✓ App v$NEW_VERSION pushed${NC}"
+    echo -e "${YELLOW}Pin this digest via a manifest PR: $IMAGE_REF${NC}"
 }
 
 # Deploy based on service argument

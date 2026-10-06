@@ -39,4 +39,5 @@ COMMENT ON COLUMN ai_generations.tool_type IS 'Type of AI tool used: dialogue, c
 COMMENT ON COLUMN ai_generations.prompt IS 'User input prompt that generated the result';
 COMMENT ON COLUMN ai_generations.result IS 'AI-generated result stored as JSONB (structure varies by tool)';
 COMMENT ON COLUMN ai_generations.model IS 'AI model used for generation (e.g., gpt-4o-mini, gpt-4)';
+ALTER TABLE ai_generations ADD COLUMN IF NOT EXISTS tokens_used INTEGER;
 COMMENT ON COLUMN ai_generations.tokens_used IS 'Number of tokens consumed (if tracked)';

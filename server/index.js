@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
 import axios from 'axios';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
@@ -31,6 +32,8 @@ import { VideoAssembler } from './services/videoAssembler.js';
 import rateLimit from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { runMigrations } from './db/migrate.js';
+import { readFileSync } from 'fs';
 import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
 import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
@@ -40,7 +43,7 @@ import {
   checkBookQuota,
   checkWordQuota,
   checkChapterQuota,
-  checkAIQuota,
+  checkAIQuota, consumeAIQuota, refundAIQuota,
   checkJobQuota,
   requireFeature,
   incrementAICounter,
@@ -54,11 +57,13 @@ import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
 import ChapterRepository from './db/repositories/ChapterRepository.js';
 import { getPool, query } from './db/postgres.js';
+import { BookDataService } from './db/dataService.js';
 import * as stripeService from './services/stripeService.js';
 import * as revenueAnalytics from './services/revenueAnalytics.js';
 import * as engagementAnalytics from './services/engagementAnalytics.js';
 import * as costTracking from './services/costTracking.js';
 import { toCSV, setCSVHeaders, formatDateForCSV } from './utils/csvExporter.js';
+import { saiTextOf } from './utils/saiText.js';
 import {
   imageQueue,
   audioQueue,
@@ -214,6 +219,30 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 2));
 app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true
+}));
+
+// Helmet: baseline headers. CSP is tightened to what this SPA actually loads
+// (self + Cloudflare-proxied media from our own host; Lexical needs no eval in
+// production). unsafe-inline styles stay — Tailwind's runtime styles and the
+// theme pre-paint script need it; scripts stay non-inline.
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      // 'unsafe-eval': epub-gen-memory compiles its EJS templates with
+      // new Function — without it every EPUB export throws. The theme
+      // pre-paint moved to /theme-init.js, so scripts stay non-inline.
+      "script-src": ["'self'", "'unsafe-eval'"],
+      "style-src": ["'self'", "'unsafe-inline'"],
+      "img-src": ["'self'", "data:", "blob:", "https://story-writing.solutionsai.co.uk"],
+      "media-src": ["'self'", "blob:", "https://story-writing.solutionsai.co.uk"],
+      "connect-src": ["'self'", "https://api.solutionsai.co.uk"],
+      "font-src": ["'self'"],
+      "frame-ancestors": ["'none'"],
+      "object-src": ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // media loads need non-CORP responses
 }));
 
 // Stripe webhook handler (MUST be before express.json() to get raw body)
@@ -688,6 +717,14 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
+    // Token revocation: if the account's token_version has moved since this
+    // token was issued (password reset, logout-everywhere, suspension), the
+    // token is dead regardless of its 7-day expiry.
+    const currentTokenVersion = user.token_version ?? user.tokenVersion ?? 1;
+    if (decoded.tokenVersion !== undefined && decoded.tokenVersion !== currentTokenVersion) {
+      return res.status(401).json({ error: 'Session expired — please sign in again' });
+    }
+
     // Check if user account is suspended or banned
     if (user.status === 'suspended') {
       return res.status(403).json({
@@ -845,7 +882,7 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
     }
 
     // Generate JWT token using the actual DB user ID
-    const token = jwt.sign({ userId: actualUserId, email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: actualUserId, email, tokenVersion: createdUser.token_version ?? createdUser.tokenVersion ?? 1 }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
     res.cookie('token', token, {
@@ -947,7 +984,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
 
     // Generate JWT token
-    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.token_version ?? user.tokenVersion ?? 1 }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
     res.cookie('token', token, {
@@ -1092,6 +1129,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
+    // Bump token_version: every issued JWT dies at the next request (the
+    // stolen-token case a password reset must always close).
+    await getPool().query('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1', [userId]);
+
     // Delete reset token
     await deletePasswordResetToken(token);
 
@@ -1142,10 +1183,30 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
+    // Bump token_version: every OTHER session dies. Then hand THIS session a
+    // fresh token carrying the new version — the old code bumped without
+    // reissuing, signing out the very user who just changed their password.
+    const bump = await getPool().query(
+      'UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1 RETURNING token_version',
+      [userId]
+    );
+    const newVersion = bump.rows[0]?.token_version ?? 1;
+    const freshToken = jwt.sign(
+      { userId: req.user.userId || req.user.id, email: req.user.email, tokenVersion: newVersion },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    res.cookie('token', freshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
     console.log(`Password changed for user ${userId}`);
     sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
 
-    res.json({ message: 'Password changed successfully' });
+    res.json({ message: 'Password changed successfully', token: freshToken });
   } catch (error) {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
@@ -3096,14 +3157,13 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
       onProgress,
     });
 
-    // Increment AI counter after successful generation
-    await incrementAICounter(req.user.userId);
+    // (the AI request was already reserved atomically by the consumeAIQuota
+    // middleware — no separate increment here, that double-counted)
 
-    // Create book in database with UUID (the orchestrator produced the payload;
-    // the row must be INSERTed first — an UPDATE on a missing row is a silent no-op
-    // in PostgreSQL-only mode)
-    const bookId = uuidv4();
-    const bookData = {
+    // Create the book row. The id sent to the client MUST be the created row's
+    // id — the old code minted its own uuidv4(), never passed it to createBook,
+    // and announced a PHANTOM id (the client then opened ?book=<404>).
+    const created = await createBook({
       ...result.bookData,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -3113,20 +3173,10 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
       visuals: result.bookData.visuals || [],
       audioFiles: result.bookData.audioFiles || {},
       collaborators: result.bookData.collaborators || [],
-    };
-
-    console.log('Saving AI-generated book with data:', {
-      bookId,
-      hasVisuals: !!bookData.visuals,
-      visualsLength: bookData.visuals?.length || 0,
-      keys: Object.keys(bookData)
+      title: result.bookData.bookTitle || result.bookData.title || 'Untitled Story',
+      description: result.bookData.overview || result.bookData.description || '',
     });
-
-    await createBook({
-      ...bookData,
-      title: bookData.bookTitle || bookData.title || 'Untitled Story',
-      description: bookData.overview || bookData.description || '',
-    });
+    const bookId = created?.id;
 
     // Add book to user's book list
     const updatedUser = {
@@ -3299,14 +3349,10 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
     } else {
       // Update existing book
 
-      // Check if user owns the book or is a collaborator
-      const ownerId = existing.owner_id || existing.ownerId;
-      const isOwner = ownerId === req.user.userId || ownerId === req.user.id;
-      if (!isOwner) {
-        const collaborator = existing.collaborators?.find(c => c.email === req.user.email);
-        if (!collaborator || collaborator.role === 'viewer') {
-          return res.status(403).json({ error: 'You do not have permission to edit this book' });
-        }
+      // Owner or editor only. Viewers and commenters can read, not save.
+      const access = await checkBookAccess(id, req.user.userId);
+      if (!canEditBook(access)) {
+        return res.status(403).json({ error: 'You do not have permission to edit this book' });
       }
 
       // Map frontend fields to PostgreSQL fields
@@ -3328,7 +3374,8 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         character_refs: req.body.characterRefs,
         animation_projects: req.body.animationProjects,
         metadata: req.body.metadata,
-        chapters: req.body.chapters,  // Add chapters to be synced
+        transcripts: req.body.transcripts,  // was silently dropped — TranscriptsTab lost everything on save
+        chapters: req.body.chapters,  // synced in the same transaction as the book row
         status: req.body.status,
         word_count: req.body.wordCount || req.body.word_count,
         chapter_count: req.body.chapterCount || req.body.chapter_count,
@@ -3342,12 +3389,40 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         }
       });
 
-      // Always use the current database version for optimistic locking
-      const expectedVersion = existing.version;
+      // Optimistic locking on the CLIENT's version: the browser sends the book
+      // version it loaded/last-merged; if the server has moved on (another tab,
+      // a collaborator, an AI write), the save is refused with 409 and the
+      // client can reload — instead of the old behaviour (always expect the
+      // server's own version = never conflicts = silent last-write-wins over
+      // in-flight edits).
+      const expectedVersion = Number.isInteger(req.body.version)
+        ? req.body.version
+        : existing.version;
+      const clientHadVersion = Number.isInteger(req.body.version);
 
-      const book = await updateBook(id, req.user.userId, updates, expectedVersion);
+      try {
+        var book = await updateBook(id, req.user.userId, updates, expectedVersion);
+      } catch (saveError) {
+        if (saveError.code === 'FORBIDDEN') {
+          return res.status(403).json({ error: 'You do not have permission to edit this book' });
+        }
+        if (saveError.code === 'NOT_FOUND') {
+          return res.status(404).json({ error: 'Book not found' });
+        }
+        if (saveError.code === 'CONFLICT' || saveError.message.includes('CONFLICT')) {
+          const current = await getBook(id);
+          return res.status(409).json({
+            error: 'This book changed on the server while you were editing.',
+            serverVersion: current?.version,
+            serverUpdatedAt: current?.updated_at || current?.updatedAt
+          });
+        }
+        throw saveError;
+      }
 
-      // Track words written for writing goals
+      // A client that sent no version is a legacy client: accept the write but
+      // tell it what the current version now is so the NEXT save conflicts
+      // correctly. (book.version carries it; the mapper includes it.)
       if (updates.chapters && existing.chapters) {
         // Calculate word count difference
         const oldWordCount = existing.chapters.reduce((sum, ch) => sum + (ch.word_count || ch.wordCount || 0), 0);
@@ -3463,7 +3538,7 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
 });
 
 // AI Generation endpoint
-app.post('/api/generate', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/generate', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { type, prompt, context, enableWebSearch } = req.body;
 
@@ -3725,7 +3800,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       max_tokens: parseInt(process.env.OPENAI_MAX_TOKENS) || 16384,
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
 
     // Extract token usage from OpenAI response
     const usage = completion.usage || {};
@@ -3771,8 +3846,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       // Don't fail the request if DB save fails
     }
 
-    // Increment AI request counter for quota tracking
-    await incrementAICounter(req.user.userId);
+    // (reserved atomically by consumeAIQuota — no separate increment)
 
     res.json(generatedData);
   } catch (error) {
@@ -3801,14 +3875,18 @@ app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) =
     // Validate quantity (2-5)
     const validQuantity = Math.min(Math.max(parseInt(quantity), 2), 5);
 
-    // Check if user has enough AI quota for batch generation
+    // The batch's own HTTP calls to /api/generate each consume one AI slot
+    // (atomically reserved there) — metering happens per variation. This check
+    // just fails fast with the REAL field names (the old code read
+    // quotas.aiRequestsLimit/aiRequestsUsed, which don't exist: NaN < N is
+    // always false, so the gate never fired).
     const quotas = await getUserQuotas(req.user.userId);
-    const aiRemaining = quotas.aiRequestsLimit - quotas.aiRequestsUsed;
+    const aiRemaining = quotas.limits.max_ai_requests_per_day - quotas.usage.ai_requests_today;
 
     if (aiRemaining < validQuantity) {
       return res.status(403).json({
         error: 'Insufficient AI quota',
-        message: `Batch generation requires ${validQuantity} AI requests, but you only have ${aiRemaining} remaining.`
+        message: `Batch generation requires ${validQuantity} AI requests, but you only have ${aiRemaining} remaining today.`
       });
     }
 
@@ -3860,9 +3938,22 @@ app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) =
 // ==================== BACKGROUND JOB GENERATION ENDPOINTS ====================
 
 // Queue image generation job
+// Writes to a book (its data, its jobs, its RPG campaign) need owner or editor.
+// Viewers and commenters can read but not change anything.
+function canEditBook(access) {
+  return Boolean(access?.has_access) && (access.access_role === 'owner' || access.access_role === 'editor');
+}
+
 app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, requireFeature('media_generation'), async (req, res) => {
   try {
     const { bookId, imageType, itemId, prompt, context } = req.body;
+
+    // The queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and write its output onto that book.
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!canEditBook(access)) {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
 
     if (!prompt || !bookId || !imageType) {
       return res.status(400).json({ error: 'bookId, imageType, and prompt are required' });
@@ -3897,6 +3988,13 @@ app.post('/api/jobs/queue/audio', authenticateToken, aiLimiter, checkJobQuota, r
   try {
     const { bookId, chapterId, text, voice } = req.body;
 
+    // The queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and write its output onto that book.
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!canEditBook(access)) {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!bookId || !chapterId || !text) {
       return res.status(400).json({ error: 'bookId, chapterId, and text are required' });
     }
@@ -3929,6 +4027,13 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
   try {
     const { bookId, contentType, itemId, config } = req.body;
 
+    // the queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and read/write it
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!canEditBook(access)) {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!bookId || !contentType) {
       return res.status(400).json({ error: 'bookId and contentType are required' });
     }
@@ -3953,6 +4058,13 @@ app.post('/api/jobs/queue/import', authenticateToken, aiLimiter, async (req, res
   try {
     const { bookId, chapterIndex, chapter } = req.body;
 
+    // the queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and read/write it
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!canEditBook(access)) {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!bookId || chapterIndex === undefined || !chapter) {
       return res.status(400).json({ error: 'bookId, chapterIndex, and chapter are required' });
     }
@@ -3975,6 +4087,13 @@ app.post('/api/jobs/queue/import', authenticateToken, aiLimiter, async (req, res
 app.post('/api/jobs/queue/video', authenticateToken, aiLimiter, checkJobQuota, requireFeature('media_generation'), async (req, res) => {
   try {
     const { bookId, transcriptId, config } = req.body;
+
+    // The queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and write its output onto that book.
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!canEditBook(access)) {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
 
     if (!bookId || !transcriptId) {
       return res.status(400).json({ error: 'bookId and transcriptId are required' });
@@ -4008,7 +4127,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // ==================== LEGACY SYNCHRONOUS ENDPOINTS (kept for backward compatibility) ====================
 
 // Image Generation endpoint using OpenAI DALL-E
-app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, async (req, res) => {
+app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { prompt, context, size } = req.body;
 
@@ -4062,7 +4181,9 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = (promptEnhancement.choices[0].message.content || promptEnhancement.choices[0].message.reasoning_content || promptEnhancement.choices[0].message.reasoning || '').trim();
+      // A reply that is all thinking leaves no text: fall back to the user's prompt
+      // (an empty prompt still generated, and still cost a request).
+      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0]) || '').trim() || prompt;
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
@@ -4187,7 +4308,7 @@ Aim for 6-12 panels per page worth of content.`;
       max_tokens: 6000,
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const panels = JSON.parse(cleaned);
 
@@ -4203,7 +4324,7 @@ Aim for 6-12 panels per page worth of content.`;
 });
 
 // Generate character reference image for consistent comic panels
-app.post('/api/generate-character-reference', authenticateToken, requireMinIO, async (req, res) => {
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { characterId, character, style = 'comic book art' } = req.body;
 
@@ -4263,7 +4384,7 @@ app.post('/api/generate-character-reference', authenticateToken, requireMinIO, a
 });
 
 // Generate comic panel/scene image with character references
-app.post('/api/generate-comic-panel', authenticateToken, requireMinIO, async (req, res) => {
+app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
 
@@ -4362,7 +4483,7 @@ function chunkText(text, maxLength = 4000) {
 }
 
 // Generate TTS audio for a chapter
-app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, async (req, res) => {
+app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { text, chapterId, voice = 'alloy', speed = 1.0 } = req.body;
 
@@ -4445,9 +4566,15 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
 });
 
 // Generate audiobook for entire book (batch)
-app.post('/api/generate-audiobook', authenticateToken, async (req, res) => {
+app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature('media_generation'), consumeAIQuota, async (req, res) => {
   try {
     const { chapters, voice = 'alloy', speed = 1.0 } = req.body;
+
+    // Input bounds: an audiobook request is metered as ONE AI request — a
+    // 500-chapter payload would make one quota slot buy an hour of TTS.
+    if (Array.isArray(chapters) && chapters.length > 25) {
+      return res.status(400).json({ error: 'Too many chapters per audiobook request (max 25). Split the book.' });
+    }
 
     if (!chapters || !Array.isArray(chapters)) {
       return res.status(400).json({ error: 'Chapters array is required' });
@@ -4594,7 +4721,7 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
 });
 
 // Analyze story continuity
-app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
+app.post('/api/analyze-continuity', authenticateToken, consumeAIQuota, async (req, res) => {
   try {
     const { bookData, focusAreas = [], chapterIds = [] } = req.body;
 
@@ -4680,7 +4807,7 @@ Provide a thorough analysis with specific, actionable issues.`;
       temperature: 0.3
     });
 
-    const analysisText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const analysisText = saiTextOf(completion.choices[0]);
     const analysis = extractJSON(analysisText);
 
     // Save analysis to database for history
@@ -4995,7 +5122,9 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       return res.status(400).json({ error: 'No chapters extracted yet' });
     }
 
-    // Create book from import with UUID
+    // Create book from import. The row must be INSERTed (updateBook on a
+    // missing id is a silent no-op in PostgreSQL-only mode — the old bug that
+    // made every import "succeed" without creating anything).
     const bookId = uuidv4();
     const bookData = {
       bookTitle: bookTitle || importRecord.filename.replace(/\.[^/.]+$/, ''),
@@ -5034,7 +5163,12 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
       },
     };
 
-    await updateBook(bookId, req.user.id, bookData);
+    const createdBook = await createBook({
+      ...bookData,
+      id: bookId,
+      title: bookData.bookTitle || bookData.title || 'Untitled Story',
+      description: bookData.overview || bookData.description || '',
+    });
 
     // Add book to user's book list
     const updatedUser = {
@@ -5371,10 +5505,16 @@ app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res
         ...(isFullyAnalyzed && { completedAt: new Date().toISOString() }),
       };
 
-      book.updatedAt = new Date().toISOString();
-
-      // Save updated book
-      await updateBook(bookId, req.user.id, book);
+      // Save only what the analysis produced, onto a fresh read of the book
+      // (writing the whole stale copy back could revert edits made meanwhile)
+      await BookDataService.applyServerWrite(bookId, req.user.userId, (fresh) => ({
+        characters: book.characters,
+        locations: book.locations,
+        plotlines: book.plotlines,
+        timelines: book.timelines,
+        importAnalysis: book.importAnalysis,
+        metadata: fresh.metadata || {},
+      }));
 
       // Send completion
       sendProgress('complete', 'Import analysis complete!', {
@@ -5399,7 +5539,7 @@ app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res
 // ============ VIDEO/ANIMATION GENERATION ROUTES (Protected) ============
 
 // Parse transcript into video scenes
-app.post('/api/video/parse-transcript', authenticateToken, async (req, res) => {
+app.post('/api/video/parse-transcript', authenticateToken, consumeAIQuota, async (req, res) => {
   try {
     const { transcriptId, bookId } = req.body;
 
@@ -5445,7 +5585,7 @@ app.post('/api/video/parse-transcript', authenticateToken, async (req, res) => {
 });
 
 // Generate video for scenes (streaming progress)
-app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireFeature('media_generation'), consumeAIQuota, async (req, res) => {
   try {
     const { bookId, transcriptId, scenes, options = {} } = req.body;
 
@@ -5519,10 +5659,9 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, async (r
         createdAt: new Date().toISOString(),
       };
 
-      book.animationProjects = [...(book.animationProjects || []), animationProject];
-      book.updatedAt = new Date().toISOString();
-
-      await updateBook(bookId, req.user.id, book);
+      await BookDataService.applyServerWrite(bookId, req.user.userId, (fresh) => ({
+        animation_projects: [...(fresh.animationProjects || []), animationProject],
+      }));
 
       sendProgress({
         stage: 'complete',
@@ -5764,14 +5903,18 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Unknown job type' });
     }
 
-    // Create new job with same data
-    const newJob = await queue.add(job.data || {});
-    await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type, job.data || {});
+    // Re-queue the ORIGINAL payload (kept by storeJobMetadata under jobData).
+    // The old code re-queued job.data — the small descriptor — so a "retry"
+    // enqueued {} and the new job did nothing.
+    const originalData = job.jobData || job.data || {};
+    const newJob = await queue.add(originalData);
+    const newJobId = await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type,
+      { description: `Retry of ${jobId}` }, originalData);
 
     // Clean up old job
     await cleanupJob(jobId, req.user.userId);
 
-    res.json({ success: true, newJobId: newJob.id.toString() });
+    res.json({ success: true, newJobId });
   } catch (error) {
     console.error('Retry job error:', error);
     res.status(500).json({ error: 'Failed to retry job' });
@@ -5781,7 +5924,7 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
 // ==================== GRAMMAR CHECK ENDPOINT ====================
 
 // Grammar and spell check using LanguageTool
-app.post('/api/grammar-check', authenticateToken, async (req, res) => {
+app.post('/api/grammar-check', authenticateToken, aiLimiter, async (req, res) => {
   try {
     const { text, language = 'en-US' } = req.body;
 
@@ -5790,6 +5933,14 @@ app.post('/api/grammar-check', authenticateToken, async (req, res) => {
     }
 
     // Use LanguageTool's free public API (no API key needed)
+    // Bound the egress: the client debounced at 2s can still send a whole
+    // manuscript per keystroke burst. LanguageTool's own sweet spot is ~4k
+    // chars; larger texts get chunked client-side later — here we refuse
+    // absurd payloads outright.
+    if (typeof req.body.text === 'string' && req.body.text.length > 8000) {
+      return res.status(400).json({ error: 'Text too long for one grammar check (max 8000 chars). Check a section at a time.' });
+    }
+
     const response = await axios.post('https://api.languagetool.org/v2/check',
       new URLSearchParams({
         text,
@@ -6136,7 +6287,7 @@ import {
 } from './utils/rpgConverter.js';
 
 // Generate RPG from book
-app.post('/api/rpg/generate', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/generate', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { bookId, settings } = req.body;
@@ -6155,8 +6306,9 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, async (req, res) => 
 
     
 
-    // Verify ownership
-    if (book.userId !== userId) {
+    // Verify access (owner or collaborator)
+    const access = await checkBookAccess(bookId, userId);
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6198,20 +6350,16 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     }
 
     
-    if (book.userId !== userId) {
+    const access = await checkBookAccess(bookId, userId);
+    if (!access?.has_access) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
     // Get RPG data
     const rpgKey = `rpg:${bookId}`;
-    const rpgDataStr = await getRPGData(bookId);
-
-    if (!rpgDataStr) {
-      return res.json({ rpgData: null });
-    }
-
-    const rpgData = JSON.parse(rpgDataStr);
-    res.json({ rpgData });
+    // getRPGData returns the parsed object (parsing it again threw on every load)
+    const rpgData = await getRPGData(bookId);
+    res.json({ rpgData: rpgData || null });
   } catch (error) {
     console.error('Get RPG data error:', error);
     res.status(500).json({ error: 'Failed to get RPG data' });
@@ -6234,7 +6382,8 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     }
 
     
-    if (book.userId !== userId) {
+    const access = await checkBookAccess(bookId, userId);
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6265,7 +6414,8 @@ app.delete('/api/rpg/:bookId', authenticateToken, async (req, res) => {
     }
 
     
-    if (book.userId !== userId) {
+    const access = await checkBookAccess(bookId, userId);
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6433,7 +6583,7 @@ app.post('/api/rpg/character/export-pdf', authenticateToken, async (req, res) =>
 });
 
 // Generate AI dialogue for quest
-app.post('/api/rpg/quest/generate-dialogue', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/quest/generate-dialogue', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { quest, characters, ruleSystem } = req.body;
 
@@ -6495,7 +6645,7 @@ Format as a JSON dialogue tree with nodes and choices.`;
       max_tokens: 2000
     });
 
-    const dialogueContent = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const dialogueContent = saiTextOf(completion.choices[0]);
 
     // Try to parse as JSON, otherwise return as text
     let dialogueTree;
@@ -6529,7 +6679,7 @@ Format as a JSON dialogue tree with nodes and choices.`;
 // ============================================================================
 
 // Generate NPC response
-app.post('/api/rpg/gm/generate-npc-response', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/gm/generate-npc-response', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { npc, context, ruleSystem } = req.body;
 
@@ -6579,7 +6729,7 @@ Respond in character as ${npc.name}. Keep the response natural, in-character, an
       max_tokens: 300
     });
 
-    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const response = saiTextOf(completion.choices[0]);
     res.json({ success: true, response });
 
   } catch (error) {
@@ -6589,7 +6739,7 @@ Respond in character as ${npc.name}. Keep the response natural, in-character, an
 });
 
 // Generate random encounter
-app.post('/api/rpg/gm/generate-encounter', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/gm/generate-encounter', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, locations, difficulty, ruleSystem } = req.body;
 
@@ -6640,7 +6790,7 @@ Make it interesting and appropriate for the setting.`;
 
     const encounter = {
       id: Date.now(),
-      description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
+      description: saiTextOf(completion.choices[0]),
       difficulty,
       createdAt: new Date().toISOString()
     };
@@ -6654,7 +6804,7 @@ Make it interesting and appropriate for the setting.`;
 });
 
 // Generate plot twist
-app.post('/api/rpg/gm/generate-plot-twist', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/gm/generate-plot-twist', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, campaign, sessions } = req.body;
 
@@ -6706,7 +6856,7 @@ Provide 2-3 plot twist options.`;
       max_tokens: 600
     });
 
-    const twist = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const twist = saiTextOf(completion.choices[0]);
     res.json({ success: true, twist });
 
   } catch (error) {
@@ -6844,9 +6994,21 @@ app.post('/api/rpg/export/html5', authenticateToken, async (req, res) => {
 // ============================================================================
 
 // AI DM Response
-app.post('/api/rpg/ai-dm/respond', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/ai-dm/respond', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { rpgData, gameState, messages, party, ruleSystem, autoGenerateContent } = req.body;
+
+    // Input bounds: free-chat proxy must not become an unmetered LLM relay.
+    if (Array.isArray(messages)) {
+      if (messages.length > 60) {
+        return res.status(400).json({ error: 'Too many messages in conversation (max 60).' });
+      }
+      for (const m of messages) {
+        if (m && typeof m.content === 'string' && m.content.length > 8000) {
+          return res.status(400).json({ error: 'Message too long (max 8000 chars).' });
+        }
+      }
+    }
 
     // Get user's OpenAI client (validates key exists)
     let userOpenai;
@@ -6898,7 +7060,7 @@ Respond to the player's action naturally and engagingly.`;
       max_tokens: 500
     });
 
-    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const response = saiTextOf(completion.choices[0]);
 
     res.json({
       success: true,
@@ -6959,11 +7121,11 @@ Format as JSON with: title, description, objectives (array of strings), rewards 
 
     let quest;
     try {
-      quest = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
+      quest = JSON.parse(saiTextOf(completion.choices[0]));
     } catch {
       quest = {
         title: 'Procedural Quest',
-        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
+        description: saiTextOf(completion.choices[0]),
         objectives: ['Complete the quest'],
         rewards: { experience: partyLevel * 100, gold: partyLevel * 50 }
       };
@@ -7030,10 +7192,10 @@ Return as JSON: { description, enemies: [{name, hp, maxHp, ac, attackBonus, dama
 
     let encounter;
     try {
-      encounter = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
+      encounter = JSON.parse(saiTextOf(completion.choices[0]));
     } catch {
       encounter = {
-        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
+        description: saiTextOf(completion.choices[0]),
         enemies: []
       };
     }
@@ -7174,6 +7336,11 @@ app.delete('/api/users/api-keys/:key', authenticateToken, async (req, res) => {
 });
 
 // External API: Get book chapters
+// API keys are PARKED (Asim 2026-10-06; the scorecard's cut-or-park list):
+// the UI is gone and keys could not be used anyway (the routes compared a
+// book.userId that is never set). Answer 404 before any auth runs.
+app.use('/api/external', (req, res) => res.status(404).json({ error: 'Not found' }));
+
 app.get('/api/external/books/:bookId/chapters', authenticateApiKey, async (req, res) => {
   try {
     const { bookId } = req.params;
@@ -8321,6 +8488,32 @@ app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason?.stack || reason);
 });
+
+// Schema + migrations at boot: schema.sql is all IF NOT EXISTS (idempotent), and
+// the migration runner applies each migrations/*.sql file once (schema_migrations).
+// A fresh install self-heals; a live one only runs what's new.
+// The server only starts listening once the schema is migrated: before, it
+// served requests (and passed health checks) against the old schema while the
+// migrations were still running, and on a failure it exited after serving.
+async function prepareDatabase() {
+  if (!process.env.DATABASE_URL && !process.env.POSTGRES_HOST) return;
+  try {
+    // Decide "existing database" BEFORE schema.sql creates the tables.
+    const pre = await getPool().query("SELECT to_regclass('public.books') IS NOT NULL AS existed");
+    const preexistingSchema = pre.rows[0].existed;
+    const schemaPath = path.join(__dirname, 'db', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      await getPool().query(readFileSync(schemaPath, 'utf8'));
+      console.log('✓ schema.sql applied');
+    }
+    await runMigrations({ preexistingSchema });
+  } catch (err) {
+    console.error('Migration failure — refusing to start on a half-migrated schema:', err.message);
+    process.exit(1);
+  }
+}
+
+await prepareDatabase();
 
 app.listen(PORT, () => {
   verifyEmailTransport().catch(() => {});

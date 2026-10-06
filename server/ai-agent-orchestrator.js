@@ -1,6 +1,7 @@
 import { getSAIClient, SAI_CHAT, SAI_CHAT_FAST } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
 import dotenv from 'dotenv';
+import { saiTextOf } from './utils/saiText.js';
 
 dotenv.config();
 
@@ -209,7 +210,7 @@ Return ONLY valid JSON in this format:
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -271,7 +272,7 @@ IMPORTANT: Each character should have relationships with 2-3 other characters fr
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -311,7 +312,7 @@ Return an ARRAY of ${count} location objects:
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -349,7 +350,7 @@ Return an ARRAY of ${count} plotline objects:
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -395,7 +396,7 @@ Return an ARRAY of ${numChapters} chapter outline objects:
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -438,10 +439,15 @@ Return JSON:
       temperature: 0.8,
       max_tokens: 16000, // Increased for much longer chapters
       chat_template_kwargs: { enable_thinking: false },
+    }, {
+      // Per-request client options live in the SDK's SECOND argument — a
+      // `timeout` key inside the body is silently ignored by the server AND
+      // the SDK, so this generation actually ran 120s×3 retries.
       timeout: 300000, // 5 min — long-form generation
+      maxRetries: 0,
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -477,7 +483,7 @@ Return JSON:
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     const result = extractJSON(responseText);
     return result.relationships || [];
   }
@@ -514,7 +520,7 @@ Break down into individual scenes (not full chapters). Respond with ONLY the JSO
       chat_template_kwargs: { enable_thinking: false },
     });
 
-    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const responseText = saiTextOf(completion.choices[0]);
     return extractJSON(responseText);
   }
 
@@ -559,7 +565,7 @@ Return JSON:
         chat_template_kwargs: { enable_thinking: false },
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       return extractJSON(responseText);
     } catch (error) {
       console.error('Continuity analysis error:', error);

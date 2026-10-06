@@ -28,8 +28,8 @@ const ChaptersTabView = ({
   setShowAIHelper,
   aiPrompt,
   setAiPrompt,
-  setAiContext
-}) => {
+  setAiContext,
+  onUpgrade}) => {
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [viewMode, setViewMode] = useState('list');
   const [showGeneratorModal, setShowGeneratorModal] = useState(false);
@@ -104,7 +104,13 @@ const ChaptersTabView = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 403 && onUpgrade) {
+          // tier-gated: open the upgrade modal instead of a dead-end alert
+          onUpgrade({ featureName: 'Chapter cover images', requiredTier: 'Basic', requiredFeature: 'media_generation' });
+          setGeneratingImage(null);
+          return;
+        }
         throw new Error(errorData.error || 'Failed to generate image');
       }
 
@@ -450,6 +456,15 @@ const ChaptersTabView = ({
                     <ImproveButton
                       content={selectedChapter.summary}
                       contentType="chapter summary"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          chapters: prev.chapters.map(c =>
+                            c.id === selectedChapter.id ? { ...c, summary: improved } : c
+                          ),
+                        }));
+                        setSelectedChapter({ ...selectedChapter, summary: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -464,6 +479,15 @@ const ChaptersTabView = ({
                     <ImproveButton
                       content={selectedChapter.content}
                       contentType="chapter content"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          chapters: prev.chapters.map(c =>
+                            c.id === selectedChapter.id ? { ...c, content: improved } : c
+                          ),
+                        }));
+                        setSelectedChapter({ ...selectedChapter, content: improved });
+                      }}
                       context={data}
                     />
                   </div>

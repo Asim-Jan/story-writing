@@ -1,37 +1,19 @@
-import { createClient } from 'redis';
+
 import { AIImportAnalyzer } from '../../ai-import-analyzer.js';
+import { BookDataService } from '../../db/dataService.js';
 import { updateJobStatus } from '../queue.js';
-
-let redisClient;
-
-async function initRedis() {
-  if (redisClient) return redisClient;
-
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
-    password: process.env.REDIS_PASSWORD || undefined,
-  });
-  // Without a listener, redis v4 re-throws connection errors and a Redis restart kills the worker.
-  redisClient.on('error', (err) => console.error('Redis client error:', err.message));
-  await redisClient.connect();
-  return redisClient;
-}
 
 export async function processImportAnalysis(job) {
   const { userId, bookId, chapterIndex, chapter } = job.data;
 
   try {
-    await updateJobStatus(job.id, { status: 'active', progress: 10 });
+    await updateJobStatus(job, { status: 'active', progress: 10 });
 
-    await initRedis();
-
-    // Get book data
-    const bookData = await redisClient.get(`book:${bookId}`);
-    if (!bookData) {
+    // Load through the data service (Redis book:{id} is empty in PG-only mode)
+    const book = await BookDataService.findById(bookId);
+    if (!book) {
       throw new Error('Book not found');
     }
-
-    const book = JSON.parse(bookData);
     const analyzer = new AIImportAnalyzer();
 
     // Build context from previously analyzed chapters
@@ -42,7 +24,7 @@ export async function processImportAnalysis(job) {
       existingPlotlines: book.plotlines?.filter(p => !p.fromImport) || [],
     };
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'active',
       progress: 30,
       message: `Analyzing chapter ${chapterIndex + 1}...`,
@@ -51,7 +33,7 @@ export async function processImportAnalysis(job) {
     // Analyze chapter
     const analysis = await analyzer.analyzeChapter(chapter, context);
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'active',
       progress: 70,
       message: 'Merging with existing data...',
@@ -150,12 +132,19 @@ export async function processImportAnalysis(job) {
       }
     }
 
-    await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Saving...' });
+    await updateJobStatus(job, { status: 'active', progress: 90, message: 'Saving...' });
 
-    // Save updated book
-    await redisClient.set(`book:${bookId}`, JSON.stringify(book));
+    // Save through the data service (the Redis write landed in an empty store)
+    // The analysis was merged into the copy loaded at the start; write those
+    // results against a fresh read so other fields saved meanwhile survive.
+    await BookDataService.applyServerWrite(bookId, userId, (fresh) => ({
+      metadata: { ...(fresh.metadata || {}), importAnalysis: book.importAnalysis },
+      characters: book.characters,
+      locations: book.locations,
+      plotlines: book.plotlines,
+    }));
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'completed',
       progress: 100,
       message: `Chapter ${chapterIndex + 1} analyzed successfully`,
@@ -165,7 +154,7 @@ export async function processImportAnalysis(job) {
     return analysis;
   } catch (error) {
     console.error('Import analysis job failed:', error);
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'failed',
       error: error.message,
       message: `Failed: ${error.message}`,

@@ -8,7 +8,7 @@
 import { features } from '../config/features.js';
 import { UserRepository, BookRepository, ChapterRepository, JobRepository } from './repositories/index.js';
 import { getRedisClient } from '../services/dataAdapter.js';
-import { query } from './postgres.js';
+import { query, transaction } from './postgres.js';
 
 /**
  * Helper to get Redis book key
@@ -287,6 +287,8 @@ export class BookDataService {
       scenes: chapter.scenes || [],
       wordCount: chapter.word_count || 0,
       status: chapter.status || 'draft',
+      coverImage: chapter.cover_image || null,
+      coverImageFilename: chapter.cover_image_filename || null,
       createdAt: chapter.created_at,
       updatedAt: chapter.updated_at,
       version: chapter.version
@@ -375,6 +377,18 @@ export class BookDataService {
     }
     if (mapped.animation_projects) {
       mapped.animationProjects = mapped.animation_projects;
+    }
+    if (mapped.transcripts === undefined && mapped.transcripts !== null) {
+      // JSONB default '[]'
+    }
+    if (mapped.description && !mapped.overview) {
+      // The editor binds data.overview; the schema stores description. Map it
+      // BACK so a reload doesn't blank the overview textarea (the save writes
+      // description from overview — without this the field round-trips to zero).
+      mapped.overview = mapped.description;
+    }
+    if (!Array.isArray(mapped.transcripts)) {
+      mapped.transcripts = [];
     }
 
     // Map title to bookTitle for frontend
@@ -556,6 +570,30 @@ export class BookDataService {
   /**
    * Update book
    */
+  /**
+   * Server-side write (job processors). A job runs for seconds to minutes; the
+   * copy of the book it loaded at the start is stale by the time it saves, and
+   * writing that copy back silently reverted whatever the user saved meanwhile.
+   * This re-reads the book, lets `mutate` apply the job's ONE change to the
+   * fresh copy, and writes against the fresh version. A save landing between
+   * the read and the write is a CONFLICT: re-read and re-apply, a few times.
+   * @param {(book: object) => object|null} mutate - returns the updates, or null for nothing to write
+   */
+  static async applyServerWrite(bookId, userId, mutate, attempts = 4) {
+    for (let i = 1; ; i++) {
+      const book = await this.findById(bookId);
+      if (!book) throw Object.assign(new Error('Book not found'), { code: 'NOT_FOUND' });
+      const updates = mutate(book);
+      if (!updates || Object.keys(updates).length === 0) return book;
+      try {
+        return await this.update(bookId, userId, updates, book.version);
+      } catch (err) {
+        const conflict = err.code === 'CONFLICT' || String(err.message).includes('CONFLICT');
+        if (!conflict || i >= attempts) throw err;
+      }
+    }
+  }
+
   static async update(bookId, userId, updates, expectedVersion = null) {
     let book = null;
 
@@ -564,29 +602,121 @@ export class BookDataService {
     const bookUpdates = { ...updates };
     delete bookUpdates.chapters; // Remove chapters from book updates
 
-    // Update PostgreSQL if enabled
+    // camelCase fields that have no columns of their own fold into metadata
+    // (the create path + GET mapper do the same dance): importedFrom,
+    // importAnalysis. animationProjects maps to its snake column.
+    if (bookUpdates.importedFrom || bookUpdates.importAnalysis || bookUpdates.animationProjects) {
+      const md = { ...(bookUpdates.metadata || {}) };
+      if (bookUpdates.importedFrom) md.importedFrom = bookUpdates.importedFrom;
+      if (bookUpdates.importAnalysis) md.importAnalysis = bookUpdates.importAnalysis;
+      if (bookUpdates.importedFrom || bookUpdates.importAnalysis) bookUpdates.metadata = md;
+      delete bookUpdates.importedFrom;
+      delete bookUpdates.importAnalysis;
+      if (bookUpdates.animationProjects !== undefined) {
+        bookUpdates.animation_projects = bookUpdates.animationProjects;
+        delete bookUpdates.animationProjects;
+      }
+    }
+
+    // Server-side writers (job callbacks, SSE stages) pass no version — they
+    // hold a stale copy of the book by definition. They get the versionless
+    // internal path: read the CURRENT version and write against it. User
+    // saves keep the strict client-version check.
+    if (expectedVersion === null || expectedVersion === undefined) {
+      const cur = await query('SELECT version FROM books WHERE id = $1 AND deleted_at IS NULL', [bookId]);
+      expectedVersion = cur.rows[0]?.version ?? 1;
+    }
+
+    // Update PostgreSQL if enabled.
+    // IMPORTANT: the book row and the chapter sync happen in ONE transaction — a
+    // save either lands whole or not at all. The old code updated the book, then
+    // synced chapters as independent statements, then SWALLOWED any error: a
+    // failed sync returned 200 with the book silently missing chapters, and a
+    // blank-book client save could hard-delete chapters with no way back.
+    // Errors now propagate: conflict -> 409, anything else -> 500. Never a silent 200.
     if (features.shouldWriteToPostgres()) {
-      try {
-        book = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1);
-        if (book) {
-          book = this.mapBookFieldsFromPostgres(book);
+      let finalVersion = null;
+      let finalUpdatedAt = null;
+      book = await transaction(async (client) => {
+        // The book row runs ON the transaction client (blocker (a)/(d): the
+        // pool call let the stats UPDATE commit its own version bump outside
+        // the transaction and returned a version the DB had already left).
+        // Chapters-only saves (the job processors) have no row fields — the
+        // repo throws 'No valid fields' on an empty object. Sync the chapters
+        // against the loaded row instead, with an explicit version bump so
+        // stale clients still conflict.
+        const hasFieldUpdates = Object.keys(bookUpdates).some(k => k !== 'chapters');
+        let updated = null;
+        if (hasFieldUpdates) {
+          updated = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1, client);
+          if (updated) {
+            updated = this.mapBookFieldsFromPostgres(updated);
+          }
+        } else {
+          const existing = await client.query('SELECT * FROM books WHERE id = $1 AND deleted_at IS NULL', [bookId]);
+          if (existing.rows.length === 0) {
+            const err = new Error('Book not found');
+            err.code = 'NOT_FOUND';
+            throw err;
+          }
+          const row = existing.rows[0];
+          if (row.owner_id !== userId) {
+            const collab = await client.query(
+              `SELECT 1 FROM collaborators c WHERE c.book_id = $1 AND c.user_id = $2
+                 AND c.status = 'active' AND c.role IN ('editor', 'admin')`,
+              [bookId, userId]
+            );
+            if (collab.rowCount === 0) {
+              const err = new Error('Not authorized to update this book');
+              err.code = 'FORBIDDEN';
+              throw err;
+            }
+          }
+          if (row.version !== expectedVersion) {
+            const err = new Error('CONFLICT: Book was modified by another user. Please refresh and try again.');
+            err.code = 'CONFLICT';
+            throw err;
+          }
+          updated = this.mapBookFieldsFromPostgres(row);
+          await client.query('UPDATE books SET updated_at = NOW() WHERE id = $1', [bookId]);
         }
 
-        // Sync chapters to chapters table if provided
+        let updatedChapters = null;
         if (chapters && Array.isArray(chapters)) {
-          await this.syncChapters(bookId, chapters);
-          // Reload chapters to return updated book with chapters
-          const updatedChapters = await ChapterRepository.findByBookId(bookId);
-          if (book) {
-            book.chapters = (updatedChapters || []).map(ch => this.mapChapterFromPostgres(ch));
+          await this.syncChaptersInClient(client, bookId, chapters);
+          // reload ON THE TRANSACTION CLIENT — a pool read here would see the
+          // pre-commit snapshot (versions one step behind what was just written)
+          updatedChapters = (await client.query(
+            'SELECT * FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number ASC',
+            [bookId]
+          )).rows;
+          if (updated) {
+            updated.chapters = (updatedChapters || []).map(ch => this.mapChapterFromPostgres(ch));
           }
         }
-      } catch (error) {
-        if (error.message.includes('CONFLICT')) {
-          throw error; // Propagate conflict error
+
+        // FINAL version read, after every statement in this save: the books
+        // trigger bumps the version on EVERY UPDATE of the row (the field
+        // update AND the stats update = two bumps per save). The client must
+        // store the REAL final version or its next save 409s against a
+        // version that never existed from its point of view.
+        if (updated) {
+          const final = (await client.query(
+            'SELECT version, updated_at FROM books WHERE id = $1',
+            [bookId]
+          )).rows[0];
+          if (final) {
+            updated.version = final.version;
+            updated.updatedAt = final.updated_at;
+          }
+          for (const ch of (updated.chapters || [])) {
+            const cv = (updatedChapters || []).find(c => c.id === ch.id);
+            if (cv) ch.version = cv.version;
+          }
         }
-        console.error('PostgreSQL update error:', error);
-      }
+
+        return updated;
+      });
     }
 
     // Update Redis if needed
@@ -700,6 +830,126 @@ export class BookDataService {
 
     // Update book statistics
     await BookRepository.updateStats(bookId);
+  }
+
+  /**
+   * syncChapters on the CALLER'S transaction client — same logic as syncChapters
+   * but: (a) runs inside the book-save transaction so a save lands whole or not
+   * at all; (b) FAILS CLOSED — a failed chapter update/delete aborts the whole
+   * save instead of being logged and swallowed (the old behaviour returned 200
+   * while the book's chapters were silently wrong); (c) treats chapter numbers
+   * as data, not identity: the client's string/int mixing is coerced, and the
+   * UNIQUE(book_id, chapter_number) constraint stays as the integrity backstop.
+   */
+  static async syncChaptersInClient(client, bookId, chaptersArray) {
+    console.log(`Syncing ${chaptersArray.length} chapters for book ${bookId} (in save transaction)`);
+
+    const existingChapters = (await client.query(
+      'SELECT * FROM chapters WHERE book_id = $1 AND deleted_at IS NULL',
+      [bookId]
+    )).rows;
+    const existingChapterMap = new Map(existingChapters.map(ch => [ch.id, ch]));
+    const existingByNumber = new Map(existingChapters.map(ch => [ch.chapter_number, ch]));
+
+    const chaptersToKeep = new Set();
+
+    // number arrives as a string from the client (and from some AI payloads).
+    // A missing or zero number gets the next free one: two unnumbered chapters
+    // both became 0 and hit UNIQUE(book_id, chapter_number) on every save.
+    const numberOf = (ch) => parseInt(ch.number ?? ch.chapterNumber ?? ch.chapter_number ?? 0, 10) || 0;
+    let nextNumber = Math.max(0, ...chaptersArray.map(numberOf)) + 1;
+
+    for (const chapter of chaptersArray) {
+      const chapterData = {
+        book_id: bookId,
+        chapter_number: numberOf(chapter) || nextNumber++,
+        title: chapter.title || '',
+        content: chapter.content || '',
+        scenes: chapter.scenes || [],
+        notes: chapter.summary || chapter.notes || '',
+        status: chapter.status || 'draft',
+        cover_image: chapter.coverImage || null,
+        cover_image_filename: chapter.coverImageFilename || null
+      };
+
+      // Identity: the chapter's OWN id first; fall back to number ONLY when the
+      // payload row has no id (a genuinely new chapter). Two payload rows may not
+      // claim the same identity — the first wins, later ones become new rows and
+      // the UNIQUE constraint catches true collisions.
+      let existingChapter = null;
+      if (chapter.id && existingChapterMap.has(chapter.id)) {
+        existingChapter = existingChapterMap.get(chapter.id);
+      } else if (!chapter.id && existingByNumber.has(chapterData.chapter_number)) {
+        existingChapter = existingByNumber.get(chapterData.chapter_number);
+      }
+
+      if (existingChapter) {
+        chaptersToKeep.add(existingChapter.id);
+        // Update through the repository ON THIS CLIENT: that carries the
+        // version bump (trigger-checked), the word-count recompute, and the
+        // chapter_versions history the old sync silently skipped. The
+        // expectedVersion is the row's version read moments ago INSIDE this
+        // transaction, so the optimistic check is against data no one else
+        // could have changed between the read and the write.
+        const updates = {
+          chapter_number: chapterData.chapter_number,
+          title: chapterData.title,
+          content: chapterData.content,
+          scenes: chapterData.scenes,
+          notes: chapterData.notes,
+          status: chapterData.status,
+        };
+        if (chapterData.cover_image !== null) {
+          updates.cover_image = chapterData.cover_image;
+          updates.cover_image_filename = chapterData.cover_image_filename;
+        }
+        const result = await ChapterRepository.update(
+          existingChapter.id, updates, existingChapter.version, null, client
+        );
+        if (!result) {
+          throw new Error(`CONFLICT: chapter ${existingChapter.id} vanished mid-save`);
+        }
+      } else {
+        const wordCount = (chapterData.content || '').trim().split(/\s+/).filter(Boolean).length;
+        const inserted = await client.query(
+          `INSERT INTO chapters (book_id, chapter_number, title, content, scenes, notes, status, cover_image, cover_image_filename, word_count)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING *`,
+          [bookId, chapterData.chapter_number, chapterData.title, chapterData.content,
+            JSON.stringify(chapterData.scenes), chapterData.notes, chapterData.status,
+            chapterData.cover_image, chapterData.cover_image_filename, wordCount]
+        );
+        chaptersToKeep.add(inserted.rows[0].id);
+      }
+    }
+
+    // Hard-delete chapters the payload no longer carries — but ONLY when the
+    // payload is chapter-bearing (non-empty). An EMPTY array with chapters in the
+    // DB is how a blank-book client wipes everything; that is treated as a
+    // conflict instead of a mass delete. A user deleting every chapter does it
+    // through the chapter UI, which sends the remaining state — never an empty
+    // array behind a fully-loaded book.
+    if (chaptersArray.length === 0 && existingChapters.length > 0) {
+      throw new Error('CONFLICT: refusing to delete all chapters from an empty payload');
+    }
+    for (const existing of existingChapters) {
+      if (!chaptersToKeep.has(existing.id)) {
+        // chapter_versions has ON DELETE CASCADE on chapters — deleting the row
+        // takes its version history with it. That is intended: a chapter the
+        // client no longer has is gone; its content survives in the save the
+        // next sync writes if it returns.
+        await client.query('DELETE FROM chapters WHERE id = $1', [existing.id]);
+      }
+    }
+
+    // statistics: same statement as BookRepository.updateStats but on this client
+    await client.query(
+      `UPDATE books b
+       SET chapter_count = (SELECT COUNT(*) FROM chapters WHERE book_id = b.id AND deleted_at IS NULL),
+           word_count = (SELECT COALESCE(SUM(word_count), 0) FROM chapters WHERE book_id = b.id AND deleted_at IS NULL)
+       WHERE b.id = $1`,
+      [bookId]
+    );
   }
 
   /**

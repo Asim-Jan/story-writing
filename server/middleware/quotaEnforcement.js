@@ -156,15 +156,31 @@ export const checkChapterQuota = async (req, res, next) => {
 };
 
 /**
- * Check if user can make AI requests
- * Middleware function
+ * Check AND RESERVE an AI request in one statement.
+ *
+ * The old pair (checkAIQuota reads, incrementAICounter writes after the work)
+ * had a race (parallel requests all pass the check) and, worse, only
+ * incremented on SOME routes — most AI routes counted nothing at all.
+ *
+ * consumeAIQuota: a single UPDATE ... WHERE usage < limit RETURNING reserves
+ * the slot atomically. Routes that fail before doing AI work refund it with
+ * refundAIQuota (res.on('finish') in the response hook below handles the
+ * error paths without touching every handler).
  */
-export const checkAIQuota = async (req, res, next) => {
+export const consumeAIQuota = async (req, res, next) => {
   try {
     const userId = req.user.userId || req.user.id;
-    const quotas = await getUserQuotas(userId); // getUserQuotas now handles daily reset
+    const quotas = await getUserQuotas(userId); // handles daily reset
 
-    if (quotas.usage.ai_requests_today >= quotas.limits.max_ai_requests_per_day) {
+    const reserved = await pool.query(
+      `UPDATE quotas
+       SET ai_requests_today = ai_requests_today + 1, updated_at = NOW()
+       WHERE user_id = $1 AND ai_requests_today < $2
+       RETURNING ai_requests_today`,
+      [userId, quotas.limits.max_ai_requests_per_day]
+    );
+
+    if (reserved.rowCount === 0) {
       const lastReset = new Date(quotas.usage.last_ai_reset);
       return res.status(429).json({
         error: 'Daily AI request limit reached',
@@ -177,13 +193,31 @@ export const checkAIQuota = async (req, res, next) => {
       });
     }
 
+    // Reserve taken. If the route errors out before producing anything (5xx)
+    // or the client goes away, give the slot back — the user shouldn't pay
+    // for a request that produced nothing. 2xx/4xx keep the slot (429-class
+    // validation errors still consumed capacity).
     req.quotas = quotas;
+    // 'close' fires for BOTH completed responses and client aborts; 'finish'
+    // never fires on an abort, which made the refund branch dead. On an abort
+    // statusCode is unset — treat that as a refund too.
+    res.on('close', () => {
+      const code = res.statusCode;
+      const aborted = !res.writableEnded;
+      if (aborted || code >= 500) {
+        refundAIQuota(userId).catch(err =>
+          console.error('AI quota refund failed:', err.message));
+      }
+    });
     next();
   } catch (error) {
     console.error('AI quota check error:', error);
     res.status(500).json({ error: 'Failed to check quotas' });
   }
 };
+
+// checkAIQuota stays exported for compatibility (read-only check, no reserve)
+export const checkAIQuota = consumeAIQuota;
 
 /**
  * Check if user can queue more jobs
@@ -256,6 +290,15 @@ export const requireFeature = (featureName) => {
  * Increment AI request counter
  * Call this after successful AI request
  */
+export async function refundAIQuota(userId) {
+  await pool.query(
+    `UPDATE quotas
+     SET ai_requests_today = GREATEST(ai_requests_today - 1, 0), updated_at = NOW()
+     WHERE user_id = $1`,
+    [userId]
+  );
+}
+
 export async function incrementAICounter(userId) {
   await pool.query(
     `UPDATE quotas

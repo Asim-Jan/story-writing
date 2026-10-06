@@ -1,51 +1,35 @@
-import { createClient } from 'redis';
 import { VideoSceneParser } from '../../services/videoSceneParser.js';
 import { VideoGenerator } from '../../services/videoGenerator.js';
 import { VideoAssembler } from '../../services/videoAssembler.js';
 import { updateJobStatus } from '../queue.js';
-
-let redisClient;
-
-async function initRedis() {
-  if (redisClient) return redisClient;
-
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
-    password: process.env.REDIS_PASSWORD || undefined,
-  });
-  // Without a listener, redis v4 re-throws connection errors and a Redis restart kills the worker.
-  redisClient.on('error', (err) => console.error('Redis client error:', err.message));
-  await redisClient.connect();
-  return redisClient;
-}
+import { BookDataService } from '../../db/dataService.js';
 
 export async function processVideoGeneration(job) {
   const { userId, bookId, transcriptId, config } = job.data;
 
   try {
-    await updateJobStatus(job.id, { status: 'active', progress: 5 });
+    await updateJobStatus(job, { status: 'active', progress: 5 });
 
-    await initRedis();
-
-    // Get book data
-    const bookData = await redisClient.get(`book:${bookId}`);
-    if (!bookData) {
+    // Load through the data service (Redis book:{id} is empty in PG-only mode)
+    const book = await BookDataService.findById(bookId);
+    if (!book) {
       throw new Error('Book not found');
     }
-
-    const book = JSON.parse(bookData);
-    const transcript = book.transcripts?.find(t => t.id === transcriptId);
+    // transcripts now persist on the book row (books.transcripts JSONB);
+    // accept both shapes (id as string or number)
+    const transcript = (book.transcripts || []).find(t => String(t.id) === String(transcriptId));
     if (!transcript) {
       throw new Error('Transcript not found');
     }
 
     // Parse transcript into scenes
-    await updateJobStatus(job.id, { status: 'active', progress: 10, message: 'Parsing transcript into scenes...' });
+    await updateJobStatus(job, { status: 'active', progress: 10, message: 'Parsing transcript into scenes...' });
 
     const parser = new VideoSceneParser();
-    const scenes = await parser.parseTranscript(transcript.content, config);
+    // the real method name (parseTranscript doesn't exist — the job crashed here)
+    const scenes = await parser.parseTranscriptToScenes(transcript.content, config);
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'active',
       progress: 20,
       message: `Parsed ${scenes.length} scenes, generating videos...`,
@@ -59,14 +43,15 @@ export async function processVideoGeneration(job) {
       const scene = scenes[i];
       const sceneProgress = 20 + (i / scenes.length) * 60; // 20% to 80%
 
-      await updateJobStatus(job.id, {
+      await updateJobStatus(job, {
         status: 'active',
         progress: sceneProgress,
         message: `Generating scene ${i + 1} of ${scenes.length}...`,
       });
 
       try {
-        const videoResult = await generator.generateScene(scene, config);
+        // the real method name (generateScene doesn't exist)
+        const videoResult = await generator.generateSceneVideo(scene, config);
         sceneVideos.push(videoResult);
       } catch (error) {
         console.error(`Failed to generate scene ${i + 1}:`, error);
@@ -76,7 +61,7 @@ export async function processVideoGeneration(job) {
     }
 
     // Assemble final video
-    await updateJobStatus(job.id, { status: 'active', progress: 85, message: 'Assembling final video...' });
+    await updateJobStatus(job, { status: 'active', progress: 85, message: 'Assembling final video...' });
 
     const assembler = new VideoAssembler(bookId);
     const finalVideo = await assembler.assembleFilm(sceneVideos, {
@@ -85,27 +70,22 @@ export async function processVideoGeneration(job) {
       userId,
     });
 
-    await updateJobStatus(job.id, { status: 'active', progress: 95, message: 'Updating book data...' });
+    await updateJobStatus(job, { status: 'active', progress: 95, message: 'Updating book data...' });
 
-    // Update book data
-    const updatedBookData = await redisClient.get(`book:${bookId}`);
-    const updatedBook = JSON.parse(updatedBookData);
-
-    if (!updatedBook.animationProjects) {
-      updatedBook.animationProjects = [];
-    }
-
-    updatedBook.animationProjects.push({
+    // Persist through the data service (the Redis write was landing in an
+    // empty store — animation projects never survived a reload)
+    const project = {
       id: `anim-${Date.now()}`,
       transcriptId,
       video: finalVideo,
       scenes: sceneVideos,
       createdAt: new Date().toISOString(),
-    });
+    };
+    await BookDataService.applyServerWrite(bookId, job.data.userId, (fresh) => ({
+      animation_projects: [...(fresh.animationProjects || []), project],
+    }));
 
-    await redisClient.set(`book:${bookId}`, JSON.stringify(updatedBook));
-
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'completed',
       progress: 100,
       message: 'Video generated successfully',
@@ -115,7 +95,7 @@ export async function processVideoGeneration(job) {
     return finalVideo;
   } catch (error) {
     console.error('Video generation job failed:', error);
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'failed',
       error: error.message,
       message: `Failed: ${error.message}`,

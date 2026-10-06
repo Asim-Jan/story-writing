@@ -50,11 +50,22 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
+  // A 401 from ANY in-app fetch (useBook dispatches auth:expired) signs out.
+  useEffect(() => {
+    const onExpired = () => { logout(); };
+    window.addEventListener('auth:expired', onExpired);
+    return () => window.removeEventListener('auth:expired', onExpired);
+  }, []);
+
   const login = (userData, authToken) => {
     setUser(userData);
     setToken(authToken);
     localStorage.setItem('token', authToken);
     localStorage.setItem('user', JSON.stringify(userData));
+    // AFTER the token lands — the subscription context refetches on this
+    // event; firing it first made the refetch run with no token (→ free tier
+    // until a full reload).
+    window.dispatchEvent(new CustomEvent('auth:changed'));
   };
 
   const logout = async () => {
@@ -70,6 +81,7 @@ export const AuthProvider = ({ children }) => {
       setToken(null);
       localStorage.removeItem('token');
       localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('auth:changed'));
     }
   };
 

@@ -1,6 +1,7 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import { extractJSON } from '../utils/extractJSON.js';
 import dotenv from 'dotenv';
+import { saiTextOf } from '../utils/saiText.js';
 
 dotenv.config();
 
@@ -103,7 +104,7 @@ Return JSON array of chapter starts.`;
         max_tokens: 2000,
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       const detected = extractJSON(cleaned);
 

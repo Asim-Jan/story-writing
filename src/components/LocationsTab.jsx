@@ -16,6 +16,7 @@ const LocationsTab = ({
   editLocation,
   deleteItem,
   editingId,
+  setEditingId,
   generateWithAI,
   aiSuggestion,
   acceptAISuggestion,
@@ -31,6 +32,7 @@ const LocationsTab = ({
   aiContext
 }) => {
   const [selectedLocation, setSelectedLocation] = useState(null);
+  const [showForm, setShowForm] = useState(false); // mobile: without this the New Location click did nothing visible on phones
   const [viewMode, setViewMode] = useState('list');
   const [generatingImage, setGeneratingImage] = useState(null);
   const [pendingImage, setPendingImage] = useState(null);
@@ -39,7 +41,7 @@ const LocationsTab = ({
   const fileInputRef = useRef(null);
 
   const isMobile = useIsMobile();
-  const showingDetail = selectedLocation !== null || editingId;
+  const showingDetail = selectedLocation !== null || editingId || showForm;
 
   // Filter locations based on search query
   const filteredLocations = data.locations.filter(loc => {
@@ -69,6 +71,7 @@ const LocationsTab = ({
   const handleAddNew = () => {
     setSelectedLocation(null);
     resetForm();
+    setShowForm(true); // mobile: make the form pane visible
   };
 
   const handleGenerateImage = async (location) => {
@@ -385,6 +388,15 @@ const LocationsTab = ({
                     <ImproveButton
                       content={selectedLocation.description}
                       contentType="location description"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          locations: prev.locations.map(l =>
+                            l.id === selectedLocation.id ? { ...l, description: improved } : l
+                          ),
+                        }));
+                        setSelectedLocation({ ...selectedLocation, description: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -399,6 +411,15 @@ const LocationsTab = ({
                     <ImproveButton
                       content={selectedLocation.atmosphere}
                       contentType="atmosphere description"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          locations: prev.locations.map(l =>
+                            l.id === selectedLocation.id ? { ...l, atmosphere: improved } : l
+                          ),
+                        }));
+                        setSelectedLocation({ ...selectedLocation, atmosphere: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -413,6 +434,15 @@ const LocationsTab = ({
                     <ImproveButton
                       content={selectedLocation.history}
                       contentType="location history"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          locations: prev.locations.map(l =>
+                            l.id === selectedLocation.id ? { ...l, history: improved } : l
+                          ),
+                        }));
+                        setSelectedLocation({ ...selectedLocation, history: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -427,6 +457,15 @@ const LocationsTab = ({
                     <ImproveButton
                       content={selectedLocation.significance}
                       contentType="story significance"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          locations: prev.locations.map(l =>
+                            l.id === selectedLocation.id ? { ...l, significance: improved } : l
+                          ),
+                        }));
+                        setSelectedLocation({ ...selectedLocation, significance: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -442,7 +481,7 @@ const LocationsTab = ({
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 {/* Mobile back button */}
                 <button
-                  onClick={() => setEditingId(null)}
+                  onClick={() => { setEditingId(null); setShowForm(false); }}
                   className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
                   title="Back to locations"
                 >

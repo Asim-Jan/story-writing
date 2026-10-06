@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
@@ -6,7 +6,6 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { LinkPlugin } from '@lexical/react/LexicalLinkPlugin';
-import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin';
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
@@ -15,7 +14,6 @@ import { ListNode, ListItemNode } from '@lexical/list';
 import { LinkNode, AutoLinkNode } from '@lexical/link';
 import { CodeNode, CodeHighlightNode } from '@lexical/code';
 import { TableNode, TableCellNode, TableRowNode } from '@lexical/table';
-import { TRANSFORMERS } from '@lexical/markdown';
 import {
   $getRoot,
   $insertNodes,
@@ -232,31 +230,54 @@ function WordCounterPlugin({ onStatsChange }) {
   return null;
 }
 
-// Load Initial Content Plugin
-function LoadContentPlugin({ initialContent }) {
+// Load Initial Content Plugin — parses the stored markdown representation and
+// reloads when the content changes EXTERNALLY (AI Improve/inline edits write a
+// new chapter body). Reloading must not fight the user's typing: only reload
+// when the serialized editor state differs from the incoming content.
+function LoadContentPlugin({ initialContent, emittedRef }) {
   const [editor] = useLexicalComposerContext();
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const lastLoadedRef = useRef(null);
 
   useEffect(() => {
-    if (initialContent && !hasLoaded) {
-      editor.update(() => {
-        const root = $getRoot();
-        root.clear();
-
-        // Split content into paragraphs and create nodes
-        const paragraphs = initialContent.split(/\n\n+/);
-        const nodes = paragraphs.map(paraText => {
-          const paragraph = $createParagraphNode();
-          const textNode = $createTextNode(paraText);
-          paragraph.append(textNode);
-          return paragraph;
-        });
-
-        root.append(...nodes);
-      });
-      setHasLoaded(true);
+    // '' is a real value: New Chapter resets the form to an empty body, and
+    // skipping it left the previous chapter's text in the editor, where typing
+    // copied it into the new chapter. Only null/undefined mean "nothing yet".
+    if (initialContent === null || initialContent === undefined) return;
+    if (lastLoadedRef.current === initialContent) return;
+    // Our own onChange echoing back through the parent's state. By the time it
+    // arrives the user may have typed more, so comparing it with the editor's
+    // CURRENT text would see a difference and reload older text over newer
+    // (the cursor jumped to the start and typed text was scrambled).
+    if (emittedRef?.current === initialContent) {
+      lastLoadedRef.current = initialContent;
+      return;
     }
-  }, [editor, initialContent, hasLoaded]);
+
+    editor.update(() => {
+      const root = $getRoot();
+      // Skip the reload if the editor already holds exactly this content
+      // (self-echo from our own onChange).
+      const current = root.getTextContent();
+      lastLoadedRef.current = initialContent;
+      if (current === initialContent) return;
+
+      root.clear();
+      if (initialContent === '') {
+        root.append($createParagraphNode());
+        return;
+      }
+      // plain-text load: paragraphs from blank-line splits (markdown parsing
+      // dropped — see the note in handleChange)
+      const paragraphs = initialContent.split(/\n\n+/);
+      const nodes = paragraphs.map(paraText => {
+        const paragraph = $createParagraphNode();
+        const textNode = $createTextNode(paraText);
+        paragraph.append(textNode);
+        return paragraph;
+      });
+      root.append(...nodes);
+    });
+  }, [editor, initialContent]);
 
   return null;
 }
@@ -301,6 +322,9 @@ export default function RichTextEditor({
   const [showReadability, setShowReadability] = useState(true);
   const [grammarEnabled, setGrammarEnabled] = useState(true);
   const [currentText, setCurrentText] = useState(value);
+  // the last text this editor emitted, so LoadContentPlugin can tell our own
+  // echo from an external change
+  const emittedRef = useRef(null);
   const [stats, setStats] = useState({
     words: 0,
     characters: 0,
@@ -351,7 +375,13 @@ export default function RichTextEditor({
   const handleChange = (editorState) => {
     editorState.read(() => {
       const root = $getRoot();
+      // Chapters are stored as PLAIN TEXT. Markdown storage was tried and
+      // dropped: Lexical 0.37's serializer escapes prose ('2*3' -> '2\*3'),
+      // and the exporters printed raw ** and #. The markdown shortcut plugin
+      // went with it: it turned typed **bold** into formatting that plain-text
+      // storage then threw away (and the asterisks with it).
       const text = root.getTextContent();
+      emittedRef.current = text;
       setCurrentText(text);
       onChange(text);
     });
@@ -396,10 +426,9 @@ export default function RichTextEditor({
             {autoFocus && <AutoFocusPlugin />}
             <ListPlugin />
             <LinkPlugin />
-            <MarkdownShortcutPlugin transformers={TRANSFORMERS} />
             <OnChangePlugin onChange={handleChange} />
             <WordCounterPlugin onStatsChange={setStats} />
-            <LoadContentPlugin initialContent={value} />
+            <LoadContentPlugin initialContent={value} emittedRef={emittedRef} />
           </div>
 
           <StatsDisplay stats={stats} showStats={showStats} text={currentText} showReadability={showReadability} />

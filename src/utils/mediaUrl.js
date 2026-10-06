@@ -18,8 +18,12 @@ export function getMediaUrl(urlOrObject, bucketType = 'images') {
   if (typeof urlOrObject === 'object') {
     if (urlOrObject.storageKey) {
       const filename = urlOrObject.filename || extractFilename(urlOrObject.storageKey);
-      const bucket = urlOrObject.bucket || getBucketFromStorageKey(urlOrObject.storageKey);
-      return `/api/media/${bucket}/${filename}`;
+      // The storageKey's FIRST SEGMENT is the media type the route expects
+      // (images/audio/comics/videos — mediaStorage writes `${bucketType}/${filename}`).
+      // obj.bucket is a real BUCKET name (story-videos) — using it as the type
+      // made every saved audio/film/job file 400. Key wins.
+      const type = getBucketFromStorageKey(urlOrObject.storageKey);
+      return `/api/media/${type}/${filename}`;
     }
 
     // Legacy: object with imageUrl or audioUrl
@@ -32,6 +36,20 @@ export function getMediaUrl(urlOrObject, bucketType = 'images') {
 
   // If it's a string
   if (typeof urlOrObject === 'string') {
+    // A JSON-serialized upload record (job processors write uploadResult into
+    // TEXT columns) — parse and treat it as the object it is, else a bare
+    // storageKey/URL string.
+    if (urlOrObject.startsWith('{') && urlOrObject.includes('storageKey')) {
+      try {
+        return getMediaUrl(JSON.parse(urlOrObject));
+      } catch (e) { /* fall through to the plain-string path */ }
+    }
+    if (/^(images|audio|comics|videos)\//.test(urlOrObject)) {
+      // a bare storageKey — build its media route
+      const filename = extractFilename(urlOrObject);
+      const type = urlOrObject.split('/')[0];
+      return `/api/media/${type}/${filename}`;
+    }
     return normalizeUrl(urlOrObject);
   }
 

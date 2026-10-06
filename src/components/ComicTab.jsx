@@ -291,7 +291,10 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
   const saveComicPages = async () => {
     if (setData && saveBook) {
       setData(prev => ({ ...prev, comicPages, characterRefs }));
-      await saveBook();
+      // The save must carry THIS tick's state: `data` in the hook still holds
+      // the previous render's closure, so without the override the save sends
+      // the stale comic state (the old silent-data-loss path).
+      await saveBook({ comicPages, characterRefs });
       alert('Comic pages saved!');
     }
   };

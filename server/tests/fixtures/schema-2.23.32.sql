@@ -410,8 +410,7 @@ CREATE TRIGGER update_quotas_updated_at
 -- =============================================================================
 
 -- Active books with owner info
-DROP VIEW IF EXISTS active_books;
-CREATE VIEW active_books AS
+CREATE OR REPLACE VIEW active_books AS
 SELECT
   b.*,
   u.name as owner_name,
@@ -422,8 +421,7 @@ JOIN users u ON b.owner_id = u.id
 WHERE b.deleted_at IS NULL AND u.deleted_at IS NULL;
 
 -- User book count (for quota enforcement)
-DROP VIEW IF EXISTS user_book_counts;
-CREATE VIEW user_book_counts AS
+CREATE OR REPLACE VIEW user_book_counts AS
 SELECT
   owner_id,
   COUNT(*) as book_count,
@@ -510,20 +508,9 @@ $$ LANGUAGE plpgsql;
 -- Permissions for application user
 -- =============================================================================
 
--- The application role's name comes from the deployment (POSTGRES_USER);
--- hardcoding story_user fails a fresh install with a different role. Grant to
--- every role that can connect instead — same effect, no hardcoded name.
-DO $grants$
-DECLARE r RECORD;
-BEGIN
-  FOR r IN SELECT rolname FROM pg_roles WHERE rolcanlogin AND NOT rolname LIKE 'pg_%'
-  LOOP
-    EXECUTE format('GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO %I', r.rolname);
-    EXECUTE format('GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO %I', r.rolname);
-    EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO %I', r.rolname);
-  END LOOP;
-END
-$grants$;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO story_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO story_user;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO story_user;
 
 -- =============================================================================
 -- SCHEMA VERSION
