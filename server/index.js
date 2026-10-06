@@ -228,7 +228,10 @@ app.use(helmet({
   contentSecurityPolicy: {
     useDefaults: true,
     directives: {
-      "script-src": ["'self'"],
+      // 'unsafe-eval': epub-gen-memory compiles its EJS templates with
+      // new Function — without it every EPUB export throws. The theme
+      // pre-paint moved to /theme-init.js, so scripts stay non-inline.
+      "script-src": ["'self'", "'unsafe-eval'"],
       "style-src": ["'self'", "'unsafe-inline'"],
       "img-src": ["'self'", "data:", "blob:", "https://story-writing.solutionsai.co.uk"],
       "media-src": ["'self'", "blob:", "https://story-writing.solutionsai.co.uk"],
@@ -1179,14 +1182,30 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
-    // Bump token_version: other sessions must re-authenticate after a
-    // password change.
-    await getPool().query('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1', [userId]);
+    // Bump token_version: every OTHER session dies. Then hand THIS session a
+    // fresh token carrying the new version — the old code bumped without
+    // reissuing, signing out the very user who just changed their password.
+    const bump = await getPool().query(
+      'UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1 RETURNING token_version',
+      [userId]
+    );
+    const newVersion = bump.rows[0]?.token_version ?? 1;
+    const freshToken = jwt.sign(
+      { userId: req.user.userId || req.user.id, email: req.user.email, tokenVersion: newVersion },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    res.cookie('token', freshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
 
     console.log(`Password changed for user ${userId}`);
     sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
 
-    res.json({ message: 'Password changed successfully' });
+    res.json({ message: 'Password changed successfully', token: freshToken });
   } catch (error) {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
