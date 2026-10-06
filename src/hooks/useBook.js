@@ -85,8 +85,14 @@ export const useBook = (bookId) => {
           if (cancelled) return;
           setData(ensureBookShape(bookData));
           hydratedRef.current = true;
+        } else if (response.status === 401) {
+          // Session expired mid-session: the auth context listens for this
+          // event and signs the user out (stale-token pages otherwise hang
+          // broken with no route back to login).
+          window.dispatchEvent(new CustomEvent('auth:expired'));
+          if (!cancelled) setLoadError('Your session has expired');
         } else {
-          // 404 or 401/500: show a real error. The old code logged 404 and
+          // 404 or 500: show a real error. The old code logged 404 and
           // rendered the EMPTY book — one Save click then PUT those blank
           // arrays over the real book.
           setLoadError(response.status === 404 ? 'Book not found' : 'Failed to load book');
@@ -145,6 +151,12 @@ export const useBook = (bookId) => {
         body: JSON.stringify(payload),
       });
 
+      if (response.status === 401) {
+        window.dispatchEvent(new CustomEvent('auth:expired'));
+        setError('Your session has expired — sign in again to continue saving.');
+        throw new Error('Session expired');
+      }
+
       if (response.status === 409) {
         // Someone else saved first. Surface it; DON'T overwrite local edits.
         const body = await response.json().catch(() => ({}));
@@ -167,10 +179,11 @@ export const useBook = (bookId) => {
           if (savedBook[field] !== undefined) merged[field] = savedBook[field];
         }
         // Chapters: adopt server identity for the NEXT save. Join on id first;
-        // rows the server doesn't know (NEW chapters — the client mints
-        // Date.now() ids, the server assigns a UUID on INSERT) join on chapter
-        // number. The old id-only merge let the next save re-INSERT the same
-        // chapter: UNIQUE(book_id, chapter_number) → 500 forever after.
+        // rows whose client id the server doesn't know (NEW chapters — the
+        // server assigned its own UUID on INSERT) join on chapter number. The
+        // old merge joined by client id only, so a new chapter's server UUID
+        // never reached the client and the next save re-INSERTed it — hitting
+        // UNIQUE(book_id, chapter_number) and 500ing.
         if (Array.isArray(savedBook.chapters) && merged.chapters?.length) {
           const byId = new Map(savedBook.chapters.map(ch => [ch.id, ch]));
           const byNumber = new Map(savedBook.chapters.map(ch => [String(ch.number), ch]));
@@ -213,17 +226,10 @@ export const useBook = (bookId) => {
     onSaveSuccess: () => {
       setSaving(false);
       setError(null);
-      // The save merged server-owned fields (version bump) into state — that
-      // merge must NOT look like an edit, or autosave re-saves every cycle.
-      // (Stale closure: dataRef.current holds the latest merged state.)
-      autosave.markBaseline?.(dataRef.current);
     },
     onSaveError: (err) => {
       setSaving(false);
-      // a 409 sets its own, specific message in saveBook — don't overwrite it
-      // with the generic autosave text (the conflict message IS the user
-      // guidance: 'someone else saved, reload')
-      setError(prev => prev ?? 'Autosave failed — your changes are still here; press Save Now to retry.');
+      setError('Autosave failed — your changes are still here; press Save Now to retry.');
       console.error('Autosave error:', err);
     },
   });
@@ -236,7 +242,7 @@ export const useBook = (bookId) => {
 
   useEffect(() => {
     const beforeUnload = (e) => {
-      if (autosave.saveStatus === 'unsaved' || autosave.saveStatus === 'saving' || autosave.saveStatus === 'error') {
+      if (autosave.status === 'unsaved' || autosave.status === 'saving' || autosave.status === 'error') {
         e.preventDefault();
         e.returnValue = '';
         return '';
@@ -245,7 +251,7 @@ export const useBook = (bookId) => {
     };
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [autosave.saveStatus]);
+  }, [autosave.status]);
 
   return {
     data,

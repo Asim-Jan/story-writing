@@ -32,8 +32,30 @@ export async function runMigrations() {
   const { rows } = await query('SELECT name FROM schema_migrations');
   const applied = new Set(rows.map(r => r.name));
 
+  // BASELINE: the first boot on a database that predates the runner. The
+  // migration files 01–13 shipped long before it and their objects already
+  // exist in prod — re-running them on an empty schema_migrations table would
+  // re-apply everything to the live DB (and any failure there means
+  // process.exit(1) = an outage loop). If the schema is already populated,
+  // record 01–13 as applied; only the genuinely new files (z98, z99, and
+  // everything added after) actually run.
+  if (applied.size === 0) {
+    const booksTable = await query(`SELECT COUNT(*) AS n FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'books'`);
+    if (booksTable.rows[0].n > 0) {
+      const preRunner = files.filter(f => !f.startsWith('z'));
+      for (const f of preRunner) {
+        await query('INSERT INTO schema_migrations (name) VALUES ($1)', [f]);
+      }
+      console.log(`[migrate] baseline: marked ${preRunner.length} pre-runner migration(s) as applied on the existing schema`);
+    }
+  }
+
+  const { rows: rows2 } = await query('SELECT name FROM schema_migrations');
+  const finalApplied = new Set(rows2.map(r => r.name));
+
   for (const file of files) {
-    if (applied.has(file)) continue;
+    if (finalApplied.has(file)) continue;
 
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
     console.log(`[migrate] applying ${file}`);

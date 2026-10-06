@@ -55,6 +55,10 @@ export const AuthProvider = ({ children }) => {
     setToken(authToken);
     localStorage.setItem('token', authToken);
     localStorage.setItem('user', JSON.stringify(userData));
+    // AFTER the token lands — the subscription context refetches on this
+    // event; firing it first made the refetch run with no token (→ free tier
+    // until a full reload).
+    window.dispatchEvent(new CustomEvent('auth:changed'));
   };
 
   const logout = async () => {

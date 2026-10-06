@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
 import axios from 'axios';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
@@ -62,6 +63,7 @@ import * as engagementAnalytics from './services/engagementAnalytics.js';
 import * as costTracking from './services/costTracking.js';
 import { toCSV, setCSVHeaders, formatDateForCSV } from './utils/csvExporter.js';
 import { saiTextOf } from './utils/saiText.js';
+import { stripMarkdown } from './utils/markdown.js';
 import {
   imageQueue,
   audioQueue,
@@ -217,6 +219,27 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 2));
 app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true
+}));
+
+// Helmet: baseline headers. CSP is tightened to what this SPA actually loads
+// (self + Cloudflare-proxied media from our own host; Lexical needs no eval in
+// production). unsafe-inline styles stay — Tailwind's runtime styles and the
+// theme pre-paint script need it; scripts stay non-inline.
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "script-src": ["'self'"],
+      "style-src": ["'self'", "'unsafe-inline'"],
+      "img-src": ["'self'", "data:", "blob:", "https://story-writing.solutionsai.co.uk"],
+      "media-src": ["'self'", "blob:", "https://story-writing.solutionsai.co.uk"],
+      "connect-src": ["'self'", "https://api.solutionsai.co.uk"],
+      "font-src": ["'self'"],
+      "frame-ancestors": ["'none'"],
+      "object-src": ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // media loads need non-CORP responses
 }));
 
 // Stripe webhook handler (MUST be before express.json() to get raw body)
@@ -691,6 +714,14 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
+    // Token revocation: if the account's token_version has moved since this
+    // token was issued (password reset, logout-everywhere, suspension), the
+    // token is dead regardless of its 7-day expiry.
+    const currentTokenVersion = user.token_version ?? user.tokenVersion ?? 1;
+    if (decoded.tokenVersion !== undefined && decoded.tokenVersion !== currentTokenVersion) {
+      return res.status(401).json({ error: 'Session expired — please sign in again' });
+    }
+
     // Check if user account is suspended or banned
     if (user.status === 'suspended') {
       return res.status(403).json({
@@ -848,7 +879,7 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
     }
 
     // Generate JWT token using the actual DB user ID
-    const token = jwt.sign({ userId: actualUserId, email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: actualUserId, email, tokenVersion: createdUser.token_version ?? createdUser.tokenVersion ?? 1 }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
     res.cookie('token', token, {
@@ -950,7 +981,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
 
     // Generate JWT token
-    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.token_version ?? user.tokenVersion ?? 1 }, JWT_SECRET, { expiresIn: '7d' });
 
     // Set cookie
     res.cookie('token', token, {
@@ -1095,6 +1126,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
+    // Bump token_version: every issued JWT dies at the next request (the
+    // stolen-token case a password reset must always close).
+    await getPool().query('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1', [userId]);
+
     // Delete reset token
     await deletePasswordResetToken(token);
 
@@ -1145,10 +1180,30 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
+    // Bump token_version: every OTHER session dies. Then hand THIS session a
+    // fresh token carrying the new version — the old code bumped without
+    // reissuing, signing out the very user who just changed their password.
+    const bump = await getPool().query(
+      'UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1 RETURNING token_version',
+      [userId]
+    );
+    const newVersion = bump.rows[0]?.token_version ?? 1;
+    const freshToken = jwt.sign(
+      { userId: req.user.userId || req.user.id, email: req.user.email, tokenVersion: newVersion },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    res.cookie('token', freshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
     console.log(`Password changed for user ${userId}`);
     sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
 
-    res.json({ message: 'Password changed successfully' });
+    res.json({ message: 'Password changed successfully', token: freshToken });
   } catch (error) {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
@@ -3304,7 +3359,7 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
       // Map frontend fields to PostgreSQL fields
       const updates = {
         title: req.body.bookTitle || req.body.title,
-        description: req.body.description || req.body.overview,
+        description: req.body.description ?? req.body.overview,  // ?? not ||: an intentional empty overview must clear, not resurrect the old description
         genre: req.body.genre,
         target_audience: req.body.targetAudience || req.body.target_audience,
         characters: req.body.characters,
@@ -3328,6 +3383,48 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         custom_focus_areas: req.body.customFocusAreas
       };
 
+      // importedFrom/importAnalysis have no columns — they ride the metadata
+      // JSONB (the create path and the GET mapper do the same dance). The
+      // import flow UPDATES these fields after creation; without the fold the
+      // analyze-import record was lost on the first save.
+      if ((req.body.importedFrom || req.body.importAnalysis)) {
+        const md = { ...(req.body.metadata || {}) };
+        if (req.body.importedFrom) md.importedFrom = req.body.importedFrom;
+        if (req.body.importAnalysis) md.importAnalysis = req.body.importAnalysis;
+        updates.metadata = md;
+      }
+
+      // Collaborators live in their own TABLE, not the books row — the client
+      // sends the full list; sync it by email. The UI's add/remove now
+      // actually persists (it never did — the payload field was dropped).
+      if (Array.isArray(req.body.collaborators) && existing.collaborators !== undefined) {
+        const clientList = req.body.collaborators
+          .filter(c => c && c.email)
+          .map(c => ({ email: String(c.email).toLowerCase(), role: ['viewer', 'editor', 'admin'].includes(c.role) ? c.role : 'editor' }));
+        const dbList = await getPool().query('SELECT id, email FROM collaborators WHERE book_id = $1', [id]);
+        const dbEmails = new Set(dbList.rows.map(r => r.email));
+        const clientEmails = new Set(clientList.map(c => c.email));
+
+        for (const c of clientList) {
+          if (!dbEmails.has(c.email)) {
+            // resolve a user id when the email is registered (the access
+            // checks join on user_id)
+            const u = await getPool().query('SELECT id FROM users WHERE email = $1', [c.email]);
+            await getPool().query(
+              `INSERT INTO collaborators (book_id, email, role, status, user_id)
+               VALUES ($1, $2, $3, 'active', $4)
+               ON CONFLICT (book_id, email) DO UPDATE SET role = $3, status = 'active', user_id = $4`,
+              [id, c.email, c.role, u.rows[0]?.id || null]
+            );
+          }
+        }
+        for (const row of dbList.rows) {
+          if (!clientEmails.has(row.email)) {
+            await getPool().query('DELETE FROM collaborators WHERE id = $1', [row.id]);
+          }
+        }
+      }
+
       // Remove undefined fields
       Object.keys(updates).forEach(key => {
         if (updates[key] === undefined) {
@@ -3349,20 +3446,13 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
       try {
         var book = await updateBook(id, req.user.userId, updates, expectedVersion);
       } catch (saveError) {
-        const code = saveError.code || (saveError.message.includes('CONFLICT') ? 'CONFLICT' : null);
-        if (code === 'CONFLICT') {
+        if (saveError.message.includes('CONFLICT')) {
           const current = await getBook(id);
           return res.status(409).json({
             error: 'This book changed on the server while you were editing.',
             serverVersion: current?.version,
             serverUpdatedAt: current?.updated_at || current?.updatedAt
           });
-        }
-        if (code === 'FORBIDDEN') {
-          return res.status(403).json({ error: 'You do not have permission to edit this book' });
-        }
-        if (code === 'NOT_FOUND') {
-          return res.status(404).json({ error: 'Book not found' });
         }
         throw saveError;
       }
@@ -3510,6 +3600,22 @@ app.post('/api/generate', authenticateToken, aiLimiter, consumeAIQuota, async (r
       }
       if (context.plotlines && context.plotlines.length > 0) {
         contextString += `\n\nExisting Plotlines: ${context.plotlines.map(p => p.title).join(', ')}`;
+      }
+      // Chapter context: the client SENDS data.chapters (Timeline/plot-analysis/
+      // outline generations need to see the story so far) — the old builder
+      // dropped it and those generations ran blind.
+      if (context.chapters && context.chapters.length > 0) {
+        const chapterSummaries = context.chapters
+          .slice(0, 20)
+          .map(c => `Ch${c.number || '?'} ${c.title || 'Untitled'}: ${(c.summary || c.content || '').slice(0, 300)}`)
+          .join('\n');
+        contextString += `\n\nChapters So Far:\n${chapterSummaries}`;
+      }
+      if (context.timelines && context.timelines.length > 0) {
+        const events = context.timelines.slice(0, 20)
+          .map(t => `- ${t.title || t.name || 'Event'}${t.date ? ` (${t.date})` : ''}`)
+          .join('\n');
+        contextString += `\n\nTimeline Events:\n${events}`;
       }
     }
 
@@ -3968,13 +4074,6 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
   try {
     const { bookId, contentType, itemId, config } = req.body;
 
-    // the queue routes previously accepted ANY bookId — a job for someone
-    // else's book would run and read/write it
-    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
-      return res.status(403).json({ error: 'You do not have access to this book' });
-    }
-
     if (!bookId || !contentType) {
       return res.status(400).json({ error: 'bookId and contentType are required' });
     }
@@ -3998,13 +4097,6 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
 app.post('/api/jobs/queue/import', authenticateToken, aiLimiter, async (req, res) => {
   try {
     const { bookId, chapterIndex, chapter } = req.body;
-
-    // the queue routes previously accepted ANY bookId — a job for someone
-    // else's book would run and read/write it
-    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
-      return res.status(403).json({ error: 'You do not have access to this book' });
-    }
 
     if (!bookId || chapterIndex === undefined || !chapter) {
       return res.status(400).json({ error: 'bookId, chapterIndex, and chapter are required' });
@@ -4068,7 +4160,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // ==================== LEGACY SYNCHRONOUS ENDPOINTS (kept for backward compatibility) ====================
 
 // Image Generation endpoint using OpenAI DALL-E
-app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { prompt, context, size } = req.body;
 
@@ -4122,7 +4214,10 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0])).trim();
+      const enhanced = (saiTextOf(promptEnhancement.choices[0])).trim();
+      // a thinking-only response extracts to '' — keep the user's prompt
+      // rather than handing the image model an empty string
+      if (enhanced) enhancedPrompt = enhanced;
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
@@ -4546,7 +4641,7 @@ app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature
       console.log(`Generating audio for chapter ${i + 1}/${chapters.length}`);
 
       const buffer = await saiSpeech({
-        text: `Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`,
+        text: `Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${stripMarkdown(chapter.content)}`,
         voice: VOICE_MAP[voice] || voice,
         speed: speed,
       });
@@ -5858,7 +5953,7 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
 // ==================== GRAMMAR CHECK ENDPOINT ====================
 
 // Grammar and spell check using LanguageTool
-app.post('/api/grammar-check', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/grammar-check', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { text, language = 'en-US' } = req.body;
 
@@ -6289,8 +6384,9 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // getRPGData already returns the PARSED object — parsing it again threw
-    // 'Unexpected token o' and every GET 500'd (saved campaigns never loaded).
+    // Get RPG data — getRPGData already returns the PARSED object; parsing it
+    // again threw 'Unexpected token o' and every GET 500'd, so saved campaigns
+    // never loaded (and Generate then overwrote them).
     const rpgData = await getRPGData(bookId);
     if (!rpgData) {
       return res.json({ rpgData: null });
@@ -7214,7 +7310,7 @@ app.post('/api/users/api-keys', authenticateToken, async (req, res) => {
     const userKeys = await getRedisValue(userKeysKey);
     const keys = userKeys ? JSON.parse(userKeys) : [];
     keys.push(apiKey);
-    await setRedisValue(userKeysKey, keys);
+    await setRedisValue(userKeysKey, JSON.stringify(keys));  // SET takes a string — the raw array threw (the create 500)
 
     res.json({ success: true, apiKey, ...apiKeyData });
   } catch (error) {
@@ -7237,7 +7333,7 @@ app.get('/api/users/api-keys', authenticateToken, async (req, res) => {
     const keys = JSON.parse(userKeys);
     const keyDetails = await Promise.all(
       keys.map(async (key) => {
-        const keyInfo = await getApiKeyData();
+        const keyInfo = await getApiKeyData(key);  // the key was missing — every lookup was null and the list rendered empty forever
         if (keyInfo) {
           return {
             key: key.substring(0, 12) + '...' + key.substring(key.length - 4), // Masked
@@ -8425,7 +8521,7 @@ process.on('unhandledRejection', (reason) => {
 // A fresh install self-heals; a live one only runs what's new.
 (async () => {
   try {
-    const schemaPath = path.join(__dirname, 'db', 'schema.sql');
+    const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
     if (fs.existsSync(schemaPath)) {
       await getPool().query(readFileSync(schemaPath, 'utf8'));
       console.log('✓ schema.sql applied');

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Film, Play, Download, Trash2, Edit3, Loader, CheckCircle2, AlertCircle, Video } from 'lucide-react';
 import { getMediaUrl } from '../utils/mediaUrl';
 
-const AnimationStudioTab = ({ data, bookId, setData }) => {
+const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const [selectedTranscript, setSelectedTranscript] = useState('');
   const [parsedScenes, setParsedScenes] = useState(null);
   const [parsing, setParsing] = useState(false);
@@ -486,10 +486,10 @@ const AnimationStudioTab = ({ data, bookId, setData }) => {
                     <button
                       onClick={() => {
                         if (confirm('Delete this animation project?')) {
-                          setData(prev => ({
-                            ...prev,
-                            animationProjects: prev.animationProjects.filter(p => p.id !== project.id),
-                          }));
+                          const remaining = animationProjects.filter(p => p.id !== project.id);
+                          setData(prev => ({ ...prev, animationProjects: remaining }));
+                          // persist (setData alone never reached the server)
+                          if (saveBook) saveBook({ animationProjects: remaining }).catch(err => console.error('Animation delete save failed:', err));
                         }
                       }}
                       className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center gap-2"

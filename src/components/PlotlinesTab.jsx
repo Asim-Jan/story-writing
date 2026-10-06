@@ -17,6 +17,7 @@ const PlotlinesTab = ({
   editingId,
   generateWithAI,
   aiSuggestion,
+  setAiSuggestion,
   acceptAISuggestion,
   rejectAISuggestion,
   regenerateAISuggestion,

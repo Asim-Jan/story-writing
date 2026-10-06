@@ -18,11 +18,12 @@ export function getMediaUrl(urlOrObject, bucketType = 'images') {
   if (typeof urlOrObject === 'object') {
     if (urlOrObject.storageKey) {
       const filename = urlOrObject.filename || extractFilename(urlOrObject.storageKey);
-      // The storageKey's first segment IS the media type the route expects
-      // (images/audio/comics/videos). obj.bucket is a bucket NAME
-      // ('story-videos') — using it as the type 400'd every saved audio/film.
-      const bucket = getBucketFromStorageKey(urlOrObject.storageKey);
-      return `/api/media/${bucket}/${filename}`;
+      // The storageKey's FIRST SEGMENT is the media type the route expects
+      // (images/audio/comics/videos — mediaStorage writes `${bucketType}/${filename}`).
+      // obj.bucket is a real BUCKET name (story-videos) — using it as the type
+      // made every saved audio/film/job file 400. Key wins.
+      const type = getBucketFromStorageKey(urlOrObject.storageKey);
+      return `/api/media/${type}/${filename}`;
     }
 
     // Legacy: object with imageUrl or audioUrl

@@ -62,7 +62,9 @@ export async function storeJobMetadata(jobId, userId, bookId, type, data, origin
     ...(originalData ? { jobData: originalData } : {}),
   };
 
-  await redisClient.set(`job:${jobId}`, JSON.stringify(metadata), { EX: 86400 }); // 24 hour expiry
+  // the type prefix: Bull ids are per-queue sequences, so job:17 existed in
+  // every queue — the status store overwrote itself across queues.
+  await redisClient.set(`job:${type}:${jobId}`, JSON.stringify(metadata), { EX: 86400 });
 
   // Add to user's job list
   await redisClient.sAdd(`user:${userId}:jobs`, jobId);
@@ -72,7 +74,15 @@ export async function storeJobMetadata(jobId, userId, bookId, type, data, origin
 
 // Update job status
 export async function updateJobStatus(jobId, updates) {
-  const existing = await redisClient.get(`job:${jobId}`);
+  // processors don't know the queue — scan the known prefixes for the job
+  const types = ['image', 'audio', 'content', 'import', 'video'];
+  let existing = null;
+  let statusKey = null;
+  for (const t of types) {
+    statusKey = `job:${t}:${jobId}`;
+    existing = await redisClient.get(statusKey);
+    if (existing) break;
+  }
   if (!existing) return null;
 
   const metadata = JSON.parse(existing);
@@ -82,12 +92,18 @@ export async function updateJobStatus(jobId, updates) {
     updatedAt: new Date().toISOString(),
   };
 
-  await redisClient.set(`job:${jobId}`, JSON.stringify(updated), { EX: 86400 });
+  await redisClient.set(statusKey, JSON.stringify(updated), { EX: 86400 });
   return updated;
 }
 
 // Get job status
 export async function getJobStatus(jobId) {
+  const types = ['image', 'audio', 'content', 'import', 'video'];
+  for (const t of types) {
+    const data = await redisClient.get(`job:${t}:${jobId}`);
+    if (data) return JSON.parse(data);
+  }
+  // legacy unprefixed keys (jobs stored before the collision fix)
   const data = await redisClient.get(`job:${jobId}`);
   return data ? JSON.parse(data) : null;
 }
@@ -97,8 +113,8 @@ export async function getUserJobs(userId, limit = 50) {
   const jobIds = await redisClient.sMembers(`user:${userId}:jobs`);
   const jobs = await Promise.all(
     jobIds.slice(0, limit).map(async (id) => {
-      const data = await redisClient.get(`job:${id}`);
-      return data ? JSON.parse(data) : null;
+      const data = await getJobStatus(id);
+      return data;
     })
   );
 

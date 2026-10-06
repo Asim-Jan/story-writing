@@ -264,6 +264,12 @@ const ProfilePage = ({ onBack }) => {
       });
 
       if (response.ok) {
+        // the server reissues this session's token (other sessions die);
+        // adopt it or the next authenticated call 401s
+        const data = await response.json().catch(() => ({}));
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
         setMessage({ type: 'success', text: 'Password changed successfully!' });
         setPasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
         setTimeout(() => setMessage(null), 3000);

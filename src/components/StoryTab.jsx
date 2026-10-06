@@ -374,7 +374,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
 
       if (chapter.content) {
         // Split content into paragraphs
-        const paragraphs = chapter.content.split(/\n\n+/);
+        const paragraphs = stripMarkdown(chapter.content).split(/\n\n+/);
 
         paragraphs.forEach((paragraph, pIndex) => {
           if (paragraph.trim()) {
@@ -551,7 +551,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
 
       // Chapter content
       if (chapter.content) {
-        const paragraphs = chapter.content.split(/\n\n+/);
+        const paragraphs = stripMarkdown(chapter.content).split(/\n\n+/);
         paragraphs.forEach((para) => {
           if (para.trim()) {
             sections.push(

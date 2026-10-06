@@ -749,6 +749,15 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           </div>
         </header>
 
+        {/* Save errors are DATA-LOSS warnings — they must be seen. The old
+            code set error and rendered nothing, so a failed save silently
+            looked like a save. */}
+        {error && (
+          <div className="mx-4 sm:mx-6 mt-2 border border-[var(--red)] text-[var(--red)] text-sm px-3 py-2">
+            {error}
+          </div>
+        )}
+
         {/* Quota Banner */}
         {/* Save errors are DATA-LOSS warnings — they must be seen. The old
             code set error and rendered nothing, so a failed save silently
@@ -1044,6 +1053,10 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             <ChaptersTabView
               data={data}
               setData={setData}
+              onUpgrade={(props) => {
+                setUpgradeModalProps(props);
+                setShowUpgradeModal(true);
+              }}
               chapterForm={chapterForm}
               setChapterForm={setChapterForm}
               addChapter={addChapter}
@@ -1219,6 +1232,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               data={data}
               bookId={bookId}
               setData={setData}
+              saveBook={saveBook}
             />
           )}
 

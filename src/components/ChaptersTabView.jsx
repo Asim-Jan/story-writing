@@ -28,8 +28,8 @@ const ChaptersTabView = ({
   setShowAIHelper,
   aiPrompt,
   setAiPrompt,
-  setAiContext
-}) => {
+  setAiContext,
+  onUpgrade}) => {
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [viewMode, setViewMode] = useState('list');
   const [showGeneratorModal, setShowGeneratorModal] = useState(false);
@@ -104,7 +104,13 @@ const ChaptersTabView = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 403 && onUpgrade) {
+          // tier-gated: open the upgrade modal instead of a dead-end alert
+          onUpgrade({ featureName: 'Chapter cover images', requiredTier: 'Basic', requiredFeature: 'media_generation' });
+          setGeneratingImage(null);
+          return;
+        }
         throw new Error(errorData.error || 'Failed to generate image');
       }
 

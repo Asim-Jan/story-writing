@@ -381,6 +381,13 @@ export class BookDataService {
     if (mapped.transcripts === undefined && mapped.transcripts !== null) {
       // JSONB default '[]'
     }
+    // hoist the import bookkeeping out of metadata JSONB
+    if (mapped.metadata?.importedFrom && !mapped.importedFrom) {
+      mapped.importedFrom = mapped.metadata.importedFrom;
+    }
+    if (mapped.metadata?.importAnalysis && !mapped.importAnalysis) {
+      mapped.importAnalysis = mapped.metadata.importAnalysis;
+    }
     if (mapped.description && !mapped.overview) {
       // The editor binds data.overview; the schema stores description. Map it
       // BACK so a reload doesn't blank the overview textarea (the save writes
@@ -458,6 +465,15 @@ export class BookDataService {
     }
     if (!bookDataWithoutChapters.audio_files && bookDataWithoutChapters.audioFiles) {
       bookDataWithoutChapters.audio_files = bookDataWithoutChapters.audioFiles;
+    }
+    // importedFrom/importAnalysis have no columns of their own — they live in
+    // the metadata JSONB. The GET mapper hoists them back out, so the Import
+    // Info tab works and analyze-import can find its record.
+    {
+      const md = { ...(bookDataWithoutChapters.metadata || {}) };
+      if (bookDataWithoutChapters.importedFrom) md.importedFrom = bookDataWithoutChapters.importedFrom;
+      if (bookDataWithoutChapters.importAnalysis) md.importAnalysis = bookDataWithoutChapters.importAnalysis;
+      if (md.importedFrom || md.importAnalysis) bookDataWithoutChapters.metadata = md;
     }
 
     // Write to PostgreSQL if enabled
@@ -586,23 +602,17 @@ export class BookDataService {
     // blank-book client save could hard-delete chapters with no way back.
     // Errors now propagate: conflict -> 409, anything else -> 500. Never a silent 200.
     if (features.shouldWriteToPostgres()) {
-      let finalVersion = null;
-      let finalUpdatedAt = null;
       book = await transaction(async (client) => {
-        // The book row runs ON the transaction client (blocker (a)/(d): the
-        // pool call let the stats UPDATE commit its own version bump outside
-        // the transaction and returned a version the DB had already left).
-        let updated = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1, client);
+        let updated = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1);
         if (updated) {
           updated = this.mapBookFieldsFromPostgres(updated);
         }
 
-        let updatedChapters = null;
         if (chapters && Array.isArray(chapters)) {
           await this.syncChaptersInClient(client, bookId, chapters);
           // reload ON THE TRANSACTION CLIENT — a pool read here would see the
           // pre-commit snapshot (versions one step behind what was just written)
-          updatedChapters = (await client.query(
+          const updatedChapters = (await client.query(
             'SELECT * FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number ASC',
             [bookId]
           )).rows;
@@ -611,11 +621,11 @@ export class BookDataService {
           }
         }
 
-        // FINAL version read, after every statement in this save: the books
-        // trigger bumps the version on EVERY UPDATE of the row (the field
-        // update AND the stats update = two bumps per save). The client must
-        // store the REAL final version or its next save 409s against a
-        // version that never existed from its point of view.
+        // FINAL version read: the books trigger bumps the version on EVERY
+        // UPDATE (the row update AND the stats update = two bumps per save).
+        // The client must store the REAL final version, or its next save
+        // conflicts with a version that never existed from its point of view
+        // (the '409 on every second save' bug). Same for chapter versions.
         if (updated) {
           const final = (await client.query(
             'SELECT version, updated_at FROM books WHERE id = $1',
