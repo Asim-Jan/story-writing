@@ -21,13 +21,17 @@ export function chunkText(text, maxChars = 4000) {
       current = sentence;
       continue;
     }
-    // a single sentence longer than the limit: split by words
+    // a single sentence longer than the limit: split by words, and a "word"
+    // longer than the limit (text with no spaces, e.g. CJK) by characters
     for (const word of sentence.split(' ')) {
-      if ((current + ' ' + word).length > maxChars && current) {
-        chunks.push(current.trim());
-        current = word;
-      } else {
-        current = current ? `${current} ${word}` : word;
+      const pieces = word.length > maxChars ? word.match(new RegExp(`[\\s\\S]{1,${maxChars}}`, 'g')) : [word];
+      for (const piece of pieces) {
+        if ((current + ' ' + piece).length > maxChars && current) {
+          chunks.push(current.trim());
+          current = piece;
+        } else {
+          current = current ? `${current} ${piece}` : piece;
+        }
       }
     }
   }
@@ -65,13 +69,14 @@ export function mergeWav(buffers) {
  * Speak text of any length. `voice` may be a friendly name (alloy, nova...) or
  * a bridge voice id (en-emma_woman). onChunk(i, n) reports progress.
  */
-export async function speakLongText(text, { voice = 'alloy', onChunk } = {}) {
+export async function speakLongText(text, { voice = 'alloy', speed = 1.0, onChunk } = {}) {
   const selectedVoice = VOICE_MAP[voice] || voice;
-  const chunks = chunkText(text);
+  const chunks = chunkText(String(text || ''));
+  if (chunks.length === 0) throw Object.assign(new Error('There is no text to speak'), { status: 400 });
   const buffers = [];
   for (let i = 0; i < chunks.length; i++) {
     if (onChunk) await onChunk(i, chunks.length);
-    buffers.push(await saiSpeech({ text: chunks[i], voice: selectedVoice }));
+    buffers.push(await saiSpeech({ text: chunks[i], voice: selectedVoice, speed }));
   }
   return { buffer: mergeWav(buffers), voice: selectedVoice, chunks: chunks.length };
 }

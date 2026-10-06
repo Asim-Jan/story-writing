@@ -146,14 +146,21 @@ export async function generateReference({ user, bookId, kind, character, sourceI
   }
 
   // The portrait itself is drawn from the description; every other kind edits
-  // the source picture when there is one.
-  const image = kind !== 'portrait' && source ? await mediaUrlToDataUrl(user, source) : undefined;
-  const reference = await renderAndStore({
-    user, bookId, spec,
-    prompt: (promptOverride || spec.prompt).slice(0, 2000),
-    image,
-    sourceImageUrl: image ? source : null,
-    characterId: character.id,
-  });
-  return { reference, portrait };
+  // the source picture when there is one. If the sheet fails after a portrait
+  // was made, the error carries the portrait so it isn't lost (it's stored,
+  // and the next attempt would otherwise draw a different one).
+  try {
+    const image = kind !== 'portrait' && source ? await mediaUrlToDataUrl(user, source) : undefined;
+    const reference = await renderAndStore({
+      user, bookId, spec,
+      prompt: (promptOverride || spec.prompt).slice(0, 2000),
+      image,
+      sourceImageUrl: image ? source : null,
+      characterId: character.id,
+    });
+    return { reference, portrait };
+  } catch (error) {
+    if (portrait) error.portrait = portrait;
+    throw error;
+  }
 }

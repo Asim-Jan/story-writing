@@ -4410,6 +4410,11 @@ async function checkReferenceRequest(req, res) {
   return true;
 }
 
+// A reference can take minutes (a cold portrait, then a sheet), and the site
+// sits behind Cloudflare, which drops any request that sends nothing for
+// 100 s. So the POST starts a job and returns 202 at once; the client polls
+// GET /api/characters/reference/jobs/:jobId. The job state lives in Redis for
+// a day. One quota slot per job, refunded only if nothing was produced.
 app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, kind, character, sourceImageUrl, style, prompt } = req.body || {};
@@ -4417,10 +4422,48 @@ app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeatu
       return res.status(400).json({ error: `kind must be one of: ${REFERENCE_KINDS.join(', ')}` });
     }
     if (!(await checkReferenceRequest(req, res))) return;
-    const result = await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, prompt });
-    res.json(result);
+
+    const userId = req.user.userId;
+    const jobId = uuidv4();
+    const key = `charref:${jobId}`;
+    const redis = await getRedisClient();
+    await redis.set(key, JSON.stringify({ userId, kind, status: 'running', startedAt: new Date().toISOString() }), { EX: 86400 });
+    res.status(202).json({ jobId, status: 'running' });
+
+    (async () => {
+      let state;
+      try {
+        state = { status: 'done', ...(await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, prompt })) };
+      } catch (error) {
+        console.error('Character reference job failed:', error.message);
+        state = {
+          status: 'failed',
+          error: error.status ? error.message : 'Image generation failed',
+          detail: error.status ? undefined : error.message,
+          portrait: error.portrait || null,
+        };
+        if (!error.portrait) await refundAIQuota(userId).catch(err => console.error('AI quota refund failed:', err.message));
+      }
+      await redis.set(key, JSON.stringify({ userId, kind, ...state, finishedAt: new Date().toISOString() }), { EX: 86400 });
+    })().catch(err => console.error('Character reference job bookkeeping failed:', err.message));
   } catch (error) {
     referenceError(res, error);
+  }
+});
+
+app.get('/api/characters/reference/jobs/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const redis = await getRedisClient();
+    const raw = await redis.get(`charref:${req.params.jobId}`);
+    const job = raw ? JSON.parse(raw) : null;
+    if (!job || job.userId !== req.user.userId) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    const { userId, ...state } = job;
+    res.status(job.status === 'running' ? 202 : 200).json(state);
+  } catch (error) {
+    console.error('Character reference job lookup failed:', error.message);
+    res.status(500).json({ error: 'Failed to read the job' });
   }
 });
 
@@ -4453,6 +4496,9 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
       portrait,
     });
   } catch (error) {
+    if (error.portrait) {
+      return res.status(502).json({ error: 'Image generation failed', detail: error.message, portrait: error.portrait });
+    }
     referenceError(res, error);
   }
 });
@@ -4575,7 +4621,7 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
     await getUserOpenAI(req.user.userId);
 
     // Long text is spoken in pieces and merged into one valid WAV
-    const { buffer: finalBuffer } = await speakLongText(text, { voice: selectedVoice });
+    const { buffer: finalBuffer } = await speakLongText(text, { voice: selectedVoice, speed });
 
     // Upload to MinIO (the bridge returns WAV)
     const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}-${uuidv4().slice(0, 8)}.wav`;
@@ -4597,6 +4643,7 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
       bucket: uploadResult.bucket,
     });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error('TTS generation error:', error);
     console.error('Error stack:', error.stack);
 
@@ -4659,6 +4706,7 @@ app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature
       // a whole chapter is far past one TTS request: speak it in pieces
       const { buffer } = await speakLongText(`Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`, {
         voice: VOICE_MAP[voice] || voice,
+        speed,
       });
 
       const usedVoice = VOICE_MAP[voice] || voice;

@@ -33,6 +33,29 @@ export const postJson = async (url, body) => {
   return result;
 };
 
+// Make a reference. The server answers 202 with a job id at once (a sheet can
+// take minutes, longer than Cloudflare lets a silent request live), so poll
+// until it's done. A failure after the base portrait was made still returns
+// the portrait on the error (err.partial), so the caller can keep it.
+export const runReferenceJob = async (body) => {
+  const { jobId } = await postJson('/api/characters/reference', body);
+  const token = localStorage.getItem('token');
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 4000));
+    const response = await fetch(`/api/characters/reference/jobs/${jobId}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      credentials: 'include',
+    });
+    if (response.status === 202) continue;
+    const job = await response.json().catch(() => null);
+    if (!response.ok || !job) throw new Error(job?.error || `Request failed (${response.status})`);
+    if (job.status === 'done') return job;
+    const err = new Error(job.detail ? `${job.error}: ${job.detail}` : (job.error || 'Image generation failed'));
+    if (job.portrait) err.partial = { reference: null, portrait: job.portrait };
+    throw err;
+  }
+};
+
 // The character as the server needs it: the reference history is client-side
 // bookkeeping and only bloats the request.
 // eslint-disable-next-line no-unused-vars
@@ -102,11 +125,12 @@ const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
     setElapsed(0);
     setRunning({ kind, startedAt: Date.now() });
     try {
-      const result = await postJson('/api/characters/reference', { bookId, kind, character: characterFields(character), style });
+      const result = await runReferenceJob({ bookId, kind, character: characterFields(character), style });
       if (!result?.reference?.imageUrl) throw new Error('The server returned no image');
       updateCharacter(c => addReferences(c, result));
     } catch (err) {
-      setError(err.message);
+      if (err.partial) updateCharacter(c => addReferences(c, err.partial));
+      setError(err.partial ? `${err.message} (the base portrait was kept)` : err.message);
     } finally {
       setRunning(null);
     }

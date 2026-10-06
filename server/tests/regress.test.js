@@ -97,6 +97,11 @@ async function fakeGateway() {
       requests.push({ path: req.url, body: parsed });
       if (req.url.endsWith('/images/generations')) {
         res.setHeader('Content-Type', 'application/json');
+        if (parsed?.model === 'character-sheet-quad' || body.includes('GATEWAY_FAIL')) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: 'render failed', type: 'media_bridge_error' } }));
+          return;
+        }
         res.end(JSON.stringify({ created: 0, model: parsed?.model, data: [{ b64_json: PNG_B64 }] }));
         return;
       }
@@ -410,6 +415,17 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   const imageCalls = () => gateway.requests.filter(q => q.path.endsWith('/images/generations'));
   const usedQuota = async () => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [owner.id])).rows[0].ai_requests_today;
   const character = { id: 'c1', name: 'Mira', gender: 'woman', age: 30, hairColor: 'copper', eyeColor: 'grey', build: 'wiry' };
+  // POST starts a job (202 + jobId); poll until it finishes
+  const refJob = async (token, body) => {
+    const start = await call('POST', '/api/characters/reference', token, body);
+    if (start.status !== 202) return start;
+    for (let i = 0; i < 100; i++) {
+      await new Promise(res => setTimeout(res, 100));
+      const r = await call('GET', `/api/characters/reference/jobs/${start.json.jobId}`, token);
+      if (r.status !== 202) return { ...r, jobId: start.json.jobId };
+    }
+    return { status: 0, json: { error: 'timed out' } };
+  };
 
   let r = await call('POST', '/api/characters/reference-prompt', owner.token, { kind: 'qwen-sheet', character, style: 'ink' });
   check('reference-prompt: Qwen sheet prompt carries the character', r.status === 200 && r.json.model === 'qwen-image-2.1' && /copper hair/.test(r.json.prompt) && r.json.size === '1536x1024',
@@ -422,9 +438,9 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   // turnaround with no portrait: a portrait first, then the sheet as an EDIT of it
   const before = imageCalls().length;
   const q0 = await usedQuota();
-  r = await call('POST', '/api/characters/reference', owner.token, { bookId: book.id, kind: 'turnaround', character });
+  r = await refJob(owner.token, { bookId: book.id, kind: 'turnaround', character });
   const made = imageCalls().slice(before);
-  check('turnaround without a portrait = 200 with reference + portrait', r.status === 200 && r.json?.reference?.kind === 'turnaround' && r.json?.portrait?.kind === 'portrait',
+  check('turnaround without a portrait: job done with reference + portrait', r.status === 200 && r.json?.status === 'done' && r.json?.reference?.kind === 'turnaround' && r.json?.portrait?.kind === 'portrait',
     `status ${r.status} ${JSON.stringify(r.json).slice(0, 200)}`);
   check('...the portrait is text-to-image (flux2-klein-9b, no input image)', made[0]?.body?.model === 'flux2-klein-9b' && !made[0]?.body?.image);
   check('...the sheet is character-sheet WITH the portrait as a data URL, at 1536x1024',
@@ -436,17 +452,32 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   check('...the sheet is readable by its owner', img.status === 200);
   img = await fetch(`${call.base}${refUrl}`, { headers: { Authorization: `Bearer ${stranger.token}` } });
   check('...and not by another user', img.status === 404);
+  const peek = await call('GET', `/api/characters/reference/jobs/${r.jobId}`, stranger.token);
+  check('...and the job itself is not readable by another user', peek.status === 404, `got ${peek.status}`);
+  const turnaroundJson = r.json;
+
+  // a sheet that fails after its portrait: the portrait comes back, slot kept
+  const qa = await usedQuota();
+  r = await refJob(owner.token, { bookId: book.id, kind: 'turnaround-quad', character });
+  await new Promise(res => setTimeout(res, 300));
+  check('a failed sheet still returns the portrait it made', r.json?.status === 'failed' && r.json?.portrait?.kind === 'portrait', JSON.stringify(r.json).slice(0, 200));
+  check('...and keeps the quota slot (a render was produced)', (await usedQuota()) === qa + 1, `${qa} -> ${await usedQuota()}`);
+  // nothing produced at all: refunded
+  const qb = await usedQuota();
+  r = await refJob(owner.token, { bookId: book.id, kind: 'portrait', character: { ...character, name: 'GATEWAY_FAIL' } });
+  await new Promise(res => setTimeout(res, 300));
+  check('a job that produced nothing fails and refunds the slot', r.json?.status === 'failed' && !r.json?.portrait && (await usedQuota()) === qb, `${qb} -> ${await usedQuota()} ${JSON.stringify(r.json).slice(0, 120)}`);
 
   // using someone else's image as the source is refused
-  r = await call('POST', '/api/characters/reference', stranger.token, { kind: 'turnaround', character: { ...character, imageUrl: refUrl } });
-  check('another user\'s image as the source = 404', r.status === 404, `got ${r.status}`);
+  r = await refJob(stranger.token, { kind: 'turnaround', character: { ...character, imageUrl: refUrl } });
+  check('another user\'s image as the source fails (not found)', r.json?.status === 'failed' && /not found/i.test(r.json?.error || ''), JSON.stringify(r.json).slice(0, 160));
 
   // the Comic tab's old route works again
-  r = await call('POST', '/api/generate-character-reference', owner.token, { bookId: book.id, characterId: 'c1', character: { ...character, imageUrl: r.json?.portrait?.imageUrl || refUrl } });
+  r = await call('POST', '/api/generate-character-reference', owner.token, { bookId: book.id, characterId: 'c1', character: { ...character, imageUrl: turnaroundJson?.portrait?.imageUrl || refUrl } });
   check('old /api/generate-character-reference = 200 with imageUrl', r.status === 200 && /^\/api\/media\/images\//.test(r.json?.imageUrl || ''), `got ${r.status} ${JSON.stringify(r.json).slice(0, 160)}`);
 
   // a comic panel with one character who has a portrait is a Qwen edit of it
-  const portraitUrl = (await call('POST', '/api/characters/reference', owner.token, { bookId: book.id, kind: 'portrait', character })).json?.reference?.imageUrl;
+  const portraitUrl = (await refJob(owner.token, { bookId: book.id, kind: 'portrait', character })).json?.reference?.imageUrl;
   const b2 = imageCalls().length;
   r = await call('POST', '/api/generate-comic-panel', owner.token, { bookId: book.id, sceneDescription: 'she opens the door', characters: [{ ...character, imageUrl: portraitUrl }] });
   const panel = imageCalls()[b2];

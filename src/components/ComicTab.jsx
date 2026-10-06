@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Book, Image as ImageIcon, Plus, Trash2, Wand2, Loader, Save, Eye, Download, Grid, Layout, Film, FileText } from 'lucide-react';
 import ComicExportModal from './ComicExportModal';
-import { postJson, addReferences, characterFields } from './CharacterReferences';
+import { runReferenceJob, addReferences, characterFields } from './CharacterReferences';
 import { ComicRenderer } from '../utils/comicRenderer';
 import { CBZExporter } from '../utils/cbzExporter';
 import { ComicPDFExporter } from '../utils/comicPdfExporter';
@@ -44,7 +44,7 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
   const generateCharacterReference = async (character) => {
     setGeneratingRef(character.id);
     try {
-      const result = await postJson('/api/characters/reference', {
+      const result = await runReferenceJob({
         bookId: data?.id,
         kind: 'turnaround',
         character: characterFields(character),
