@@ -1,7 +1,7 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import { extractJSON } from '../utils/extractJSON.js';
 import dotenv from 'dotenv';
-import { saiTextOf } from './utils/saiText.js';
+import { saiTextOf } from '../utils/saiText.js';
 
 dotenv.config();
 
