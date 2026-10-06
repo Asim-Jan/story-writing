@@ -4499,8 +4499,12 @@ function mediaJobRunner(req) {
         if (event.stage === 'scene-complete') mark(event.sceneNumber, { status: 'completed', videoUrl: event.result?.videoUrl });
         if (event.stage === 'scene-failed') mark(event.sceneNumber, { status: 'failed', error: event.error });
         const done = status.filter(r => r.status === 'completed' || r.status === 'failed').length;
+        const rendering = status.find(r => r.status === 'rendering');
+        const message = event.stage === 'assembling' ? event.message
+          : rendering ? `Rendering scene ${rendering.sceneNumber} of ${scenes.length}`
+          : `${done} of ${scenes.length} scenes rendered`;
         return report({
-          message: event.stage === 'assembling' ? event.message : `Rendering scene ${Math.min(done + 1, scenes.length)} of ${scenes.length}`,
+          message,
           current: done, total: scenes.length, scenes: status.map(r => ({ ...r })),
         });
       },
