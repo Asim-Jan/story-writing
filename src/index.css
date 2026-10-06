@@ -160,6 +160,16 @@ input:focus, textarea:focus, select:focus {
 :root[data-theme="light"] :not(.min-h-screen)[class*="bg-gradient-"] { color: #fff !important; }
 html[data-theme="dark"] :not(.min-h-screen)[class*="bg-gradient-"] { color: var(--bg) !important; background-color: var(--ink) !important; }
 [class*="bg-clip-text"] { background-image: none !important; }
+/* LIGHT gradient PANELS (from-*-50/100/200: section headers, info cards)
+   are surfaces, not buttons. The button rule above painted them solid blue
+   under their own dark text, so titles and icons vanished (chapter headers
+   in the Story tab, 16 components in all). They flatten to a raised panel
+   tone and keep the theme's text colours. Specificity 0,4,1 beats the
+   button rules (0,4,0 light text, 0,3,1 dark fill). */
+html :not(.min-h-screen)[class*="bg-gradient-"][class*="from-"]:is(.from-slate-50, .from-slate-100, .from-slate-200, .from-gray-50, .from-gray-100, .from-gray-200, .from-zinc-50, .from-zinc-100, .from-zinc-200, .from-neutral-50, .from-neutral-100, .from-neutral-200, .from-stone-50, .from-stone-100, .from-stone-200, .from-red-50, .from-red-100, .from-red-200, .from-orange-50, .from-orange-100, .from-orange-200, .from-amber-50, .from-amber-100, .from-amber-200, .from-yellow-50, .from-yellow-100, .from-yellow-200, .from-lime-50, .from-lime-100, .from-lime-200, .from-green-50, .from-green-100, .from-green-200, .from-emerald-50, .from-emerald-100, .from-emerald-200, .from-teal-50, .from-teal-100, .from-teal-200, .from-cyan-50, .from-cyan-100, .from-cyan-200, .from-sky-50, .from-sky-100, .from-sky-200, .from-blue-50, .from-blue-100, .from-blue-200, .from-indigo-50, .from-indigo-100, .from-indigo-200, .from-violet-50, .from-violet-100, .from-violet-200, .from-purple-50, .from-purple-100, .from-purple-200, .from-fuchsia-50, .from-fuchsia-100, .from-fuchsia-200, .from-pink-50, .from-pink-100, .from-pink-200, .from-rose-50, .from-rose-100, .from-rose-200) {
+  background-color: var(--glass2) !important;
+  color: inherit !important;
+}
 
 /* softening: the old look's translucent blacks (bg-opacity-50 scrims) */
 .bg-black.bg-opacity-50, .bg-black\/50 { background: rgba(10,14,16,.55) !important; }
@@ -185,6 +195,16 @@ html[data-theme="dark"] .text-gray-500,
 html[data-theme="dark"] .text-slate-600,
 html[data-theme="dark"] .text-slate-500,
 html[data-theme="dark"] .text-gray-400 { color: var(--dim); }
+/* accent text (word counts, links, labels): the config's ORDNANCE blue is
+   the LIGHT theme's dark #29506E, unreadable on the night surfaces; use the
+   dark theme's own blue */
+html[data-theme="dark"] .text-purple-600,
+html[data-theme="dark"] .text-purple-700,
+html[data-theme="dark"] .text-indigo-600,
+html[data-theme="dark"] .text-indigo-700,
+html[data-theme="dark"] .text-blue-600,
+html[data-theme="dark"] .text-blue-700,
+html[data-theme="dark"] .text-violet-600 { color: var(--blue); }
 html[data-theme="dark"] .bg-white { background-color: var(--bg2); }
 html[data-theme="dark"] .bg-gray-50,
 html[data-theme="dark"] .bg-gray-100,
