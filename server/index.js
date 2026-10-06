@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import axios from 'axios';
 import { speakLongText } from './utils/speech.js';
 import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './services/mediaJobs.js';
+import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
@@ -2045,6 +2046,65 @@ app.put('/api/admin/content-flags/:flagId',
 );
 
 // Get system statistics
+// ==================== AI MODELS (the chat backbone) ====================
+// Which gateway model each role uses. Changes apply within 15 s in every
+// process, no redeploy (services/aiModels.js).
+
+async function gatewayChatModels() {
+  try {
+    const list = await getSAIClient().models.list();
+    return (list.data || []).map(m => m.id).filter(id => !/decide/i.test(id)).sort();
+  } catch (err) {
+    console.warn('Gateway model list failed:', err.message);
+    return [];
+  }
+}
+
+app.get('/api/admin/ai-models', authenticateToken, requireAdmin, async (req, res) => {
+  const settings = await getModelSettings();
+  res.json({
+    roles: Object.fromEntries(Object.entries(MODEL_ROLES).map(([key, r]) => [key, {
+      label: r.label, description: r.description, model: settings[key], default: r.fallback,
+    }])),
+    available: await gatewayChatModels(),
+  });
+});
+
+app.put('/api/admin/ai-models', authenticateToken, requireAdmin, async (req, res) => {
+  const available = await gatewayChatModels();
+  const wanted = {};
+  for (const role of Object.keys(MODEL_ROLES)) {
+    const model = req.body?.[role];
+    if (model === undefined) continue;
+    if (typeof model !== 'string' || (available.length && !available.includes(model))) {
+      return res.status(400).json({ error: `${role}: "${model}" is not a model this app's key can use`, available });
+    }
+    wanted[role] = model;
+  }
+  const settings = await saveModelSettings({ ...(await getModelSettings()), ...wanted }, req.user.userId);
+  await getPool().query(
+    `INSERT INTO admin_audit_log (admin_id, action, target_user_id, changes) VALUES ($1, $2, $3, $4)`,
+    [req.user.userId, 'ai_models_updated', null, JSON.stringify(settings)]
+  ).catch(err => console.warn('audit log write failed:', err.message));
+  res.json({ roles: settings });
+});
+
+// One short call through a model, so the dashboard can show it answers and how fast.
+app.post('/api/admin/ai-models/test', authenticateToken, requireAdmin, async (req, res) => {
+  const model = String(req.body?.model || '');
+  if (!model) return res.status(400).json({ error: 'model is required' });
+  const started = Date.now();
+  try {
+    const completion = await getSAIClient().chat.completions.create({
+      model, max_tokens: 40, temperature: 0.2,
+      messages: [{ role: 'user', content: 'Reply with one short sentence describing a lighthouse at dusk.' }],
+    }, { timeout: 60000, maxRetries: 0 });
+    res.json({ ok: true, model: completion.model || model, ms: Date.now() - started, reply: saiTextOf(completion.choices?.[0]).slice(0, 200) });
+  } catch (err) {
+    res.status(502).json({ ok: false, model, ms: Date.now() - started, error: err.message });
+  }
+});
+
 app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const stats = await UserRepository.getSystemStats();
@@ -3839,7 +3899,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
     const totalTokens = usage.total_tokens || (promptTokens + completionTokens);
 
     // Calculate cost
-    const model = SAI_CHAT;
+    const model = resolveChatModel(SAI_CHAT); // the model actually called, for cost tracking
     const costData = await costTracking.calculateTextCost(model, promptTokens, completionTokens);
 
     // Clean the response
@@ -4920,7 +4980,7 @@ app.get('/api/health', async (req, res) => {
   // Check AI service (SAI gateway)
   health.services.ai = {
     sai: saiConfigured(),
-    models: { longForm: SAI_CHAT, fast: SAI_CHAT_FAST },
+    models: { writer: resolveChatModel(SAI_CHAT), assistant: resolveChatModel(SAI_CHAT_FAST) },
   };
 
   health.services.email = { configured: isEmailConfigured() };

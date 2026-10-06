@@ -104,6 +104,11 @@ async function fakeGateway() {
       let parsed = null;
       try { parsed = JSON.parse(body); } catch { /* not json */ }
       requests.push({ path: req.url, body: parsed });
+      if (req.url.endsWith('/models') && req.method === 'GET') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ object: 'list', data: ['sai-chat', 'sai-chat-fast', 'sai-decide'].map(id => ({ id, object: 'model' })) }));
+        return;
+      }
       if (req.url.endsWith('/images/generations')) {
         res.setHeader('Content-Type', 'application/json');
         if (parsed?.model === 'character-sheet-quad' || body.includes('GATEWAY_FAIL')) {
@@ -410,6 +415,30 @@ async function mainSuite(gateway) {
     check('delete removed only that job', (await queue.getJobStatus(refA)) === null && (await queue.getJobStatus(refB))?.userId === stranger.id);
     await redis.quit();
 
+    console.log('\n== AI model backbone');
+    {
+      const chatModels = () => gateway.requests.filter(q => q.path.endsWith('/chat/completions')).map(q => q.body?.model);
+      let n = chatModels().length;
+      await call('POST', '/api/generate', owner.token, { type: 'character', prompt: 'a cartographer' });
+      check('by default the Writer role calls sai-chat-fast', chatModels().slice(n).includes('sai-chat-fast') && !chatModels().slice(n).includes('sai-chat'), chatModels().slice(n).join(','));
+      r = await call('GET', '/api/admin/ai-models', owner.token);
+      check('non-admins cannot read the model settings', r.status === 403, `got ${r.status}`);
+      await db.query(`UPDATE users SET role = 'admin' WHERE id = $1`, [owner.id]);
+      r = await call('GET', '/api/admin/ai-models', owner.token);
+      check('admin sees both roles and the gateway\'s chat models', r.status === 200 && r.json?.roles?.writer?.model === 'sai-chat-fast' && r.json?.available?.includes('sai-chat') && !r.json?.available?.includes('sai-decide'),
+        JSON.stringify(r.json).slice(0, 200));
+      r = await call('PUT', '/api/admin/ai-models', owner.token, { writer: 'gpt-9' });
+      check('an unknown model is refused', r.status === 400, `got ${r.status}`);
+      r = await call('PUT', '/api/admin/ai-models', owner.token, { writer: 'sai-chat' });
+      n = chatModels().length;
+      await call('POST', '/api/generate', owner.token, { type: 'character', prompt: 'a cartographer' });
+      check('switching the Writer to sai-chat takes effect without a restart', r.status === 200 && chatModels().slice(n).includes('sai-chat'), chatModels().slice(n).join(','));
+      r = await call('POST', '/api/admin/ai-models/test', owner.token, { model: 'sai-chat-fast' });
+      check('the model test call answers', r.status === 200 && r.json?.ok === true && typeof r.json?.ms === 'number');
+      await call('PUT', '/api/admin/ai-models', owner.token, { writer: 'sai-chat-fast' });
+      await db.query(`UPDATE users SET role = 'user' WHERE id = $1`, [owner.id]);
+    }
+
     console.log('\n== chat wiring');
     const chatCalls = gateway.requests.filter(q => q.path.endsWith('/chat/completions'));
     check('every chat call turns thinking off', chatCalls.length > 0 && chatCalls.every(q => q.body?.chat_template_kwargs?.enable_thinking === false),
@@ -622,6 +651,8 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   r = await call('POST', '/api/generate-audio', owner.token, { text: longText, voice: 'nova', bookId: book.id });
   const speechCalls = gateway.requests.filter(q => q.path.endsWith('/audio/speech'));
   check('long text is spoken in several chunks', r.status === 200 && speechCalls.length >= 3, `status ${r.status}, ${speechCalls.length} calls`);
+  check('...each chunk under VibeVoice\'s 3000-character cut-off', speechCalls.every(q => (q.body?.input || '').length <= 2800),
+    `max ${Math.max(...speechCalls.map(q => (q.body?.input || '').length))}`);
   if (r.status === 200) {
     const wav = Buffer.from(await (await fetch(`${call.base}${r.json.audioUrl}`, { headers: { Authorization: `Bearer ${owner.token}` } })).arrayBuffer());
     const dataIdx = wav.indexOf('data', 12, 'ascii');

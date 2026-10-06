@@ -8,6 +8,7 @@ import {
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { ordnanceChartColors } from '../utils/chartPalette';
 import AICostAnalytics from './AICostAnalytics';
+import AIModelSettings from './AIModelSettings';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -842,7 +843,7 @@ const AdminDashboard = ({ onBack }) => {
               }`}
             >
               <Cpu className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
-              AI Costs
+              AI Models & Costs
             </button>
           </nav>
         </div>
@@ -2073,7 +2074,10 @@ const AdminDashboard = ({ onBack }) => {
 
         {/* AI Costs Tab */}
         {activeTab === 'ai-costs' && (
-          <AICostAnalytics />
+          <>
+            <AIModelSettings />
+            <AICostAnalytics />
+          </>
         )}
 
         {/* Cancel Subscription Modal */}
