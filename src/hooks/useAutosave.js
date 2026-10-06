@@ -30,23 +30,38 @@ export const useAutosave = (data, saveFunction, options = {}) => {
   useEffect(() => {
     if (!enabled) return;
 
-    // Skip if data hasn't changed
     const dataString = JSON.stringify(data);
-    if (previousDataRef.current === dataString) {
-      return;
-    }
 
-    // If we're currently saving or just saved, update the reference without marking as unsaved
-    // This handles the case where the parent component updates data from server response after save
-    if (saveStatus === 'saving' || saveStatus === 'saved') {
+    // First observation after (re)enable: adopt the current state as the
+    // baseline WITHOUT scheduling. The old code's baseline adoption rode on
+    // saveStatus being 'saved' — which it is from the very first render — so
+    // the hook absorbed every real edit into the baseline and never scheduled
+    // a save (autosave was a no-op while displaying "Saved").
+    if (previousDataRef.current === null) {
       previousDataRef.current = dataString;
       return;
     }
 
-    // Mark as unsaved
-    if (previousDataRef.current !== null) {
-      setSaveStatus('unsaved');
+    // Skip if data hasn't changed
+    if (previousDataRef.current === dataString) {
+      return;
     }
+
+    // While a save is in flight, just record the latest state — the in-flight
+    // save's completion compares against this and the next change schedules a
+    // follow-up. This replaces the old 'saved' branch that absorbed every edit
+    // into the baseline (the never-schedules bug) while keeping its intent:
+    // server responses merging into state must not mark the book unsaved.
+    if (saveStatus === 'saving') {
+      previousDataRef.current = dataString;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      // NOTE: no re-schedule here — the in-flight save's completion handler
+      // compares JSON.stringify(data) against previousDataRef and re-marks.
+      return;
+    }
+
+    // Mark as unsaved
+    setSaveStatus('unsaved');
 
     // Clear existing timeout
     if (timeoutRef.current) {
@@ -66,7 +81,7 @@ export const useAutosave = (data, saveFunction, options = {}) => {
         if (isMountedRef.current) {
           setSaveStatus('saved');
           setLastSaved(new Date());
-          previousDataRef.current = dataString;
+          previousDataRef.current = JSON.stringify(data);
           if (onSaveSuccess) onSaveSuccess();
         }
       } catch (error) {
