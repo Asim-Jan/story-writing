@@ -2,35 +2,27 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const ThemeContext = createContext();
 
+// ONE source of truth for theming: localStorage 'sw-theme' -> html[data-theme]
+// (+ html.dark for Tailwind's class-based dark: variants — they must move together
+// or the two theming systems disagree and half the UI renders the wrong theme).
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(() => {
-    // Check localStorage first
-    const saved = localStorage.getItem('theme');
-    if (saved) return saved;
-
-    // Check system preference
-    if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      return 'dark';
-    }
-
-    return 'light';
+    const saved = localStorage.getItem('sw-theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    // first visit follows the system, and that choice is then persisted
+    const system = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    localStorage.setItem('sw-theme', system);
+    return system;
   });
 
   useEffect(() => {
-    // Save to localStorage
-    localStorage.setItem('theme', theme);
-
-    // Update document class
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    localStorage.setItem('sw-theme', theme);
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    root.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
-  const toggleTheme = () => {
-    setTheme(prev => prev === 'light' ? 'dark' : 'light');
-  };
+  const toggleTheme = () => setTheme(t => (t === 'light' ? 'dark' : 'light'));
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>

@@ -119,7 +119,7 @@ const AIDungeonMaster = ({ bookId, rpgData, bookData, party, ruleSystem }) => {
       const quest = response.data.quest;
       setMessages(prev => [...prev, {
         role: 'dm',
-        content: `🎯 New Quest Available: "${quest.title}"\n\n${quest.description}`,
+        content: `⌖ New Quest Available: "${quest.title}"\n\n${quest.description}`,
         timestamp: new Date(),
         quest
       }]);
@@ -144,7 +144,7 @@ const AIDungeonMaster = ({ bookId, rpgData, bookData, party, ruleSystem }) => {
       const encounter = response.data.encounter;
       setMessages(prev => [...prev, {
         role: 'dm',
-        content: `⚔️ Encounter: ${encounter.description}`,
+        content: `⚔ Encounter: ${encounter.description}`,
         timestamp: new Date(),
         encounter
       }]);
@@ -256,7 +256,7 @@ const AIDungeonMaster = ({ bookId, rpgData, bookData, party, ruleSystem }) => {
 
         {/* Info */}
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-800">
-          <div className="font-medium mb-1">💡 Tips:</div>
+          <div className="lbl mb-1">Tips</div>
           <ul className="space-y-1">
             <li>• Describe what your party does</li>
             <li>• Ask questions about the world</li>

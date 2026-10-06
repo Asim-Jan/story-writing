@@ -309,7 +309,7 @@ const GameMechanics = ({ ruleSystem, party }) => {
             <div className={`text-lg font-semibold ${
               skillCheck.result.success ? 'text-green-700' : 'text-red-700'
             }`}>
-              {skillCheck.result.degree === 'critical' && '🎯 Critical Success!'}
+              {skillCheck.result.degree === 'critical' && '⌖ Critical Success!'}
               {skillCheck.result.degree === 'success' && '✓ Success'}
               {skillCheck.result.degree === 'partial' && '~ Partial Success'}
               {skillCheck.result.degree === 'failure' && '✗ Failure'}

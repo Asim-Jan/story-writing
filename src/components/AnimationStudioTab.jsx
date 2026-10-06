@@ -106,7 +106,7 @@ const AnimationStudioTab = ({ data, bookId, setData }) => {
                 // Show helpful error message
                 let errorMsg = data.message || 'Unknown error';
                 if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-                  errorMsg = `⚠️ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
+                  errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
                 }
                 alert(errorMsg);
                 setGenerating(false);
@@ -123,9 +123,9 @@ const AnimationStudioTab = ({ data, bookId, setData }) => {
       // Show helpful error message
       let errorMsg = error.message || 'Unknown error';
       if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-        errorMsg = `⚠️ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
+        errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
       } else if (errorMsg.includes('network')) {
-        errorMsg = `❌ Network Error\n\nFailed to generate animation: ${errorMsg}\n\nPlease check your internet connection and API configuration.`;
+        errorMsg = `Network error\n\nFailed to generate animation: ${errorMsg}\n\nPlease check your internet connection and API configuration.`;
       } else {
         errorMsg = 'Failed to generate animation: ' + errorMsg;
       }
@@ -188,14 +188,14 @@ const AnimationStudioTab = ({ data, bookId, setData }) => {
               if (data.stage === 'scene-complete' || data.stage === 'complete') {
                 // Mark scene as completed
                 updateScene(sceneNumber, { status: 'completed' });
-                alert(`✅ Scene ${sceneNumber} generated successfully!`);
+                alert(`Scene ${sceneNumber} generated successfully.`);
               } else if (data.stage === 'error') {
                 updateScene(sceneNumber, { status: 'failed', error: data.message });
 
                 // Show helpful error message
                 let errorMsg = data.message || 'Unknown error';
                 if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-                  errorMsg = `⚠️ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
+                  errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
                 }
                 alert(errorMsg);
               }
@@ -211,9 +211,9 @@ const AnimationStudioTab = ({ data, bookId, setData }) => {
       // Show helpful error message
       let errorMsg = error.message || 'Unknown error';
       if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-        errorMsg = `⚠️ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
+        errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
       } else if (errorMsg.includes('network')) {
-        errorMsg = `❌ Network Error\n\nFailed to generate scene: ${errorMsg}\n\nPlease check your internet connection and API configuration.`;
+        errorMsg = `Network error\n\nFailed to generate scene: ${errorMsg}\n\nPlease check your internet connection and API configuration.`;
       }
 
       alert(errorMsg);
@@ -389,13 +389,13 @@ const AnimationStudioTab = ({ data, bookId, setData }) => {
                   </div>
                 </div>
                 {scene.dialogue && (
-                  <p className="text-purple-700 text-sm italic mt-2">💬 "{scene.dialogue}"</p>
+                  <p className="text-purple-700 text-sm italic mt-2">Dialogue: "{scene.dialogue}"</p>
                 )}
                 <div className="flex gap-2 mt-2 text-xs text-gray-600">
                   {scene.characters && scene.characters.length > 0 && (
-                    <span>👥 {scene.characters.join(', ')}</span>
+                    <span>Cast: {scene.characters.join(', ')}</span>
                   )}
-                  {scene.location && <span>📍 {scene.location}</span>}
+                  {scene.location && <span>Scene: {scene.location}</span>}
                 </div>
               </div>
             ))}

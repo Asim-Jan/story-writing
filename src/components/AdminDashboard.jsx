@@ -6,6 +6,7 @@ import {
   CreditCard, DollarSign, TrendingDown, Download, Cpu, Trash2
 } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { ordnanceChartColors } from '../utils/chartPalette';
 import AICostAnalytics from './AICostAnalytics';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
@@ -1881,8 +1882,8 @@ const AdminDashboard = ({ onBack }) => {
                   <YAxis />
                   <Tooltip formatter={(value) => typeof value === 'number' ? `$${value.toFixed(2)}` : value} />
                   <Legend />
-                  <Line type="monotone" dataKey="revenue" stroke="#8b5cf6" name="Revenue ($)" />
-                  <Line type="monotone" dataKey="payments" stroke="#3b82f6" name="Payments" />
+                  <Line type="monotone" dataKey="revenue" stroke={CHART.blue} name="Revenue ($)" />
+                  <Line type="monotone" dataKey="payments" stroke={CHART.dim} name="Payments" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -2023,8 +2024,8 @@ const AdminDashboard = ({ onBack }) => {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Line type="monotone" dataKey="active_users" stroke="#8b5cf6" name="Active Users" />
-                  <Line type="monotone" dataKey="new_users" stroke="#10b981" name="New Users" />
+                  <Line type="monotone" dataKey="active_users" stroke={CHART.blue} name="Active Users" />
+                  <Line type="monotone" dataKey="new_users" stroke={CHART.ok} name="New Users" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -2043,8 +2044,8 @@ const AdminDashboard = ({ onBack }) => {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Bar dataKey="count" fill="#8b5cf6" name="Total Actions" />
-                  <Bar dataKey="users" fill="#3b82f6" name="Unique Users" />
+                  <Bar dataKey="count" fill={CHART.blue} name="Total Actions" />
+                  <Bar dataKey="users" fill={CHART.dim} name="Unique Users" />
                 </BarChart>
               </ResponsiveContainer>
             </div>

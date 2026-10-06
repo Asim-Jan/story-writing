@@ -6,6 +6,8 @@
    ORDNANCE — the SAI design system.
    British instrument/wayfinding lineage: ink on drawing paper, hairline grids,
    chart-plotter precision. Kit: sai-cluster manifests/_design/ordnance/.
+   Full spec: ORDNANCE.md — the de-slop checklist (steps 1–6) is the recipe
+   this file implements for a Tailwind-3 app.
 
    Hard rules:
    · no gradients, no glassmorphism/backdrop-filter, no glow, NO SHADOWS
@@ -22,16 +24,16 @@
 @font-face{font-family:'Commit Mono';font-style:normal;font-weight:600;font-display:swap;
   src:url('/fonts/commit-mono-600.woff2') format('woff2')}
 
-/* ── tokens ──────────────────────────────────────────────────────────────── */
+/* ── tokens (ordnance.css verbatim) ─────────────────────────────────────── */
 :root{
-  /* dark — "night chart": deep slate w/ blue-green cast */
+  /* dark — "night chart": deep slate w/ blue-green cast. NOT navy, NOT black. */
   --bg:#10161A;
   --bg2:#161E23;
   --glass:#141B20;
   --glass2:#1E2930;
-  --line:#3A454C;
-  --line2:#4C5C64;
-  --ink:#E4E7E4; --dim:#8C9BA2; --dim2:#7A8992;
+  --line:#26333A;
+  --line2:#3A4B54;
+  --ink:#E4E7E4; --dim:#8C9BA2; --dim2:#6E7F88;
   --blue:#6EA8D8;
   --ok:#6FBF8B; --warn:#D9A441;
   --red:#E2795C;
@@ -43,20 +45,16 @@
   --t:120ms cubic-bezier(.4,0,.2,1);
 }
 :root[data-theme="light"]{
-  /* light — "sheet": drawing paper (the default) */
+  /* light — "sheet": drawing paper. never #fff for the ground */
   --bg:#F2F0EA; --bg2:#FFFFFF; --glass:#FFFFFF; --glass2:rgba(20,24,27,.06);
   --line:#C9C6BC; --line2:#A9A69B;
-  --ink:#14181B; --dim:#5A6469; --dim2:#666F73;
+  --ink:#14181B; --dim:#5A6469; --dim2:#7C878C;
   --blue:#29506E; --ok:#3F6B4F; --warn:#A9721A; --red:#B4472E;
   --focus:rgba(41,80,110,.22); --dot:rgba(20,24,27,.07);
 }
 
 /* ── base ────────────────────────────────────────────────────────────────── */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 html { background: var(--bg); }
 
@@ -69,73 +67,82 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   NIGHT CHART — the dark theme. tailwind.config.js bakes the SHEET ladder
-   into the built CSS; these overrides re-point the utilities' ink/surface
-   variables at the dark values. Gradients were flattened to solid surfaces
-   at the config level; here we give those (now solid) surfaces their dark
-   values via the same variables the compiled classes consume.
-   ═══════════════════════════════════════════════════════════════════════════ */
-html[data-theme="dark"] body,
-html[data-theme="dark"] {
-  --sw-bg: #10161A;
-  --sw-card: #161E23;
-  --sw-line: #3A454C;
-  --sw-ink: #E4E7E4;
-  --sw-dim: #8C9BA2;
-  --sw-raised: #1E2930;
+h1,h2,h3 { letter-spacing: -.015em; text-wrap: balance; font-stretch: 112%; }
+
+a { color: var(--blue); }
+a:hover { text-decoration: underline; }
+
+/* House inputs: every input/textarea/select on the sheet — 1px hairline, 3px */
+input, textarea, select {
+  font-family: var(--sans);
+  font-size: .92rem;
+  color: var(--ink);
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: .6rem .8rem;
+  outline: none;
+  transition: border-color var(--t);
 }
+input:focus, textarea:focus, select:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px var(--focus);
+}
+::placeholder { color: var(--dim2); }
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line2);
+  border: 2px solid var(--bg);
+  border-radius: 0;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--dim2); }
+
+/* ── house component classes (use these in JSX going forward) ───────────── */
+.lbl { font-size:.66rem; text-transform:uppercase; letter-spacing:.09em;
+  font-weight:600; font-stretch:88%; color:var(--dim); }
+.rule2 { border-bottom:2px solid var(--ink); padding-bottom:.3rem; }
+.num { font-variant-numeric:tabular-nums; }
+.mono { font-family:var(--mono); }
+.grat { background-image:radial-gradient(var(--dot) .5px,transparent .6px);
+  background-size:24px 24px; }
+.hatch { background:repeating-linear-gradient(45deg,transparent 0 6px,var(--glass2) 6px 7px); }
+
+.btn { display:inline-flex; align-items:center; gap:.45rem; justify-content:center;
+  padding:.6rem 1.1rem; border-radius:3px; font-weight:600; font-size:.92rem;
+  background:var(--bg2); border:1px solid var(--line2); color:var(--ink);
+  transition:border-color var(--t),background var(--t); cursor:pointer; }
+.btn:hover { border-color:var(--dim); }
+.btn.pri { background:var(--blue); color:var(--bg2); border:1px solid var(--blue); }
+:root[data-theme="light"] .btn.pri { color:#fff; }
+.btn.ghost { background:transparent; border-color:transparent; color:var(--dim); }
+.btn.ghost:hover { color:var(--ink); }
+.btn.sm { padding:.35rem .8rem; font-size:.8rem; }
+.btn:disabled { opacity:.45; cursor:default; }
+
+.card { background:var(--glass); border:1px solid var(--line); border-radius:var(--r); }
+
+.pill { display:inline-flex; align-items:center; gap:.35rem; padding:.18rem .55rem;
+  border-radius:3px; font-size:.72rem; background:var(--glass2);
+  border:1px solid var(--line); font-family:var(--mono); }
+
+/* tabs: radius 0, active = 2px blue underline — also the nav-item pattern */
+.tabs { display:flex; border-bottom:1px solid var(--line); }
+.tabs button { padding:.5rem .9rem; border-radius:0; color:var(--dim);
+  font-weight:600; font-size:.92rem; }
+.tabs button.on { color:var(--ink); box-shadow:inset 0 -2px 0 var(--blue); }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   DARK-THEME TEXT REMAP — the compiled utilities hardcode sheet RGB values,
-   so in dark mode we swap the two dimensions that actually matter: any
-   near-black ink becomes near-white, any mid-gray becomes the dim ladder.
-   Done with filter-free targeted overrides on the utility classes that the
-   app actually uses (audited: text-{gray,slate}-{700,800,900} and
-   bg-white/text-white card patterns).
+   THE TRANSLATION LAYER — the app's 67 components speak old Tailwind
+   (bg-purple-600, rounded-xl, shadow-lg, bg-gradient-to-r...). The palette,
+   radii and shadows are re-authored at the CONFIG level, so compiled
+   utilities already wear ORDNANCE tones. What remains here is what config
+   cannot express: gradient flattening (bg-image is a separate property from
+   background-color) and the dark-theme ink/surface remap, because Tailwind 3
+   hardcodes the SHEET ladder into the utilities and the night chart is not a
+   derivation of it — both themes are authored, never inverted.
    ═══════════════════════════════════════════════════════════════════════════ */
-html[data-theme="dark"] .text-gray-900,
-html[data-theme="dark"] .text-gray-800,
-html[data-theme="dark"] .text-slate-900,
-html[data-theme="dark"] .text-slate-800,
-html[data-theme="dark"] .text-purple-900,
-html[data-theme="dark"] .text-purple-800,
-html[data-theme="dark"] .text-gray-700,
-html[data-theme="dark"] .text-slate-700 { color: var(--sw-ink); }
-html[data-theme="dark"] .text-gray-600,
-html[data-theme="dark"] .text-gray-500,
-html[data-theme="dark"] .text-slate-600,
-html[data-theme="dark"] .text-slate-500,
-html[data-theme="dark"] .text-gray-400 { color: var(--sw-dim); }
-html[data-theme="dark"] .bg-white { background-color: var(--sw-card); }
-html[data-theme="dark"] .bg-gray-50,
-html[data-theme="dark"] .bg-gray-100,
-html[data-theme="dark"] .bg-amber-50,
-html[data-theme="dark"] .bg-orange-50,
-html[data-theme="dark"] .bg-yellow-50,
-html[data-theme="dark"] .bg-purple-50,
-html[data-theme="dark"] .bg-indigo-50,
-html[data-theme="dark"] .bg-blue-50,
-html[data-theme="dark"] .bg-green-50,
-html[data-theme="dark"] .bg-red-50 { background-color: var(--sw-bg); }
-/* light accent fills (bg-*-100/200 tiles, badges, light-blue buttons) become
-   raised dark surfaces; their dark text flips to ink so they stay readable */
-html[data-theme="dark"] .bg-gray-200,
-html[data-theme="dark"] .bg-gray-300,
-html[data-theme="dark"] .bg-blue-100,
-html[data-theme="dark"] .bg-blue-200,
-html[data-theme="dark"] .bg-purple-100,
-html[data-theme="dark"] .bg-purple-200,
-html[data-theme="dark"] .bg-indigo-100,
-html[data-theme="dark"] .bg-indigo-200,
-html[data-theme="dark"] .bg-amber-100,
-html[data-theme="dark"] .bg-amber-200,
-html[data-theme="dark"] .bg-green-100,
-html[data-theme="dark"] .bg-green-200 { background-color: var(--sw-raised); color: var(--sw-ink); }
-html[data-theme="dark"] .border-gray-200,
-html[data-theme="dark"] .border-gray-300,
-html[data-theme="dark"] .border-slate-200,
-html[data-theme="dark"] .border-slate-300 { border-color: var(--sw-line); }
 
 /* Kill the old look's shadows and gradients at the source. Gradient BUTTONS
    become solid ORDNANCE blue; gradient PAGE WRAPPERS (min-h-screen) become
@@ -151,13 +158,75 @@ html[data-theme="dark"] .border-slate-300 { border-color: var(--sw-line); }
 /* gradient buttons (small, accent-coloured, white-texted) → solid blue */
 :not(.min-h-screen)[class*="bg-gradient-"] { background-color: var(--blue) !important; }
 :root[data-theme="light"] :not(.min-h-screen)[class*="bg-gradient-"] { color: #fff !important; }
-html[data-theme="dark"] :not(.min-h-screen)[class*="bg-gradient-"] { color: var(--sw-bg) !important; background-color: var(--sw-ink) !important; }
+html[data-theme="dark"] :not(.min-h-screen)[class*="bg-gradient-"] { color: var(--bg) !important; background-color: var(--ink) !important; }
 [class*="bg-clip-text"] { background-image: none !important; }
 
-/* Soften the focus rings to the ORDNANCE focus token */
+/* softening: the old look's translucent blacks (bg-opacity-50 scrims) */
+.bg-black.bg-opacity-50, .bg-black\/50 { background: rgba(10,14,16,.55) !important; }
+
+/* ── NIGHT CHART — dark-theme ink/surface remap. Utilities hardcode the
+   sheet ladder, so dark mode swaps what matters: near-black ink → near-white,
+   mid-gray → the dim ladder, white cards → the plot surface, hairlines →
+   the dark line tokens. */
+
+html[data-theme="dark"] .text-gray-900,
+html[data-theme="dark"] .text-gray-800,
+html[data-theme="dark"] .text-slate-900,
+html[data-theme="dark"] .text-slate-800,
+html[data-theme="dark"] .text-purple-900,
+html[data-theme="dark"] .text-purple-800,
+html[data-theme="dark"] .text-indigo-900,
+html[data-theme="dark"] .text-indigo-800,
+html[data-theme="dark"] .text-gray-700,
+html[data-theme="dark"] .text-slate-700,
+html[data-theme="dark"] .text-amber-900 { color: var(--ink); }
+html[data-theme="dark"] .text-gray-600,
+html[data-theme="dark"] .text-gray-500,
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-slate-500,
+html[data-theme="dark"] .text-gray-400 { color: var(--dim); }
+html[data-theme="dark"] .bg-white { background-color: var(--bg2); }
+html[data-theme="dark"] .bg-gray-50,
+html[data-theme="dark"] .bg-gray-100,
+html[data-theme="dark"] .bg-amber-50,
+html[data-theme="dark"] .bg-orange-50,
+html[data-theme="dark"] .bg-yellow-50,
+html[data-theme="dark"] .bg-purple-50,
+html[data-theme="dark"] .bg-indigo-50,
+html[data-theme="dark"] .bg-blue-50,
+html[data-theme="dark"] .bg-green-50,
+html[data-theme="dark"] .bg-red-50 { background-color: var(--bg); }
+/* light accent fills (bg-*-100/200 tiles, badges, light-blue buttons) become
+   raised dark surfaces; their dark text flips to ink so they stay readable */
+html[data-theme="dark"] .bg-gray-200,
+html[data-theme="dark"] .bg-gray-300,
+html[data-theme="dark"] .bg-blue-100,
+html[data-theme="dark"] .bg-blue-200,
+html[data-theme="dark"] .bg-purple-100,
+html[data-theme="dark"] .bg-purple-200,
+html[data-theme="dark"] .bg-indigo-100,
+html[data-theme="dark"] .bg-indigo-200,
+html[data-theme="dark"] .bg-amber-100,
+html[data-theme="dark"] .bg-amber-200,
+html[data-theme="dark"] .bg-green-100,
+html[data-theme="dark"] .bg-green-200 { background-color: var(--glass2); color: var(--ink); }
+html[data-theme="dark"] .border-gray-200,
+html[data-theme="dark"] .border-gray-300,
+html[data-theme="dark"] .border-slate-200,
+html[data-theme="dark"] .border-slate-300,
+html[data-theme="dark"] .border-amber-200,
+html[data-theme="dark"] .border-amber-300,
+html[data-theme="dark"] .border-purple-200,
+html[data-theme="dark"] .border-indigo-200 { border-color: var(--line); }
+
+/* focus rings: ORDNANCE focus token everywhere */
 *:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus); }
 
-::placeholder { color: var(--dim2); }
+
+/* ORDNANCE pending states: static — no spinners, no pulse (the label says what's happening).
+   The 49 animate-spin sites become static glyph + text; the hatched .hatch class is the
+   skeleton placeholder of record. */
+.animate-spin, .animate-pulse, .animate-bounce, .animate-ping { animation: none !important; }
 
 @media (prefers-reduced-motion: reduce){
   *{animation:none!important;transition:none!important}

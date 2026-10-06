@@ -464,7 +464,7 @@ export default function RichTextEditor({
         }
 
         .editor-quote {
-          border-left: 4px solid #d1d5db;
+          border-left: 2px solid var(--line2);
           padding-left: 1em;
           margin: 1em 0;
           font-style: italic;

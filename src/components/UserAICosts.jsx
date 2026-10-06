@@ -58,7 +58,7 @@ const UserAICosts = () => {
     );
   }
 
-  const COLORS = ['#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
+  const COLORS = ordnanceChartColors(6);
 
   // Calculate projected monthly cost
   const today = new Date();
@@ -193,8 +193,8 @@ const UserAICosts = () => {
                 }}
               />
               <Legend />
-              <Line yAxisId="left" type="monotone" dataKey="totalCost" name="Cost" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 4 }} />
-              <Line yAxisId="right" type="monotone" dataKey="totalTokens" name="Tokens" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
+              <Line yAxisId="left" type="monotone" dataKey="totalCost" name="Cost" stroke={COLORS[0]} strokeWidth={2} dot={{ r: 4 }} />
+              <Line yAxisId="right" type="monotone" dataKey="totalTokens" name="Tokens" stroke={COLORS[2]} strokeWidth={2} dot={{ r: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         ) : (

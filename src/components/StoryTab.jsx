@@ -669,23 +669,23 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
   return (
     <div className="max-w-5xl mx-auto">
       {/* Header Stats */}
-      <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-6 mb-6 border border-indigo-200">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex-1">
-            <h2 className="text-3xl font-bold text-gray-800 mb-2">{data.bookTitle}</h2>
-            <p className="text-gray-600">{data.overview}</p>
+      <div className="card p-6 mb-6">
+        <div className="flex items-start justify-between gap-6 mb-4 pb-4 border-b border-[var(--line)]">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-2xl font-bold text-[var(--ink)] mb-1">{data.bookTitle}</h2>
+            <p className="text-sm text-[var(--dim)] line-clamp-2">{data.overview}</p>
           </div>
-          <div className="text-right">
-            <div className="text-3xl font-bold text-indigo-600">{sortedChapters.length}</div>
-            <div className="text-sm text-gray-600">Chapters</div>
-            <div className="text-xl font-semibold text-purple-600 mt-2">{totalWords.toLocaleString()}</div>
-            <div className="text-sm text-gray-600">Total Words</div>
+          <div className="text-right flex-none">
+            <div className="text-2xl font-bold text-[var(--ink)] num">{sortedChapters.length}</div>
+            <div className="lbl">Chapters</div>
+            <div className="text-lg font-semibold text-[var(--ink)] num mt-2">{totalWords.toLocaleString()}</div>
+            <div className="lbl">Total Words</div>
           </div>
         </div>
         <div className="flex justify-end gap-3">
           <button
             onClick={() => setShowStyleOptions(!showStyleOptions)}
-            className="px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center gap-2 font-semibold"
+            className="btn"
             title="Export Options"
           >
             <Settings size={20} />
@@ -693,7 +693,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
           <button
             onClick={handleExportPDF}
             disabled={sortedChapters.length === 0}
-            className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn"
           >
             <Download size={20} />
             PDF
@@ -701,7 +701,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
           <button
             onClick={handleExportDOCX}
             disabled={sortedChapters.length === 0}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn"
           >
             <FileText size={20} />
             DOCX
@@ -709,7 +709,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
           <button
             onClick={handleExportEPUB}
             disabled={sortedChapters.length === 0}
-            className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn"
           >
             <Book size={20} />
             EPUB
@@ -718,19 +718,19 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
 
         {/* Style Options Panel */}
         {showStyleOptions && (
-          <div className="mt-4 bg-white border-2 border-gray-300 rounded-lg p-6">
-            <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <Settings size={20} />
+          <div className="card mt-4 p-5">
+            <p className="lbl rule2 inline-block mb-4">
+              <Settings size={13} />
               PDF Export Options
-            </h3>
+            </p>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Font Size</label>
+                <label className="lbl block mb-1.5">Font Size</label>
                 <select
                   value={pdfStyle.fontSize}
                   onChange={(e) => setPdfStyle({...pdfStyle, fontSize: parseInt(e.target.value)})}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none"
+                  className="w-full p-2 text-sm"
                 >
                   <option value="10">10pt (Small)</option>
                   <option value="12">12pt (Standard)</option>
@@ -740,11 +740,11 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Line Spacing</label>
+                <label className="lbl block mb-1.5">Line Spacing</label>
                 <select
                   value={pdfStyle.lineSpacing}
                   onChange={(e) => setPdfStyle({...pdfStyle, lineSpacing: parseFloat(e.target.value)})}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none"
+                  className="w-full p-2 text-sm"
                 >
                   <option value="1">Single</option>
                   <option value="1.5">1.5 Lines</option>
@@ -753,11 +753,11 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Margins (mm)</label>
+                <label className="lbl block mb-1.5">Margins (mm)</label>
                 <select
                   value={pdfStyle.margins}
                   onChange={(e) => setPdfStyle({...pdfStyle, margins: parseInt(e.target.value)})}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none"
+                  className="w-full p-2 text-sm"
                 >
                   <option value="15">Narrow (15mm)</option>
                   <option value="20">Normal (20mm)</option>
@@ -766,11 +766,11 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Font Family</label>
+                <label className="lbl block mb-1.5">Font Family</label>
                 <select
                   value={pdfStyle.fontFamily}
                   onChange={(e) => setPdfStyle({...pdfStyle, fontFamily: e.target.value})}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none"
+                  className="w-full p-2 text-sm"
                 >
                   <option value="serif">Serif (Times)</option>
                   <option value="sans-serif">Sans-serif (Helvetica)</option>

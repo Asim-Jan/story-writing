@@ -92,7 +92,7 @@ const RelationshipGraph = ({ characters, onClose }) => {
       // Node circle
       ctx.beginPath();
       ctx.arc(x, y, 50, 0, 2 * Math.PI);
-      ctx.fillStyle = '#FCD34D'; // Amber
+      ctx.fillStyle = (getComputedStyle(document.documentElement).getPropertyValue('--warn') || '#D9A441').trim();
       ctx.fill();
       ctx.strokeStyle = '#F59E0B';
       ctx.lineWidth = 3;

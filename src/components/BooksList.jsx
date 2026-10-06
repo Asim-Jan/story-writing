@@ -11,6 +11,9 @@ import TemplatePreviewModal from './TemplatePreviewModal';
 // Use relative URLs to work with Vite proxy for both localhost and ngrok
 const API_URL = '';
 
+// ── Library — the sheet's front page. ORDNANCE: a ruled header block, a
+// hairline search, a flat button row (one primary), and the books as a
+// ruled table-grid of paper cards. Small-caps labels name everything.
 const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   const [books, setBooks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -143,10 +146,10 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center">
         <div className="text-center">
-          <Book className="w-16 h-16 text-amber-600 mx-auto mb-4 animate-pulse" />
-          <p className="text-xl text-gray-700">Loading your books...</p>
+          <div className="hatch w-24 h-24 mx-auto mb-4 border border-[var(--line)]" />
+          <p className="lbl">Loading your books…</p>
         </div>
       </div>
     );
@@ -157,212 +160,189 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
-      <div className="container mx-auto px-4 py-12">
-        {/* Header */}
-        <div className="text-center mb-8 sm:mb-12">
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3 mb-2 relative">
-            <Book className="w-8 h-8 sm:w-12 sm:h-12 text-amber-700" />
-            <h1 className="text-2xl sm:text-4xl lg:text-5xl font-bold text-gray-900">Book Writing Studio</h1>
-            <div className="absolute top-0 right-0 sm:relative sm:ml-auto flex gap-1 sm:gap-2">
-              {onOpenAdmin && (
-                <button
-                  onClick={onOpenAdmin}
-                  className="p-2 sm:p-3 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                  title="Admin Dashboard"
-                >
-                  <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
-                </button>
-              )}
-              <button
-                onClick={() => setShowProfile(true)}
-                className="p-2 sm:p-3 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
-                title="Profile"
-              >
-                <User className="w-5 h-5 sm:w-6 sm:h-6" />
-              </button>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="p-2 sm:p-3 text-gray-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                title="Quick Settings"
-              >
-                <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
-              </button>
+    <div className="min-h-screen bg-[var(--bg)]">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
+
+        {/* Header bar — brand line, utilities right, hairline rule under */}
+        <div className="flex items-center justify-between gap-4 pb-4 mb-6 border-b-2 border-[var(--ink)]">
+          <div className="flex items-center gap-3">
+            <Book className="w-6 h-6 text-[var(--blue)]" />
+            <div>
+              <h1 className="text-xl sm:text-2xl font-bold text-[var(--ink)] leading-tight">Fiction Writing Studio</h1>
+              <p className="lbl mt-0.5">Fiction writing projects</p>
             </div>
           </div>
-          {quotas && (
-            <div className="mb-2 text-xs sm:text-sm text-gray-600 px-4">
-              <span className={`font-semibold ${quotas.usage.current_books >= quotas.limits.max_books ? 'text-red-600' : 'text-amber-700'}`}>
-                {quotas.usage.current_books} / {quotas.limits.max_books >= 999999 ? '∞' : quotas.limits.max_books}
+          <div className="flex items-center gap-1">
+            {quotas && (
+              <span className="pill num hidden sm:inline-flex">
+                {quotas.usage.current_books} / {quotas.limits.max_books >= 999999 ? '∞' : quotas.limits.max_books} books
               </span>
-              {' '}books used
-              {quotas.usage.current_books >= quotas.limits.max_books && (
-                <span className="block sm:inline sm:ml-2 text-red-600 font-medium">
-                  (Limit reached - delete a book or upgrade to create more)
-                </span>
-              )}
-            </div>
-          )}
-          <p className="text-sm sm:text-lg lg:text-xl text-gray-600 px-4">Create and manage your fiction writing projects</p>
+            )}
+            {onOpenAdmin && (
+              <button
+                onClick={onOpenAdmin}
+                className="iconb"
+                title="Admin Dashboard"
+                aria-label="Admin Dashboard"
+              >
+                <Shield className="w-4.5 h-4.5" size={18} />
+              </button>
+            )}
+            <button
+              onClick={() => setShowProfile(true)}
+              className="iconb"
+              title="Profile"
+              aria-label="Profile"
+            >
+              <User size={18} />
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="iconb"
+              title="AI & Usage"
+              aria-label="AI and Usage"
+            >
+              <Settings size={18} />
+            </button>
+          </div>
         </div>
 
-        {/* Search and New Book */}
-        <div className="max-w-4xl mx-auto mb-6 sm:mb-8">
-          {/* Search bar - full width on mobile */}
-          <div className="mb-3 sm:mb-4">
-            <div className="relative">
-              <Search className="absolute left-3 sm:left-4 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+        {/* Search + actions row */}
+        <div className="mb-8">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-stretch">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-[var(--dim2)]" size={16} />
               <input
                 type="text"
-                placeholder="Search your books..."
+                placeholder="Search your books…"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 sm:pl-12 pr-4 py-3 sm:py-4 rounded-xl border-2 border-amber-200 bg-white text-base sm:text-lg focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none shadow-sm"
+                className="w-full pl-9 pr-4 py-2.5 text-sm"
+                aria-label="Search your books"
               />
             </div>
+            <div className="grid grid-cols-2 sm:flex gap-2">
+              <button onClick={() => setShowImport(true)} className="btn">
+                <Upload size={15} />
+                <span>Import</span>
+              </button>
+              <button onClick={() => setShowTemplateGallery(true)} className="btn">
+                <BookTemplate size={15} />
+                <span>Templates</span>
+              </button>
+              <button
+                onClick={() => setShowAIGenerator(true)}
+                disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
+                className="btn"
+                title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Generate book with AI'}
+              >
+                <Wand2 size={15} />
+                <span>AI Generate</span>
+              </button>
+              <button
+                onClick={onNewBook}
+                disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
+                className="btn pri"
+                title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Create a new book'}
+              >
+                <Plus size={15} />
+                <span>New Book</span>
+              </button>
+            </div>
           </div>
-
-          {/* Action buttons - grid on mobile, flex on desktop */}
-          <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-3 lg:gap-4">
-            <button
-              onClick={() => setShowImport(true)}
-              className="px-3 sm:px-6 lg:px-8 py-3 sm:py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-lg sm:rounded-xl hover:from-green-700 hover:to-teal-700 transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl text-sm sm:text-base lg:text-lg font-semibold"
-            >
-              <Upload size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
-              <span className="hidden sm:inline">Import</span>
-              <span className="sm:hidden">Import</span>
-            </button>
-            <button
-              onClick={() => setShowTemplateGallery(true)}
-              className="px-3 sm:px-6 lg:px-8 py-3 sm:py-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg sm:rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl text-sm sm:text-base lg:text-lg font-semibold"
-            >
-              <BookTemplate size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
-              <span>Templates</span>
-            </button>
-            <button
-              onClick={() => setShowAIGenerator(true)}
-              disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-              className={`px-3 sm:px-6 lg:px-8 py-3 sm:py-4 ${
-                quotas && quotas.usage.current_books >= quotas.limits.max_books
-                  ? 'bg-gray-400 cursor-not-allowed opacity-60'
-                  : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
-              } text-white rounded-lg sm:rounded-xl transition-all flex items-center justify-center gap-2 text-sm sm:text-base lg:text-lg font-semibold`}
-              title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Generate book with AI'}
-            >
-              <Wand2 size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
-              <span>AI Generate</span>
-            </button>
-            <button
-              onClick={onNewBook}
-              disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-              className={`px-3 sm:px-6 lg:px-8 py-3 sm:py-4 ${
-                quotas && quotas.usage.current_books >= quotas.limits.max_books
-                  ? 'bg-gray-400 cursor-not-allowed opacity-60'
-                  : 'bg-amber-600 hover:bg-amber-700 shadow-lg hover:shadow-xl'
-              } text-white rounded-lg sm:rounded-xl transition-colors flex items-center justify-center gap-2 text-sm sm:text-base lg:text-lg font-semibold`}
-              title={quotas && quotas.usage.current_books >= quotas.limits.max_books ? 'Book limit reached' : 'Create a new book'}
-            >
-              <Plus size={18} className="sm:w-5 sm:h-5 lg:w-6 lg:h-6" />
-              <span>New Book</span>
-            </button>
-          </div>
+          {quotas && quotas.usage.current_books >= quotas.limits.max_books && (
+            <p className="mt-2 text-xs text-[var(--warn)]">
+              Limit reached — delete a book or upgrade to create more.
+            </p>
+          )}
         </div>
 
         {/* Error Message */}
         {error && (
-          <div className="max-w-4xl mx-auto mb-6 p-4 bg-red-100 border border-red-300 rounded-lg text-red-700">
+          <div className="mb-6 px-4 py-3 border border-[var(--red)] text-[var(--red)] text-sm rounded-[3px]">
             {error}
           </div>
         )}
 
         {/* Books Grid */}
         {filteredBooks.length === 0 ? (
-          <div className="max-w-4xl mx-auto text-center py-12 sm:py-20 px-4">
-            <Book className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
-            <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-700 mb-3 sm:mb-4">
+          <div className="grat max-w-3xl mx-auto text-center py-16 sm:py-24 px-4">
+            <Book className="w-12 h-12 text-[var(--dim2)] mx-auto mb-5" />
+            <h2 className="text-xl sm:text-2xl font-bold text-[var(--ink)] mb-2 rule2 inline-block">
               {searchTerm ? 'No books found' : 'No books yet'}
             </h2>
-            <p className="text-base sm:text-lg lg:text-xl text-gray-500 mb-6 sm:mb-8">
+            <p className="text-sm text-[var(--dim)] mt-3 mb-7">
               {searchTerm
                 ? 'Try a different search term'
                 : 'Start your writing journey by creating your first book'}
             </p>
             {!searchTerm && (
-              <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center items-stretch sm:items-center max-w-md sm:max-w-none mx-auto">
-                <button
-                  onClick={() => setShowImport(true)}
-                  className="px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded-lg sm:rounded-xl hover:from-green-700 hover:to-teal-700 transition-all inline-flex items-center justify-center gap-2 sm:gap-3 shadow-lg hover:shadow-xl text-base sm:text-lg font-semibold"
-                >
-                  <Upload size={20} className="sm:w-6 sm:h-6" />
+              <div className="flex flex-col sm:flex-row gap-3 justify-center items-stretch sm:items-center">
+                <button onClick={() => setShowImport(true)} className="btn">
+                  <Upload size={15} />
                   Import Book
                 </button>
                 <button
                   onClick={() => setShowAIGenerator(true)}
                   disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-                  className={`px-6 sm:px-8 py-3 sm:py-4 ${
-                    quotas && quotas.usage.current_books >= quotas.limits.max_books
-                      ? 'bg-gray-400 cursor-not-allowed opacity-60'
-                      : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl'
-                  } text-white rounded-lg sm:rounded-xl transition-all inline-flex items-center justify-center gap-2 sm:gap-3 text-base sm:text-lg font-semibold`}
+                  className="btn"
                 >
-                  <Wand2 size={20} className="sm:w-6 sm:h-6" />
+                  <Wand2 size={15} />
                   AI Generate Book
                 </button>
                 <button
                   onClick={onNewBook}
                   disabled={quotas && quotas.usage.current_books >= quotas.limits.max_books}
-                  className={`px-6 sm:px-8 py-3 sm:py-4 ${
-                    quotas && quotas.usage.current_books >= quotas.limits.max_books
-                      ? 'bg-gray-400 cursor-not-allowed opacity-60'
-                      : 'bg-amber-600 hover:bg-amber-700 shadow-lg hover:shadow-xl'
-                  } text-white rounded-lg sm:rounded-xl transition-colors inline-flex items-center justify-center gap-2 sm:gap-3 text-base sm:text-lg font-semibold`}
+                  className="btn pri"
                 >
-                  <Plus size={20} className="sm:w-6 sm:h-6" />
+                  <Plus size={15} />
                   Create Manually
                 </button>
               </div>
             )}
           </div>
         ) : (
-          <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {filteredBooks.map((book) => (
               <div
                 key={book.id}
                 onClick={() => onSelectBook(book.id)}
-                className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all cursor-pointer border-2 border-transparent hover:border-amber-300 overflow-hidden group"
+                className="card cursor-pointer group hover:border-[var(--dim)] transition-colors"
               >
-                <div className="bg-gradient-to-br from-amber-100 to-orange-100 p-6 border-b-2 border-amber-200">
-                  <div className="flex items-start justify-between mb-3">
-                    <Book className="w-10 h-10 text-amber-700" />
-                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="px-5 pt-4 pb-3 border-b border-[var(--line)]">
+                  <div className="flex items-start justify-between gap-2">
+                    <Book className="w-5 h-5 text-[var(--blue)] mt-1 flex-none" />
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onSelectBook(book.id);
                         }}
-                        className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                        className="iconb"
                         title="Edit"
+                        aria-label={`Edit ${book.title}`}
                       >
-                        <Edit3 size={16} />
+                        <Edit3 size={14} />
                       </button>
                       <button
                         onClick={(e) => deleteBook(book.id, e)}
-                        className="p-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                        className="iconb text-[var(--red)]"
                         title="Delete"
+                        aria-label={`Delete ${book.title}`}
                       >
-                        <Trash2 size={16} />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </div>
-                  <h3 className="text-2xl font-bold text-gray-900 mb-2 line-clamp-2">
+                  <h3 className="text-lg font-bold text-[var(--ink)] mt-2 line-clamp-2">
                     {book.title}
                   </h3>
                 </div>
 
-                <div className="p-6">
-                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <Clock size={16} />
-                    <span>Last updated: {formatDate(book.updatedAt)}</span>
+                <div className="px-5 py-3">
+                  <div className="flex items-center gap-2 text-xs text-[var(--dim)] mono">
+                    <Clock size={12} />
+                    <span>{formatDate(book.updatedAt)}</span>
                   </div>
                 </div>
               </div>
@@ -372,8 +352,8 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
 
         {/* Stats Footer */}
         {filteredBooks.length > 0 && (
-          <div className="max-w-4xl mx-auto mt-12 text-center">
-            <p className="text-lg text-gray-600">
+          <div className="mt-10 text-center">
+            <p className="lbl">
               {filteredBooks.length} {filteredBooks.length === 1 ? 'book' : 'books'} in your library
             </p>
           </div>

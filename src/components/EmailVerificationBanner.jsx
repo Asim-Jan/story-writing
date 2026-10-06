@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Mail, AlertCircle, CheckCircle, X } from 'lucide-react';
 
+// ORDNANCE: a system notice is a hairline-ruled strip on the ground —
+// small-caps label, ink text, one primary action. Not a tonal amber block.
 const EmailVerificationBanner = ({ user, onResendEmail }) => {
   const [isResending, setIsResending] = useState(false);
   const [message, setMessage] = useState('');
@@ -39,20 +41,20 @@ const EmailVerificationBanner = ({ user, onResendEmail }) => {
   };
 
   return (
-    <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+    <div className="bg-[var(--bg2)] border-b border-[var(--line)] px-4 py-2.5">
       <div className="max-w-7xl mx-auto flex items-start sm:items-center justify-between gap-3 flex-col sm:flex-row">
         <div className="flex items-start gap-3 flex-1">
-          <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <AlertCircle className="w-4 h-4 text-[var(--warn)] flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-amber-900">
+            <p className="lbl text-[var(--ink)]">
               Verify your email address
             </p>
-            <p className="text-xs text-amber-700 mt-1">
+            <p className="text-xs text-[var(--dim)] mt-0.5">
               Please check your inbox and click the verification link to unlock all features.
             </p>
             {message && (
-              <div className={`mt-2 flex items-center gap-1 text-xs ${
-                message.type === 'success' ? 'text-green-700' : 'text-red-700'
+              <div className={`mt-1.5 flex items-center gap-1 text-xs ${
+                message.type === 'success' ? 'text-[var(--ok)]' : 'text-[var(--red)]'
               }`}>
                 {message.type === 'success' ? (
                   <CheckCircle className="w-3 h-3" />
@@ -69,17 +71,18 @@ const EmailVerificationBanner = ({ user, onResendEmail }) => {
           <button
             onClick={handleResend}
             disabled={isResending}
-            className="flex-1 sm:flex-initial px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-sm font-medium"
+            className="btn sm flex-1 sm:flex-initial"
           >
             <Mail className="w-4 h-4" />
-            {isResending ? 'Sending...' : 'Resend Email'}
+            {isResending ? 'Sending…' : 'Resend Email'}
           </button>
           <button
             onClick={() => setIsDismissed(true)}
-            className="p-2 text-amber-600 hover:text-amber-800 transition-colors"
+            className="p-1.5 text-[var(--dim)] hover:text-[var(--ink)] transition-colors"
             title="Dismiss"
+            aria-label="Dismiss"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>

@@ -15,9 +15,10 @@ import {
   Pie,
   Cell,
 } from 'recharts';
+import { ordnanceChartColors } from '../utils/chartPalette';
 import { TrendingUp, Calendar, Clock, BookOpen, Target, Award } from 'lucide-react';
 
-const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'];
+const COLORS = ordnanceChartColors(6);
 
 export default function StatisticsDashboard({ bookId }) {
   const [stats, setStats] = useState({ daily: [], goals: {} });
@@ -238,18 +239,18 @@ export default function StatisticsDashboard({ bookId }) {
           <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-4">Words Written</h3>
           <ResponsiveContainer width="100%" height={300}>
             <AreaChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="date" stroke="#9ca3af" style={{ fontSize: '12px' }} />
-              <YAxis stroke="#9ca3af" style={{ fontSize: '12px' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+              <XAxis dataKey="date" stroke="var(--dim2)" style={{ fontSize: '12px' }} />
+              <YAxis stroke="var(--dim2)" style={{ fontSize: '12px' }} />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: '#1f2937',
-                  border: '1px solid #374151',
+                  backgroundColor: 'var(--bg2)',
+                  border: '1px solid var(--line2)',
                   borderRadius: '8px',
-                  color: '#f3f4f6',
+                  color: 'var(--ink)',
                 }}
               />
-              <Area type="monotone" dataKey="wordsWritten" stroke="#6366f1" fill="#6366f1" fillOpacity={0.6} />
+              <Area type="monotone" dataKey="wordsWritten" stroke={COLORS[0]} fill={COLORS[0]} fillOpacity={0.35} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -259,18 +260,18 @@ export default function StatisticsDashboard({ bookId }) {
           <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-4">Time Spent (minutes)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="date" stroke="#9ca3af" style={{ fontSize: '12px' }} />
-              <YAxis stroke="#9ca3af" style={{ fontSize: '12px' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+              <XAxis dataKey="date" stroke="var(--dim2)" style={{ fontSize: '12px' }} />
+              <YAxis stroke="var(--dim2)" style={{ fontSize: '12px' }} />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: '#1f2937',
-                  border: '1px solid #374151',
+                  backgroundColor: 'var(--bg2)',
+                  border: '1px solid var(--line2)',
                   borderRadius: '8px',
-                  color: '#f3f4f6',
+                  color: 'var(--ink)',
                 }}
               />
-              <Line type="monotone" dataKey="timeSpent" stroke="#8b5cf6" strokeWidth={2} dot={{ fill: '#8b5cf6' }} />
+              <Line type="monotone" dataKey="timeSpent" stroke={COLORS[0]} strokeWidth={2} dot={{ fill: COLORS[0] }} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -281,18 +282,18 @@ export default function StatisticsDashboard({ bookId }) {
             <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-4">Chapter Word Counts</h3>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={chapterStats}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="name" stroke="#9ca3af" style={{ fontSize: '12px' }} />
-                <YAxis stroke="#9ca3af" style={{ fontSize: '12px' }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="name" stroke="var(--dim2)" style={{ fontSize: '12px' }} />
+                <YAxis stroke="var(--dim2)" style={{ fontSize: '12px' }} />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: '#1f2937',
                     border: '1px solid #374151',
                     borderRadius: '8px',
-                    color: '#f3f4f6',
+                    color: 'var(--ink)',
                   }}
                 />
-                <Bar dataKey="words" fill="#10b981" />
+                <Bar dataKey="words" fill={COLORS[2]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

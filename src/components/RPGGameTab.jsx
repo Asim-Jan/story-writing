@@ -554,7 +554,7 @@ const RPGGameTab = ({ bookId, bookData }) => {
                             </div>
                           )}
                           {quest.rewards?.gold && (
-                            <div>💰 {quest.rewards.gold}g</div>
+                            <div>⛁ {quest.rewards.gold}g</div>
                           )}
                         </div>
 

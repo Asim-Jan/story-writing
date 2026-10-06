@@ -585,7 +585,7 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
                       {issue.suggestion && (
                         <div className="mt-3 p-3 bg-white bg-opacity-50 rounded-lg border border-gray-200">
                           <p className="text-sm font-semibold text-gray-700 mb-1">
-                            💡 Suggestion:
+                            Suggestion:
                           </p>
                           <p className="text-sm text-gray-800 mb-2">{issue.suggestion}</p>
                           <button

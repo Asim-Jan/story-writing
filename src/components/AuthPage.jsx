@@ -151,33 +151,33 @@ const AuthPage = ({ onAuthSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-50 to-pink-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-[var(--bg)] grat flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-2xl shadow-lg mb-4">
-            <BookOpen className="w-10 h-10 text-white" />
-          </div>
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Fiction Writing Studio</h1>
-          <p className="text-gray-600">Your AI-powered storytelling companion</p>
+          <svg viewBox="0 0 44 44" aria-hidden="true" className="w-11 h-11 mx-auto mb-4">
+            <circle cx="22" cy="22" r="14" fill="none" stroke="var(--blue)" strokeWidth="1.5"/>
+            <path d="M22 1v7M22 36v7M1 22h7M36 22h7" stroke="var(--blue)" strokeWidth="1.5"/>
+            <rect x="19.5" y="19.5" width="5" height="5" fill="var(--red)"/>
+          </svg>
+          <h1 className="text-3xl font-bold text-[var(--ink)] mb-1">Fiction Writing Studio</h1>
+          <p className="lbl">Your AI-powered storytelling companion</p>
         </div>
 
         {/* Auth Form */}
-        <div className="bg-white rounded-2xl shadow-xl p-8">
+        <div className="card p-7">
           {!showForgotPassword && !showResetForm && (
             <>
               <div className="mb-6">
-                <div className="flex gap-2 p-1 bg-gray-100 rounded-lg">
+                <div className="tabs mb-6">
                   <button
                     onClick={() => {
                       setIsLogin(true);
                       setError('');
                       setSuccess('');
                     }}
-                    className={`flex-1 py-2 px-4 rounded-md font-semibold transition-all ${
-                      isLogin
-                        ? 'bg-white text-indigo-600 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-800'
+                    className={`flex-1 py-2 px-4 font-semibold transition-colors ${
+                      isLogin ? 'on text-[var(--ink)]' : 'text-[var(--dim)] hover:text-[var(--ink)]'
                     }`}
                   >
                     <LogIn className="inline-block w-4 h-4 mr-2" />
@@ -189,10 +189,8 @@ const AuthPage = ({ onAuthSuccess }) => {
                       setError('');
                       setSuccess('');
                     }}
-                    className={`flex-1 py-2 px-4 rounded-md font-semibold transition-all ${
-                      !isLogin
-                        ? 'bg-white text-indigo-600 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-800'
+                    className={`flex-1 py-2 px-4 font-semibold transition-colors ${
+                      !isLogin ? 'on text-[var(--ink)]' : 'text-[var(--dim)] hover:text-[var(--ink)]'
                     }`}
                   >
                     <UserPlus className="inline-block w-4 h-4 mr-2" />
@@ -204,7 +202,7 @@ const AuthPage = ({ onAuthSuccess }) => {
               <form onSubmit={handleSubmit} className="space-y-4">
             {!isLogin && (
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                <label className="lbl block mb-1.5">
                   <User className="inline-block w-4 h-4 mr-1" />
                   Full Name
                 </label>
@@ -215,13 +213,13 @@ const AuthPage = ({ onAuthSuccess }) => {
                   onChange={handleChange}
                   required={!isLogin}
                   placeholder="Enter your name"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                  className="w-full px-4 py-2.5 text-sm"
                 />
               </div>
             )}
 
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
+              <label className="lbl block mb-1.5">
                 <Mail className="inline-block w-4 h-4 mr-1" />
                 Email Address
               </label>
@@ -232,12 +230,12 @@ const AuthPage = ({ onAuthSuccess }) => {
                 onChange={handleChange}
                 required
                 placeholder="your@email.com"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                className="w-full px-4 py-2.5 text-sm"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
+              <label className="lbl block mb-1.5">
                 <Lock className="inline-block w-4 h-4 mr-1" />
                 Password
               </label>
@@ -249,7 +247,7 @@ const AuthPage = ({ onAuthSuccess }) => {
                   onChange={handleChange}
                   required
                   placeholder="••••••••"
-                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                  className="w-full px-4 py-2.5 pr-11 text-sm"
                 />
                 <button
                   type="button"
@@ -266,14 +264,13 @@ const AuthPage = ({ onAuthSuccess }) => {
                 <div className="mt-3 space-y-2">
                   {/* Strength Bar */}
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div className="flex-1 h-1.5 bg-[var(--glass2)] border border-[var(--line)]">
                       <div
-                        className={`h-full transition-all duration-300 ${
-                          passwordValidation.strength === 100 ? 'bg-green-500' :
-                          passwordValidation.strength >= 80 ? 'bg-green-400' :
-                          passwordValidation.strength >= 60 ? 'bg-yellow-400' :
-                          passwordValidation.strength >= 40 ? 'bg-orange-400' :
-                          'bg-red-400'
+                        className={`h-full ${
+                          passwordValidation.strength === 100 ? 'bg-[var(--ok)]' :
+                          passwordValidation.strength >= 60 ? 'bg-[var(--ok)]' :
+                          passwordValidation.strength >= 40 ? 'bg-[var(--warn)]' :
+                          'bg-[var(--red)]'
                         }`}
                         style={{ width: `${passwordValidation.strength}%` }}
                       />
@@ -291,23 +288,23 @@ const AuthPage = ({ onAuthSuccess }) => {
 
                   {/* Requirements Checklist */}
                   <div className="space-y-1 text-xs">
-                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.minLength ? 'text-green-600' : 'text-gray-500'}`}>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.minLength ? 'text-[var(--ok)]' : 'text-[var(--dim2)]'}`}>
                       {passwordValidation.requirements.minLength ? <Check size={14} /> : <X size={14} />}
                       <span>At least 8 characters</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasUppercase ? 'text-green-600' : 'text-gray-500'}`}>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasUppercase ? 'text-[var(--ok)]' : 'text-[var(--dim2)]'}`}>
                       {passwordValidation.requirements.hasUppercase ? <Check size={14} /> : <X size={14} />}
                       <span>One uppercase letter</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasLowercase ? 'text-green-600' : 'text-gray-500'}`}>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasLowercase ? 'text-[var(--ok)]' : 'text-[var(--dim2)]'}`}>
                       {passwordValidation.requirements.hasLowercase ? <Check size={14} /> : <X size={14} />}
                       <span>One lowercase letter</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasNumber ? 'text-green-600' : 'text-gray-500'}`}>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasNumber ? 'text-[var(--ok)]' : 'text-[var(--dim2)]'}`}>
                       {passwordValidation.requirements.hasNumber ? <Check size={14} /> : <X size={14} />}
                       <span>One number</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasSpecialChar ? 'text-green-600' : 'text-gray-500'}`}>
+                    <div className={`flex items-center gap-1 ${passwordValidation.requirements.hasSpecialChar ? 'text-[var(--ok)]' : 'text-[var(--dim2)]'}`}>
                       {passwordValidation.requirements.hasSpecialChar ? <Check size={14} /> : <X size={14} />}
                       <span>One special character (!@#$%^&*...)</span>
                     </div>
@@ -317,13 +314,13 @@ const AuthPage = ({ onAuthSuccess }) => {
             </div>
 
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+              <div className="border border-[var(--red)] text-[var(--red)] px-4 py-2.5 rounded-[3px] text-sm">
                 {error}
               </div>
             )}
 
             {success && (
-              <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">
+              <div className="border border-[var(--ok)] text-[var(--ok)] px-4 py-2.5 rounded-[3px] text-sm">
                 {success}
               </div>
             )}
@@ -331,7 +328,7 @@ const AuthPage = ({ onAuthSuccess }) => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 focus:ring-4 focus:ring-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl"
+              className="btn pri w-full py-2.5 justify-center"
             >
               {loading ? (
                 <span className="flex items-center justify-center">
@@ -367,7 +364,7 @@ const AuthPage = ({ onAuthSuccess }) => {
                     setError('');
                     setSuccess('');
                   }}
-                  className="text-sm text-indigo-600 hover:text-indigo-700 font-semibold"
+                  className="text-sm text-[var(--blue)] hover:underline font-semibold"
                 >
                   Forgot password?
                 </button>
@@ -377,11 +374,11 @@ const AuthPage = ({ onAuthSuccess }) => {
 
           {isLogin && (
             <div className="mt-4 text-center">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-[var(--dim)]">
                 Don't have an account?{' '}
                 <button
                   onClick={() => setIsLogin(false)}
-                  className="text-indigo-600 hover:text-indigo-700 font-semibold"
+                  className="text-[var(--blue)] hover:underline font-semibold"
                 >
                   Sign up free
                 </button>
@@ -391,11 +388,11 @@ const AuthPage = ({ onAuthSuccess }) => {
 
           {!isLogin && (
             <div className="mt-4 text-center">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-[var(--dim)]">
                 Already have an account?{' '}
                 <button
                   onClick={() => setIsLogin(true)}
-                  className="text-indigo-600 hover:text-indigo-700 font-semibold"
+                  className="text-[var(--blue)] hover:underline font-semibold"
                 >
                   Sign in
                 </button>
@@ -408,12 +405,12 @@ const AuthPage = ({ onAuthSuccess }) => {
           {/* Forgot Password Form */}
           {showForgotPassword && (
             <div>
-              <h2 className="text-2xl font-bold text-gray-800 mb-2">Reset Password</h2>
-              <p className="text-gray-600 mb-6">Enter your email to receive reset instructions</p>
+              <h2 className="text-xl font-bold text-[var(--ink)] mb-2">Reset Password</h2>
+              <p className="text-sm text-[var(--dim)] mb-5">Enter your email to receive reset instructions</p>
 
               <form onSubmit={handleForgotPassword} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  <label className="lbl block mb-1.5">
                     <Mail className="inline-block w-4 h-4 mr-1" />
                     Email Address
                   </label>
@@ -424,18 +421,18 @@ const AuthPage = ({ onAuthSuccess }) => {
                     onChange={handleChange}
                     required
                     placeholder="your@email.com"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                    className="w-full px-4 py-2.5 text-sm"
                   />
                 </div>
 
                 {error && (
-                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                  <div className="border border-[var(--red)] text-[var(--red)] px-4 py-2.5 rounded-[3px] text-sm">
                     {error}
                   </div>
                 )}
 
                 {success && (
-                  <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">
+                  <div className="border border-[var(--ok)] text-[var(--ok)] px-4 py-2.5 rounded-[3px] text-sm">
                     {success}
                   </div>
                 )}
@@ -443,7 +440,7 @@ const AuthPage = ({ onAuthSuccess }) => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 focus:ring-4 focus:ring-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl"
+                  className="btn pri w-full py-2.5 justify-center"
                 >
                   {loading ? 'Sending...' : 'Send Reset Link'}
                 </button>
@@ -455,7 +452,7 @@ const AuthPage = ({ onAuthSuccess }) => {
                     setError('');
                     setSuccess('');
                   }}
-                  className="w-full text-sm text-gray-600 hover:text-gray-800"
+                  className="w-full text-sm text-[var(--dim)] hover:text-[var(--ink)]"
                 >
                   Back to login
                 </button>
@@ -466,12 +463,12 @@ const AuthPage = ({ onAuthSuccess }) => {
           {/* Reset Password Form */}
           {showResetForm && (
             <div>
-              <h2 className="text-2xl font-bold text-gray-800 mb-2">Set New Password</h2>
-              <p className="text-gray-600 mb-6">Enter your new password</p>
+              <h2 className="text-xl font-bold text-[var(--ink)] mb-2">Set New Password</h2>
+              <p className="text-sm text-[var(--dim)] mb-5">Enter your new password</p>
 
               <form onSubmit={handleResetPassword} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  <label className="lbl block mb-1.5">
                     Reset Token
                   </label>
                   <input
@@ -480,12 +477,12 @@ const AuthPage = ({ onAuthSuccess }) => {
                     onChange={(e) => setResetToken(e.target.value)}
                     required
                     placeholder="Enter reset token"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                    className="w-full px-4 py-2.5 text-sm"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  <label className="lbl block mb-1.5">
                     <Lock className="inline-block w-4 h-4 mr-1" />
                     New Password
                   </label>
@@ -497,19 +494,19 @@ const AuthPage = ({ onAuthSuccess }) => {
                     required
                     placeholder="••••••••"
                     minLength="6"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                    className="w-full px-4 py-2.5 text-sm"
                   />
-                  <p className="text-xs text-gray-500 mt-1">Minimum 6 characters</p>
+                  <p className="text-xs text-[var(--dim2)] mt-1 mono">Minimum 6 characters</p>
                 </div>
 
                 {error && (
-                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                  <div className="border border-[var(--red)] text-[var(--red)] px-4 py-2.5 rounded-[3px] text-sm">
                     {error}
                   </div>
                 )}
 
                 {success && (
-                  <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">
+                  <div className="border border-[var(--ok)] text-[var(--ok)] px-4 py-2.5 rounded-[3px] text-sm">
                     {success}
                   </div>
                 )}
@@ -517,7 +514,7 @@ const AuthPage = ({ onAuthSuccess }) => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 focus:ring-4 focus:ring-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl"
+                  className="btn pri w-full py-2.5 justify-center"
                 >
                   {loading ? 'Resetting...' : 'Reset Password'}
                 </button>
@@ -530,7 +527,7 @@ const AuthPage = ({ onAuthSuccess }) => {
                     setError('');
                     setSuccess('');
                   }}
-                  className="w-full text-sm text-gray-600 hover:text-gray-800"
+                  className="w-full text-sm text-[var(--dim)] hover:text-[var(--ink)]"
                 >
                   Back to login
                 </button>
@@ -541,17 +538,17 @@ const AuthPage = ({ onAuthSuccess }) => {
 
         {/* Features */}
         <div className="mt-8 grid grid-cols-3 gap-4 text-center">
-          <div className="text-sm">
-            <div className="text-2xl mb-1">✍️</div>
-            <p className="text-gray-600">AI Writing Tools</p>
+          <div>
+            <div className="text-lg mb-1 text-[var(--blue)]">✎</div>
+            <p className="lbl">AI Writing Tools</p>
           </div>
-          <div className="text-sm">
-            <div className="text-2xl mb-1">🎨</div>
-            <p className="text-gray-600">Visual Generation</p>
+          <div>
+            <div className="text-lg mb-1 text-[var(--blue)]">✳</div>
+            <p className="lbl">Visual Generation</p>
           </div>
-          <div className="text-sm">
-            <div className="text-2xl mb-1">🤝</div>
-            <p className="text-gray-600">Collaboration</p>
+          <div>
+            <div className="text-lg mb-1 text-[var(--blue)]">⌘</div>
+            <p className="lbl">Collaboration</p>
           </div>
         </div>
       </div>
