@@ -6,7 +6,11 @@ import { saiSpeech, VOICE_MAP } from '../saiClient.js';
 // the PCM data of every piece. (Buffer.concat of whole WAV files left a
 // header mid-stream; most players stop at the first one.)
 
-export function chunkText(text, maxChars = 4000) {
+// VibeVoice (the bridge's TTS) silently TRUNCATES input past 3000 characters
+// (TTS_MAX_CHARS), so 4000-character chunks lost up to a quarter of each one.
+export const SPEECH_CHUNK_CHARS = 2800;
+
+export function chunkText(text, maxChars = SPEECH_CHUNK_CHARS) {
   const chunks = [];
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   let current = '';

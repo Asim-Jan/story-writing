@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { resolveChatModel } from './services/aiModels.js';
 
 /**
  * SAI API client — the single AI backend for the app.
@@ -8,9 +9,10 @@ import OpenAI from 'openai';
  * Per-user metering is the app's own quota system (free/basic/premium tiers),
  * NOT gateway keys — so nothing here accepts or stores user API keys.
  *
- * Models (SAI gateway, /v1/models):
- *   SAI_CHAT_FAST — short helpers, RPG tools, JSON extraction (GLM-5.3-Flash)
- *   SAI_CHAT      — long-form book/chapter generation (Qwen3.8-Flash-Next, 1M ctx)
+ * Models: code names a ROLE, the admin dashboard picks the model behind it
+ * (services/aiModels.js):
+ *   SAI_CHAT      — the Writer: long-form book/chapter generation
+ *   SAI_CHAT_FAST — the Assistant: short helpers, RPG tools, JSON extraction
  */
 
 const BASE_URL = () => process.env.SAI_API_BASE_URL || 'https://api.solutionsai.co.uk/v1';
@@ -38,13 +40,19 @@ export function getSAIClient() {
     // The gateway turns this flag into reasoning_effort:"low" for GLM.
     // A caller that wants thinking passes its own chat_template_kwargs or
     // reasoning_effort.
+    // The model: a role (SAI_CHAT = Writer, SAI_CHAT_FAST = Assistant)
+    // becomes the model configured for it in the admin dashboard
+    // (services/aiModels.js); any other name is used as given.
     const create = client.chat.completions.create.bind(client.chat.completions);
-    client.chat.completions.create = (params, options) => create(
-      params.chat_template_kwargs || params.reasoning_effort
-        ? params
-        : { ...params, chat_template_kwargs: { enable_thinking: false } },
-      options
-    );
+    client.chat.completions.create = (params, options) => {
+      const withModel = { ...params, model: resolveChatModel(params.model) };
+      return create(
+        withModel.chat_template_kwargs || withModel.reasoning_effort
+          ? withModel
+          : { ...withModel, chat_template_kwargs: { enable_thinking: false } },
+        options
+      );
+    };
   }
   return client;
 }
