@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Volume2, Play, Pause, Download, Loader, Sparkles, BookOpen, CheckCircle } from 'lucide-react';
 import { useAudioPlayer } from '../contexts/AudioPlayerContext';
 import { getMediaUrl } from '../utils/mediaUrl';
-import { stripMarkdown } from '../utils/markdown';
 
 const AudiobookTab = ({ chapters, bookTitle, data, setData, saveBook, bookId }) => {
   const [selectedVoice, setSelectedVoice] = useState('alloy');
@@ -59,7 +58,7 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, saveBook, bookId }) 
         body: JSON.stringify({
           bookId: bookId,
           chapterId: chapter.id,
-          text: `Chapter ${chapter.number}: ${chapter.title}.\n\n${stripMarkdown(chapter.content)}`,
+          text: `Chapter ${chapter.number}: ${chapter.title}.\n\n${chapter.content}`,
           voice: selectedVoice,
         }),
       });
@@ -109,7 +108,7 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, saveBook, bookId }) 
           body: JSON.stringify({
             bookId: bookId,
             chapterId: chapter.id,
-            text: `Chapter ${chapter.number}: ${chapter.title}.\n\n${stripMarkdown(chapter.content)}`,
+            text: `Chapter ${chapter.number}: ${chapter.title}.\n\n${chapter.content}`,
             voice: selectedVoice,
           }),
         });

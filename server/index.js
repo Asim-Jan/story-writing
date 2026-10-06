@@ -4016,6 +4016,13 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
   try {
     const { bookId, contentType, itemId, config } = req.body;
 
+    // the queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and read/write it
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!bookId || !contentType) {
       return res.status(400).json({ error: 'bookId and contentType are required' });
     }
@@ -4039,6 +4046,13 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
 app.post('/api/jobs/queue/import', authenticateToken, aiLimiter, async (req, res) => {
   try {
     const { bookId, chapterIndex, chapter } = req.body;
+
+    // the queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and read/write it
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
 
     if (!bookId || chapterIndex === undefined || !chapter) {
       return res.status(400).json({ error: 'bookId, chapterIndex, and chapter are required' });
@@ -5892,7 +5906,7 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
 // ==================== GRAMMAR CHECK ENDPOINT ====================
 
 // Grammar and spell check using LanguageTool
-app.post('/api/grammar-check', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
+app.post('/api/grammar-check', authenticateToken, aiLimiter, async (req, res) => {
   try {
     const { text, language = 'en-US' } = req.body;
 
@@ -8462,7 +8476,7 @@ process.on('unhandledRejection', (reason) => {
 // A fresh install self-heals; a live one only runs what's new.
 (async () => {
   try {
-    const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
+    const schemaPath = path.join(__dirname, 'db', 'schema.sql');
     if (fs.existsSync(schemaPath)) {
       await getPool().query(readFileSync(schemaPath, 'utf8'));
       console.log('✓ schema.sql applied');
