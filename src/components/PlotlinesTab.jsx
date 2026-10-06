@@ -15,6 +15,8 @@ const PlotlinesTab = ({
   editPlotline,
   deleteItem,
   editingId,
+  setAiSuggestion,
+  setEditingId,
   generateWithAI,
   aiSuggestion,
   setAiSuggestion,

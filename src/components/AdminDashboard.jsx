@@ -12,6 +12,7 @@ import AICostAnalytics from './AICostAnalytics';
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
 const AdminDashboard = ({ onBack }) => {
+  const CHART = ordnanceChartColors(6);
   const [activeTab, setActiveTab] = useState('overview');
   const [securitySubtab, setSecuritySubtab] = useState('login');
   const [stats, setStats] = useState(null);

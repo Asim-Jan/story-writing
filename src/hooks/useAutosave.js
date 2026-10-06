@@ -136,6 +136,14 @@ export const useAutosave = (data, saveFunction, options = {}) => {
   // markBaseline(postMergeState) in its onSaveSuccess; without it autosave
   // re-saves the merged version every cycle.
 
+  // The save flow MERGES server-owned fields into the book state (version
+  // bumps) — that merge must not look like an edit. useBook calls
+  // markBaseline(postMergeState) in onSaveSuccess; without it autosave
+  // re-saves the merged version every cycle.
+  const markBaseline = (obj) => {
+    previousDataRef.current = JSON.stringify(obj);
+  };
+
   return {
     saveStatus,
     lastSaved,

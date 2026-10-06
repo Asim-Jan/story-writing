@@ -36,6 +36,20 @@ export function getMediaUrl(urlOrObject, bucketType = 'images') {
 
   // If it's a string
   if (typeof urlOrObject === 'string') {
+    // A JSON-serialized upload record (job processors write uploadResult into
+    // TEXT columns) — parse and treat it as the object it is, else a bare
+    // storageKey/URL string.
+    if (urlOrObject.startsWith('{') && urlOrObject.includes('storageKey')) {
+      try {
+        return getMediaUrl(JSON.parse(urlOrObject));
+      } catch (e) { /* fall through to the plain-string path */ }
+    }
+    if (/^(images|audio|comics|videos)\//.test(urlOrObject)) {
+      // a bare storageKey — build its media route
+      const filename = extractFilename(urlOrObject);
+      const type = urlOrObject.split('/')[0];
+      return `/api/media/${type}/${filename}`;
+    }
     return normalizeUrl(urlOrObject);
   }
 

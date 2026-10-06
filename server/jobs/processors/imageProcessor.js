@@ -5,21 +5,6 @@ import { setMediaBookMapping } from '../../utils/mediaMapping.js';
 import { BookDataService } from '../../db/dataService.js';
 
 // Redis client for book data
-let redisClient;
-
-async function initRedis() {
-  if (redisClient) return redisClient;
-
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
-    password: process.env.REDIS_PASSWORD || undefined,
-  });
-  // Without a listener, redis v4 re-throws connection errors and a Redis restart kills the worker.
-  redisClient.on('error', (err) => console.error('Redis client error:', err.message));
-  await redisClient.connect();
-  return redisClient;
-}
-
 export async function processImageGeneration(job) {
   const { userId, bookId, imageType, itemId, prompt, context } = job.data;
 

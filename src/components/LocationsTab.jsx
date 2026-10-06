@@ -16,6 +16,7 @@ const LocationsTab = ({
   editLocation,
   deleteItem,
   editingId,
+  setEditingId,
   generateWithAI,
   aiSuggestion,
   acceptAISuggestion,

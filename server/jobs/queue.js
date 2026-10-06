@@ -62,27 +62,18 @@ export async function storeJobMetadata(jobId, userId, bookId, type, data, origin
     ...(originalData ? { jobData: originalData } : {}),
   };
 
-  // the type prefix: Bull ids are per-queue sequences, so job:17 existed in
-  // every queue — the status store overwrote itself across queues.
-  await redisClient.set(`job:${type}:${jobId}`, JSON.stringify(metadata), { EX: 86400 });
+  await redisClient.set(`job:${jobId}`, JSON.stringify(metadata), { EX: 86400 }); // 24 hour expiry
 
-  // Add to user's job list
-  await redisClient.sAdd(`user:${userId}:jobs`, jobId);
+  // Add to user's job list — WITH the type prefix (the id alone is
+  // ambiguous across queues; see getJobStatus)
+  await redisClient.sAdd(`user:${userId}:jobs`, `${type}:${jobId}`);
 
   return metadata;
 }
 
 // Update job status
 export async function updateJobStatus(jobId, updates) {
-  // processors don't know the queue — scan the known prefixes for the job
-  const types = ['image', 'audio', 'content', 'import', 'video'];
-  let existing = null;
-  let statusKey = null;
-  for (const t of types) {
-    statusKey = `job:${t}:${jobId}`;
-    existing = await redisClient.get(statusKey);
-    if (existing) break;
-  }
+  const existing = await redisClient.get(`job:${jobId}`);
   if (!existing) return null;
 
   const metadata = JSON.parse(existing);
@@ -92,29 +83,36 @@ export async function updateJobStatus(jobId, updates) {
     updatedAt: new Date().toISOString(),
   };
 
-  await redisClient.set(statusKey, JSON.stringify(updated), { EX: 86400 });
+  await redisClient.set(`job:${jobId}`, JSON.stringify(updated), { EX: 86400 });
   return updated;
 }
 
-// Get job status
-export async function getJobStatus(jobId) {
-  const types = ['image', 'audio', 'content', 'import', 'video'];
+// Get job status. Bull ids are per-queue sequences and REPEAT (a Redis
+// flush restarts them at 1), so the unprefixed `job:<id>` key is ambiguous:
+// user B's new audio job 1 would read user A's old audio job 1. Scan the
+// type prefixes; every CALLER that can passes the type to skip the scan.
+export async function getJobStatus(jobId, type = null) {
+  const types = type ? [type] : ['image', 'audio', 'content', 'import', 'video'];
   for (const t of types) {
     const data = await redisClient.get(`job:${t}:${jobId}`);
     if (data) return JSON.parse(data);
   }
-  // legacy unprefixed keys (jobs stored before the collision fix)
+  // legacy unprefixed keys (jobs stored before the namespace fix)
   const data = await redisClient.get(`job:${jobId}`);
   return data ? JSON.parse(data) : null;
 }
 
 // Get user's jobs
 export async function getUserJobs(userId, limit = 50) {
-  const jobIds = await redisClient.sMembers(`user:${userId}:jobs`);
+  const jobRefs = await redisClient.sMembers(`user:${userId}:jobs`);
+  // refs carry their type (type:id) — new entries; bare ids are legacy
   const jobs = await Promise.all(
-    jobIds.slice(0, limit).map(async (id) => {
-      const data = await getJobStatus(id);
-      return data;
+    jobRefs.slice(0, limit).map(async (ref) => {
+      const data = await getJobStatus(ref);
+      if (!data) return null;
+      // ownership backstop: a stale/duplicate id must never surface
+      // another user's job into this list
+      return data.userId === userId ? data : null;
     })
   );
 
@@ -123,8 +121,13 @@ export async function getUserJobs(userId, limit = 50) {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
-// Clean up old jobs
+// Clean up old jobs — delete EVERY key shape the id may live under (the
+// prefixed ones for all types + the legacy unprefixed one)
 export async function cleanupJob(jobId, userId) {
+  const types = ['image', 'audio', 'content', 'import', 'video'];
+  for (const t of types) {
+    await redisClient.del(`job:${t}:${jobId}`);
+  }
   await redisClient.del(`job:${jobId}`);
   await redisClient.sRem(`user:${userId}:jobs`, jobId);
 }

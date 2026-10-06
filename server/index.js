@@ -6341,8 +6341,9 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, consumeAIQuota, asyn
 
     // Verify access (owner or collaborator)
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // RPG writes change the shared campaign — viewers are read-only
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have permission to modify this campaign' });
     }
 
     // Convert book elements to RPG data
@@ -6419,8 +6420,9 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // RPG writes change the shared campaign — viewers are read-only
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have permission to modify this campaign' });
     }
 
     // Update RPG data
@@ -6451,8 +6453,9 @@ app.delete('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // RPG writes change the shared campaign — viewers are read-only
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have permission to modify this campaign' });
     }
 
     // Delete RPG data
@@ -7374,6 +7377,10 @@ app.delete('/api/users/api-keys/:key', authenticateToken, async (req, res) => {
 // External API: Get book chapters
 app.get('/api/external/books/:bookId/chapters', authenticateApiKey, async (req, res) => {
   try {
+    // PARKED (2026-10-06 review): the external API-key surface never worked
+    // (ownership checks compared a field books don't have). It returns 404
+    // until the feature is finished properly — do not advertise it.
+    return res.status(404).json({ error: 'Not available' });
     const { bookId } = req.params;
     const { page = 1, limit = 10, include_content = 'false' } = req.query;
 
@@ -7429,6 +7436,10 @@ app.get('/api/external/books/:bookId/chapters', authenticateApiKey, async (req, 
 // External API: Get book plotlines
 app.get('/api/external/books/:bookId/plotlines', authenticateApiKey, async (req, res) => {
   try {
+    // PARKED (2026-10-06 review): the external API-key surface never worked
+    // (ownership checks compared a field books don't have). It returns 404
+    // until the feature is finished properly — do not advertise it.
+    return res.status(404).json({ error: 'Not available' });
     const { bookId } = req.params;
     const { status } = req.query;
 
@@ -7482,6 +7493,10 @@ app.get('/api/external/books/:bookId/plotlines', authenticateApiKey, async (req,
 // External API: Get book metadata
 app.get('/api/external/books/:bookId', authenticateApiKey, async (req, res) => {
   try {
+    // PARKED (2026-10-06 review): the external API-key surface never worked
+    // (ownership checks compared a field books don't have). It returns 404
+    // until the feature is finished properly — do not advertise it.
+    return res.status(404).json({ error: 'Not available' });
     const { bookId } = req.params;
 
     // Get book

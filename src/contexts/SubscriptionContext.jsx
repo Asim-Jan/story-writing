@@ -44,6 +44,27 @@ export const SubscriptionProvider = ({ children }) => {
     fetchSubscription();
   }, []);
 
+  // Reset + refetch when the signed-in user changes (login/logout/account
+  // switch): the old context fetched once per page load and kept the previous
+  // user's tier after logout — feature gates then applied the WRONG tier to
+  // the next session until a full reload.
+  useEffect(() => {
+    const onAuthChanged = () => {
+      const hadUser = !!localStorage.getItem('token');
+      setSubscription(null);
+      setTier('free');
+      setUnlockedFeatures([]);  // the unlock list resets with the tier
+      setLoading(hadUser);
+      if (hadUser) fetchSubscription();
+    };
+    window.addEventListener('auth:expired', onAuthChanged);
+    window.addEventListener('auth:changed', onAuthChanged);
+    return () => {
+      window.removeEventListener('auth:expired', onAuthChanged);
+      window.removeEventListener('auth:changed', onAuthChanged);
+    };
+  }, []);
+
   const hasFeature = (featureName) => {
     if (!featureName) return true;
 

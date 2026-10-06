@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { BookOpen, Image as ImageIcon, Upload, X, Users, Plus, Trash2, Mail, Key, Sparkles, Loader } from 'lucide-react';
 import ImagePreviewModal from './ImagePreviewModal';
-import APIKeysManager from './APIKeysManager';
 
 const BookMetadataTab = ({ data, setData, visuals }) => {
   const [selectedPreviewImage, setSelectedPreviewImage] = useState(null);
@@ -484,11 +483,6 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
             </p>
           )}
         </div>
-      </div>
-
-      {/* API Keys Section */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <APIKeysManager />
       </div>
 
       {/* Image Preview Modal */}

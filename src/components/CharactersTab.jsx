@@ -18,6 +18,7 @@ const CharactersTab = ({
   resetCharacterForm,
   deleteItem,
   editingId,
+  setEditingId,
   generateWithAI,
   aiSuggestion,
   acceptAISuggestion,
