@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from 'uuid';
 import { saiVideoStart, saiVideoStatus } from '../saiClient.js';
 import dotenv from 'dotenv';
 import { mediaStorage } from './mediaStorage.js';
@@ -30,8 +31,9 @@ export class VideoGenerator {
     console.log(`Generating video for scene ${scene.sceneNumber}: ${scene.title}`);
 
     try {
-      // Build optimized prompt
-      const videoPrompt = this.buildVeo3Prompt(scene);
+      // Build the motion prompt. options.stylePrompt locks the film's look;
+      // options.image (a data: URL) is the keyframe the clip starts from.
+      const videoPrompt = this.buildVeo3Prompt(scene, options.stylePrompt);
 
       console.log('Video prompt:', videoPrompt.substring(0, 200) + '...');
 
@@ -40,6 +42,7 @@ export class VideoGenerator {
         prompt: videoPrompt,
         model: 'minimax-h3-fp8',
         seconds: duration,
+        image: options.image,
       });
 
       // Poll until the job completes
@@ -85,7 +88,7 @@ export class VideoGenerator {
       console.log(`Video downloaded: ${videoBuffer.length} bytes`);
 
       // Upload to MinIO
-      const filename = `scene-${scene.sceneNumber}-${Date.now()}.mp4`;
+      const filename = `scene-${scene.sceneNumber}-${uuidv4()}.mp4`;
       const uploadResult = await mediaStorage.upload('videos', videoBuffer, filename, {
         'x-amz-meta-type': 'animation-scene',
         'x-amz-meta-scene-number': String(scene.sceneNumber),
@@ -109,6 +112,8 @@ export class VideoGenerator {
         size: videoBuffer.length,
         provider: 'sai-h3',
         jobId,
+        // the clip itself, for the caller that needs its last frame; never stored
+        ...(options.keepBuffer ? { buffer: videoBuffer } : {}),
       };
     } catch (error) {
       console.error(`Video generation error for scene ${scene.sceneNumber}:`, error);
@@ -119,8 +124,8 @@ export class VideoGenerator {
   /**
    * Build optimized prompt for the video model
    */
-  buildVeo3Prompt(scene) {
-    let prompt = '';
+  buildVeo3Prompt(scene, stylePrompt = '') {
+    let prompt = stylePrompt ? `${stylePrompt}. ` : '';
 
     // Camera direction
     if (scene.cameraDirection) {
@@ -135,8 +140,9 @@ export class VideoGenerator {
       prompt += `. ${scene.mood} atmosphere`;
     }
 
-    // Cinematic instructions
-    prompt += '. Cinematic quality, realistic physics, smooth motion, professional lighting.';
+    // Motion only: "realistic" here pushed every clip toward live action
+    // whatever the film's style. The style prompt sets the look.
+    prompt += '. Smooth natural motion, steady cinematic camera.';
 
     // Audio cues (Veo 3 generates audio natively)
     if (scene.audioPrompt) {

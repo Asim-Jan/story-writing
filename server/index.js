@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import axios from 'axios';
 import { speakLongText } from './utils/speech.js';
 import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './services/mediaJobs.js';
+import { directFilm, FILM_STYLES } from './services/filmDirector.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
@@ -4493,14 +4494,18 @@ function mediaJobRunner(req) {
     const status = scenes.map(sc => ({ sceneNumber: sc.sceneNumber, status: 'pending' }));
     const mark = (n, patch) => { const row = status.find(r => r.sceneNumber === n); if (row) Object.assign(row, patch); };
     const project = await renderAnimation({
-      bookId, book: req.mediaJobBook, transcriptId: target.id, scenes, options: params.options || {},
+      user, bookId, book: req.mediaJobBook, transcriptId: target.id, scenes, options: params.options || {},
       onProgress: (event) => {
-        if (event.stage === 'generating') mark(event.sceneNumber, { status: 'rendering' });
-        if (event.stage === 'scene-complete') mark(event.sceneNumber, { status: 'completed', videoUrl: event.result?.videoUrl });
-        if (event.stage === 'scene-failed') mark(event.sceneNumber, { status: 'failed', error: event.error });
+        const kf = event.keyframeUrl ? { keyframeUrl: event.keyframeUrl } : {};
+        if (event.stage === 'keyframe') mark(event.sceneNumber, { status: 'keyframe' });
+        if (event.stage === 'generating') mark(event.sceneNumber, { status: 'rendering', ...kf });
+        if (event.stage === 'scene-complete') mark(event.sceneNumber, { status: 'completed', videoUrl: event.result?.videoUrl, ...kf });
+        if (event.stage === 'scene-failed') mark(event.sceneNumber, { status: 'failed', error: event.error, ...kf });
         const done = status.filter(r => r.status === 'completed' || r.status === 'failed').length;
         const rendering = status.find(r => r.status === 'rendering');
+        const drawing = status.find(r => r.status === 'keyframe');
         const message = event.stage === 'assembling' ? event.message
+          : drawing ? `Drawing the keyframe for scene ${drawing.sceneNumber} of ${scenes.length}`
           : rendering ? `Rendering scene ${rendering.sceneNumber} of ${scenes.length}`
           : `${done} of ${scenes.length} scenes rendered`;
         return report({
@@ -5825,10 +5830,12 @@ app.post('/api/video/parse-transcript', authenticateToken, consumeAIQuota, async
 // ffmpeg. onProgress gets the generator's events (generating, scene-complete,
 // scene-failed) plus 'assembling'. Returns the animation project; throws when
 // every scene failed. Used by the book media jobs and the old SSE route.
-async function renderAnimation({ bookId, book, transcriptId, scenes, options = {}, onProgress = () => {} }) {
+async function renderAnimation({ user, bookId, book, transcriptId, scenes, options = {}, onProgress = () => {} }) {
   onProgress({ stage: 'starting', message: `Generating ${scenes.length} video scenes...` });
-  const generator = new VideoGenerator(null, bookId);
-  const results = await generator.generateBatch(scenes, onProgress, options);
+  // keyframe per scene from the cast's portraits + the previous shot, one
+  // locked style (services/filmDirector.js)
+  const style = FILM_STYLES[options.style] ? options.style : 'animated';
+  const results = await directFilm({ user, bookId, book, scenes, styleKey: style, onProgress });
   const completed = results.filter(r => r.status === 'completed');
   if (completed.length === 0) throw new Error('All scenes failed to generate');
 
@@ -5840,6 +5847,7 @@ async function renderAnimation({ bookId, book, transcriptId, scenes, options = {
     id: `anim-${uuidv4()}`,
     transcriptId,
     title,
+    style,
     scenes: scenes.map((scene, idx) => ({ ...scene, ...results[idx] })),
     finalVideo,
     status: 'completed',
@@ -5878,7 +5886,7 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireF
     res.on('close', () => clearInterval(keepalive));
 
     try {
-      const animationProject = await renderAnimation({ bookId, book, transcriptId, scenes, options, onProgress: sendProgress });
+      const animationProject = await renderAnimation({ user: req.user, bookId, book, transcriptId, scenes, options, onProgress: sendProgress });
       await BookDataService.applyServerWrite(bookId, req.user.userId, (fresh) => ({
         animation_projects: [...(fresh.animationProjects || []), animationProject],
       }));

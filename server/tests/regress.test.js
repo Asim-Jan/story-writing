@@ -402,9 +402,11 @@ async function mainSuite(gateway) {
     const chatCalls = gateway.requests.filter(q => q.path.endsWith('/chat/completions'));
     check('every chat call turns thinking off', chatCalls.length > 0 && chatCalls.every(q => q.body?.chat_template_kwargs?.enable_thinking === false),
       `${chatCalls.length} calls`);
-    r = await call('POST', '/api/rpg/ai-dm/generate-quest', owner.token, { bookId: book.id });
-    const qAfterQuest = await used();
-    check('RPG quest generation uses AI quota now', r.status === 404 || r.status === 400 || qAfterQuest > q1, `status ${r.status}`);
+    // every AI route is metered (these five were free until 2.23.34)
+    const unmetered = ['/api/parse-transcript-to-comic', '/api/books/:bookId/analyze-import', '/api/rpg/ai-dm/generate-quest',
+      '/api/rpg/ai-dm/generate-balanced-encounter', '/api/rpg/ai-dm/narrate']
+      .filter(route => !src.split('\n').some(l => l.includes(`app.post('${route}'`) && l.includes('consumeAIQuota')));
+    check('the AI routes that used to be free now use AI quota', unmetered.length === 0, unmetered.join(', '));
 
     await mediaChecks({ call, db, gateway, owner, stranger, book });
 
@@ -563,10 +565,16 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
     await redis.quit();
   }
 
-  // animation: per-scene progress and a project result (the server does not write the book)
+  // animation: per-scene progress and a project result (the server does not write the book).
+  // The book's cast has Mira with a portrait, so her scenes are drawn from it.
+  const portraitForFilm = (await refJob(owner.token, { bookId: book.id, kind: 'portrait', character })).json?.reference?.imageUrl;
+  await db.query('UPDATE books SET characters = $2 WHERE id = $1', [book.id, JSON.stringify([{ id: 'c1', name: 'Mira Vale', imageUrl: portraitForFilm }])]);
   const versionBefore = (await db.query('SELECT version FROM books WHERE id = $1', [book.id])).rows[0].version;
+  const filmStart = gateway.requests.length;
   r = await call('POST', jobsUrl, owner.token, { type: 'animation', target: { type: 'animation', id: 't1' }, params: {
-    scenes: [{ sceneNumber: 1, title: 'A', visualPrompt: 'a lighthouse', duration: 1 }, { sceneNumber: 2, title: 'B', visualPrompt: 'waves', duration: 1 }] } });
+    options: { style: 'animated' },
+    scenes: [{ sceneNumber: 1, title: 'A', visualPrompt: 'Mira climbs the lighthouse stairs', characters: ['Mira'], duration: 1 },
+      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves', characters: ['mira vale'], duration: 1 }] } });
   const animId = r.json?.job?.jobId;
   let sawProgress = false;
   for (let i = 0; i < 300; i++) {
@@ -579,6 +587,19 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   check('media job: animation done with a project and a playable film', done?.status === 'done' && /^\/api\/media\/videos\//.test(done?.result?.project?.finalVideo?.videoUrl || '') &&
     done?.result?.project?.finalVideo?.duration === 2, JSON.stringify(done).slice(0, 240));
   check('media job: the server did not write the book (no 409 for the user)', (await db.query('SELECT version FROM books WHERE id = $1', [book.id])).rows[0].version === versionBefore);
+  const filmCalls = gateway.requests.slice(filmStart);
+  const keyframes = filmCalls.filter(q => q.path.endsWith('/images/generations') && q.body?.model === 'qwen-image-2.1');
+  const starts = filmCalls.filter(q => q.path.endsWith('/video/generations'));
+  check('film: a 16:9 keyframe per scene (qwen-image-2.1, 1280x720, canvas:size)',
+    keyframes.length === 2 && keyframes.every(k => k.body.size === '1280x720' && k.body.canvas === 'size'), `${keyframes.length} keyframes`);
+  check('film: scene 1 keyframe references the character\'s portrait', /^data:image\//.test(keyframes[0]?.body?.image || '') && /image 1 is Mira Vale/.test(keyframes[0]?.body?.prompt || ''),
+    (keyframes[0]?.body?.prompt || '').slice(0, 200));
+  check('film: scene 2 keyframe references the portrait AND the previous clip\'s last frame', keyframes[1]?.body?.images?.length === 2 && /previous shot/.test(keyframes[1]?.body?.prompt || ''));
+  check('film: every clip starts from its keyframe, in the locked style, never "realistic"',
+    starts.length === 2 && starts.every(v => /^data:image\//.test(v.body?.image || '') && /stylised 3D animated/.test(v.body?.prompt || '') && !/realistic/i.test(v.body?.prompt || '')),
+    (starts[0]?.body?.prompt || '').slice(0, 160));
+  check('film: the project records the style, keyframes and cast',
+    done?.result?.project?.style === 'animated' && done.result.project.scenes.every(sc => /^\/api\/media\/images\/keyframe-/.test(sc.keyframeUrl || '') && sc.cast?.[0] === 'Mira Vale'));
   await call('POST', `${jobsUrl}/${animId}/ack`, owner.token);
 
   // long text to speech = one valid WAV
