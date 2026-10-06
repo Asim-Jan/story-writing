@@ -750,6 +750,15 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         </header>
 
         {/* Quota Banner */}
+        {/* Save errors are DATA-LOSS warnings — they must be seen. The old
+            code set error and rendered nothing, so a failed save silently
+            looked like a save. */}
+        {error && (
+          <div className="mx-4 sm:mx-6 mt-2 border border-[var(--red)] text-[var(--red)] text-sm px-3 py-2" role="alert">
+            {error}
+          </div>
+        )}
+
         <QuotaBanner onNavigateToProfile={() => setShowProfile(true)} />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">

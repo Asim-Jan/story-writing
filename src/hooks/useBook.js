@@ -166,13 +166,19 @@ export const useBook = (bookId) => {
         for (const field of SERVER_OWNED_FIELDS) {
           if (savedBook[field] !== undefined) merged[field] = savedBook[field];
         }
-        // Chapters: take back server-assigned versions so the NEXT save matches
-        // rows correctly, without touching the content the user sees.
+        // Chapters: adopt server identity for the NEXT save. Join on id first;
+        // rows the server doesn't know (NEW chapters — the client mints
+        // Date.now() ids, the server assigns a UUID on INSERT) join on chapter
+        // number. The old id-only merge let the next save re-INSERT the same
+        // chapter: UNIQUE(book_id, chapter_number) → 500 forever after.
         if (Array.isArray(savedBook.chapters) && merged.chapters?.length) {
           const byId = new Map(savedBook.chapters.map(ch => [ch.id, ch]));
-          merged.chapters = merged.chapters.map(ch =>
-            byId.has(ch.id) ? { ...ch, version: byId.get(ch.id).version, updatedAt: byId.get(ch.id).updatedAt } : ch
-          );
+          const byNumber = new Map(savedBook.chapters.map(ch => [String(ch.number), ch]));
+          merged.chapters = merged.chapters.map(ch => {
+            const serverRow = byId.get(ch.id) || byNumber.get(String(ch.number));
+            if (!serverRow) return ch;
+            return { ...ch, id: serverRow.id, version: serverRow.version, updatedAt: serverRow.updatedAt };
+          });
         }
         return merged;
       });
@@ -207,10 +213,17 @@ export const useBook = (bookId) => {
     onSaveSuccess: () => {
       setSaving(false);
       setError(null);
+      // The save merged server-owned fields (version bump) into state — that
+      // merge must NOT look like an edit, or autosave re-saves every cycle.
+      // (Stale closure: dataRef.current holds the latest merged state.)
+      autosave.markBaseline?.(dataRef.current);
     },
     onSaveError: (err) => {
       setSaving(false);
-      setError('Autosave failed — your changes are still here; press Save Now to retry.');
+      // a 409 sets its own, specific message in saveBook — don't overwrite it
+      // with the generic autosave text (the conflict message IS the user
+      // guidance: 'someone else saved, reload')
+      setError(prev => prev ?? 'Autosave failed — your changes are still here; press Save Now to retry.');
       console.error('Autosave error:', err);
     },
   });
@@ -223,7 +236,7 @@ export const useBook = (bookId) => {
 
   useEffect(() => {
     const beforeUnload = (e) => {
-      if (autosave.status === 'unsaved' || autosave.status === 'saving' || autosave.status === 'error') {
+      if (autosave.saveStatus === 'unsaved' || autosave.saveStatus === 'saving' || autosave.saveStatus === 'error') {
         e.preventDefault();
         e.returnValue = '';
         return '';
@@ -232,7 +245,7 @@ export const useBook = (bookId) => {
     };
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [autosave.status]);
+  }, [autosave.saveStatus]);
 
   return {
     data,

@@ -186,7 +186,7 @@ export class BookRepository {
    * @param {number} expectedVersion - Expected version for optimistic locking
    * @returns {Promise<object>} Updated book
    */
-  static async update(bookId, userId, updates, expectedVersion) {
+  static async update(bookId, userId, updates, expectedVersion, existingClient = null) {
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -226,8 +226,7 @@ export class BookRepository {
     // Owner OR an editor+ collaborator may save. (Viewers were already refused by
     // the route's role check; the WHERE keeps that authority check in the row-level
     // test so a stale client can't slip past a role change mid-edit.)
-    const result = await query(
-      `UPDATE books SET ${fields.join(', ')}
+    const sql = `UPDATE books SET ${fields.join(', ')}
        WHERE id = $${paramCount}
          AND version = $${paramCount + 2}
          AND deleted_at IS NULL
@@ -239,9 +238,13 @@ export class BookRepository {
                AND c.status = 'active' AND c.role IN ('editor', 'admin')
            )
          )
-       RETURNING *`,
-      values
-    );
+       RETURNING *`;
+    // A transaction PoolClient is not itself callable — invoke its .query.
+    // (existingClient = the save transaction's client: the book row and the
+    // chapter sync must commit or roll back together.)
+    const result = existingClient
+      ? await existingClient.query(sql, values)
+      : await query(sql, values);
 
     if (result.rowCount === 0) {
       // Check if book exists

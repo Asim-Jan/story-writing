@@ -3357,13 +3357,20 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
       try {
         var book = await updateBook(id, req.user.userId, updates, expectedVersion);
       } catch (saveError) {
-        if (saveError.message.includes('CONFLICT')) {
+        const code = saveError.code || (saveError.message.includes('CONFLICT') ? 'CONFLICT' : null);
+        if (code === 'CONFLICT') {
           const current = await getBook(id);
           return res.status(409).json({
             error: 'This book changed on the server while you were editing.',
             serverVersion: current?.version,
             serverUpdatedAt: current?.updated_at || current?.updatedAt
           });
+        }
+        if (code === 'FORBIDDEN') {
+          return res.status(403).json({ error: 'You do not have permission to edit this book' });
+        }
+        if (code === 'NOT_FOUND') {
+          return res.status(404).json({ error: 'Book not found' });
         }
         throw saveError;
       }
@@ -8350,7 +8357,7 @@ process.on('unhandledRejection', (reason) => {
 // A fresh install self-heals; a live one only runs what's new.
 (async () => {
   try {
-    const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
+    const schemaPath = path.join(__dirname, 'db', 'schema.sql');
     if (fs.existsSync(schemaPath)) {
       await getPool().query(readFileSync(schemaPath, 'utf8'));
       console.log('✓ schema.sql applied');
