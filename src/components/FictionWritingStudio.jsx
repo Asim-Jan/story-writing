@@ -33,7 +33,9 @@ import { useQuotaWarnings, shouldShowDailyDigest, markDailyDigestShown } from '.
 
 const FictionWritingStudio = ({ bookId, onBack }) => {
   const [activeTab, setActiveTab] = useState('overview');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
   const [showProfile, setShowProfile] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, AlertCircle } from 'lucide-react';
+import { X, Info, AlertCircle } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -41,8 +41,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Key className="w-6 h-6" />
-            Settings
+            <Info className="w-6 h-6" />
+            AI &amp; Usage
           </h2>
           <button
             onClick={onClose}
@@ -73,7 +73,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
         <div className="flex justify-end gap-3 p-6 border-t border-gray-200 dark:border-gray-700">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600 rounded-lg transition-colors"
             disabled={loading}
           >
             Close

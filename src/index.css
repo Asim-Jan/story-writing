@@ -69,61 +69,90 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Map the old Tailwind purple/grey palette onto ORDNANCE tokens, app-wide.
-   The components keep their Tailwind class names; the palette below decides
-   what they actually look like — so the restyle is one file, not 67. */
-:root {
-  --tw-purple-50:  rgba(41,80,110,.08);
-  --tw-purple-100: rgba(41,80,110,.14);
-  --tw-purple-200: var(--line);
-  --tw-purple-300: var(--line2);
-  --tw-purple-400: var(--dim);
-  --tw-purple-500: var(--blue);
-  --tw-purple-600: var(--blue);
-  --tw-purple-700: var(--blue);
-  --tw-purple-800: var(--ink);
-  --tw-purple-900: var(--ink);
-  --tw-gray-50:  var(--glass);
-  --tw-gray-100: var(--glass2);
-  --tw-gray-200: var(--line);
-  --tw-gray-300: var(--line2);
-  --tw-gray-400: var(--dim2);
-  --tw-gray-500: var(--dim);
-  --tw-gray-600: var(--dim);
-  --tw-gray-700: var(--dim);
-  --tw-gray-800: var(--bg2);
-  --tw-gray-900: var(--ink);
-  --tw-green-50:  rgba(111,191,139,.10);
-  --tw-green-200: var(--line);
-  --tw-green-500: var(--ok);
-  --tw-green-600: var(--ok);
-  --tw-green-700: var(--ok);
-  --tw-red-50:  rgba(226,121,92,.10);
-  --tw-red-200: var(--line);
-  --tw-red-500: var(--red);
-  --tw-red-600: var(--red);
-  --tw-red-700: var(--red);
-  --tw-blue-50:  rgba(110,168,216,.10);
-  --tw-blue-200: var(--line);
-  --tw-blue-400: var(--blue);
-  --tw-blue-500: var(--blue);
-  --tw-blue-600: var(--blue);
-  --tw-blue-800: var(--ink);
-  --tw-yellow-50:  rgba(217,164,65,.10);
-  --tw-yellow-100: rgba(217,164,65,.14);
-  --tw-yellow-200: var(--line);
-  --tw-yellow-400: var(--warn);
-  --tw-yellow-500: var(--warn);
-  --tw-yellow-600: var(--warn);
-  --tw-orange-50:  rgba(217,164,65,.10);
-  --tw-orange-500: var(--warn);
-  --tw-orange-600: var(--warn);
+/* ═══════════════════════════════════════════════════════════════════════════
+   NIGHT CHART — the dark theme. tailwind.config.js bakes the SHEET ladder
+   into the built CSS; these overrides re-point the utilities' ink/surface
+   variables at the dark values. Gradients were flattened to solid surfaces
+   at the config level; here we give those (now solid) surfaces their dark
+   values via the same variables the compiled classes consume.
+   ═══════════════════════════════════════════════════════════════════════════ */
+html[data-theme="dark"] body,
+html[data-theme="dark"] {
+  --sw-bg: #10161A;
+  --sw-card: #161E23;
+  --sw-line: #3A454C;
+  --sw-ink: #E4E7E4;
+  --sw-dim: #8C9BA2;
+  --sw-raised: #1E2930;
 }
 
-/* Kill the old look's shadows and gradients at the source */
+/* ═══════════════════════════════════════════════════════════════════════════
+   DARK-THEME TEXT REMAP — the compiled utilities hardcode sheet RGB values,
+   so in dark mode we swap the two dimensions that actually matter: any
+   near-black ink becomes near-white, any mid-gray becomes the dim ladder.
+   Done with filter-free targeted overrides on the utility classes that the
+   app actually uses (audited: text-{gray,slate}-{700,800,900} and
+   bg-white/text-white card patterns).
+   ═══════════════════════════════════════════════════════════════════════════ */
+html[data-theme="dark"] .text-gray-900,
+html[data-theme="dark"] .text-gray-800,
+html[data-theme="dark"] .text-slate-900,
+html[data-theme="dark"] .text-slate-800,
+html[data-theme="dark"] .text-purple-900,
+html[data-theme="dark"] .text-purple-800,
+html[data-theme="dark"] .text-gray-700,
+html[data-theme="dark"] .text-slate-700 { color: var(--sw-ink); }
+html[data-theme="dark"] .text-gray-600,
+html[data-theme="dark"] .text-gray-500,
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-slate-500,
+html[data-theme="dark"] .text-gray-400 { color: var(--sw-dim); }
+html[data-theme="dark"] .bg-white { background-color: var(--sw-card); }
+html[data-theme="dark"] .bg-gray-50,
+html[data-theme="dark"] .bg-gray-100,
+html[data-theme="dark"] .bg-amber-50,
+html[data-theme="dark"] .bg-orange-50,
+html[data-theme="dark"] .bg-yellow-50,
+html[data-theme="dark"] .bg-purple-50,
+html[data-theme="dark"] .bg-indigo-50,
+html[data-theme="dark"] .bg-blue-50,
+html[data-theme="dark"] .bg-green-50,
+html[data-theme="dark"] .bg-red-50 { background-color: var(--sw-bg); }
+/* light accent fills (bg-*-100/200 tiles, badges, light-blue buttons) become
+   raised dark surfaces; their dark text flips to ink so they stay readable */
+html[data-theme="dark"] .bg-gray-200,
+html[data-theme="dark"] .bg-gray-300,
+html[data-theme="dark"] .bg-blue-100,
+html[data-theme="dark"] .bg-blue-200,
+html[data-theme="dark"] .bg-purple-100,
+html[data-theme="dark"] .bg-purple-200,
+html[data-theme="dark"] .bg-indigo-100,
+html[data-theme="dark"] .bg-indigo-200,
+html[data-theme="dark"] .bg-amber-100,
+html[data-theme="dark"] .bg-amber-200,
+html[data-theme="dark"] .bg-green-100,
+html[data-theme="dark"] .bg-green-200 { background-color: var(--sw-raised); color: var(--sw-ink); }
+html[data-theme="dark"] .border-gray-200,
+html[data-theme="dark"] .border-gray-300,
+html[data-theme="dark"] .border-slate-200,
+html[data-theme="dark"] .border-slate-300 { border-color: var(--sw-line); }
+
+/* Kill the old look's shadows and gradients at the source. Gradient BUTTONS
+   become solid ORDNANCE blue; gradient PAGE WRAPPERS (min-h-screen) become
+   the page background token — the blanket rule painted the whole viewport
+   blue and that was wrong. */
 .shadow-sm, .shadow-md, .shadow-lg, .shadow-xl,
 [class*="shadow-"] { box-shadow: none !important; }
-[class*="bg-gradient-"], [class*="bg-clip-text"] { background-image: none !important; }
+[class*="bg-gradient-"] { background-image: none !important; }
+.min-h-screen[class*="bg-gradient-"],
+.min-h-screen.bg-gradient-to-br {
+  background-color: var(--bg) !important;
+}
+/* gradient buttons (small, accent-coloured, white-texted) → solid blue */
+:not(.min-h-screen)[class*="bg-gradient-"] { background-color: var(--blue) !important; }
+:root[data-theme="light"] :not(.min-h-screen)[class*="bg-gradient-"] { color: #fff !important; }
+html[data-theme="dark"] :not(.min-h-screen)[class*="bg-gradient-"] { color: var(--sw-bg) !important; background-color: var(--sw-ink) !important; }
+[class*="bg-clip-text"] { background-image: none !important; }
 
 /* Soften the focus rings to the ORDNANCE focus token */
 *:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus); }

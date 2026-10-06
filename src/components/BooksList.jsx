@@ -193,7 +193,7 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
           {quotas && (
             <div className="mb-2 text-xs sm:text-sm text-gray-600 px-4">
               <span className={`font-semibold ${quotas.usage.current_books >= quotas.limits.max_books ? 'text-red-600' : 'text-amber-700'}`}>
-                {quotas.usage.current_books} / {quotas.limits.max_books}
+                {quotas.usage.current_books} / {quotas.limits.max_books >= 999999 ? '∞' : quotas.limits.max_books}
               </span>
               {' '}books used
               {quotas.usage.current_books >= quotas.limits.max_books && (
