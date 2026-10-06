@@ -22,6 +22,10 @@ export const useAutosave = (data, saveFunction, options = {}) => {
   const [lastSaved, setLastSaved] = useState(null);
   const timeoutRef = useRef(null);
   const previousDataRef = useRef(null);
+  // what we tried to save when the last save failed: a conflict (409) fails
+  // the same way every time, so the same content is not retried every 30 s.
+  // The next edit, or Save Now, tries again.
+  const failedDataRef = useRef(null);
   const isMountedRef = useRef(true);
   const latestDataRef = useRef(data);
   latestDataRef.current = data;
@@ -52,6 +56,9 @@ export const useAutosave = (data, saveFunction, options = {}) => {
     if (previousDataRef.current === dataString) {
       return;
     }
+    if (saveStatus === 'error' && failedDataRef.current === dataString) {
+      return;
+    }
 
     // While a save is in flight, wait: when it completes, saveStatus changes,
     // this effect runs again and compares the latest state against what was
@@ -75,18 +82,20 @@ export const useAutosave = (data, saveFunction, options = {}) => {
       setSaveStatus('saving');
       if (onSaveStart) onSaveStart();
 
+      const saving = fingerprint(latestDataRef.current);
       try {
-        const saving = fingerprint(latestDataRef.current);
         await saveFunction();
 
         if (isMountedRef.current) {
           previousDataRef.current = saving; // the baseline is what was saved
+          failedDataRef.current = null;
           setSaveStatus('saved');
           setLastSaved(new Date());
           if (onSaveSuccess) onSaveSuccess();
         }
       } catch (error) {
         if (isMountedRef.current) {
+          failedDataRef.current = saving;
           setSaveStatus('error');
           if (onSaveError) onSaveError(error);
         }
@@ -110,14 +119,16 @@ export const useAutosave = (data, saveFunction, options = {}) => {
     setSaveStatus('saving');
     if (onSaveStart) onSaveStart();
 
+    const saving = fingerprint(latestDataRef.current);
     try {
-      const saving = fingerprint(latestDataRef.current);
       await saveFunction();
       previousDataRef.current = saving;
+      failedDataRef.current = null;
       setSaveStatus('saved');
       setLastSaved(new Date());
       if (onSaveSuccess) onSaveSuccess();
     } catch (error) {
+      failedDataRef.current = saving;
       setSaveStatus('error');
       if (onSaveError) onSaveError(error);
       throw error;

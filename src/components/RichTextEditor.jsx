@@ -239,7 +239,10 @@ function LoadContentPlugin({ initialContent, emittedRef }) {
   const lastLoadedRef = useRef(null);
 
   useEffect(() => {
-    if (!initialContent) return;
+    // '' is a real value: New Chapter resets the form to an empty body, and
+    // skipping it left the previous chapter's text in the editor, where typing
+    // copied it into the new chapter. Only null/undefined mean "nothing yet".
+    if (initialContent === null || initialContent === undefined) return;
     if (lastLoadedRef.current === initialContent) return;
     // Our own onChange echoing back through the parent's state. By the time it
     // arrives the user may have typed more, so comparing it with the editor's
@@ -259,6 +262,10 @@ function LoadContentPlugin({ initialContent, emittedRef }) {
       if (current === initialContent) return;
 
       root.clear();
+      if (initialContent === '') {
+        root.append($createParagraphNode());
+        return;
+      }
       // plain-text load: paragraphs from blank-line splits (markdown parsing
       // dropped — see the note in handleChange)
       const paragraphs = initialContent.split(/\n\n+/);
