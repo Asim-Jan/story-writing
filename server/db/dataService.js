@@ -603,6 +603,7 @@ export class BookDataService {
     // Errors now propagate: conflict -> 409, anything else -> 500. Never a silent 200.
     if (features.shouldWriteToPostgres()) {
       book = await transaction(async (client) => {
+        let updatedChapters = null;
         let updated = await BookRepository.update(bookId, userId, bookUpdates, expectedVersion || 1);
         if (updated) {
           updated = this.mapBookFieldsFromPostgres(updated);
@@ -612,7 +613,7 @@ export class BookDataService {
           await this.syncChaptersInClient(client, bookId, chapters);
           // reload ON THE TRANSACTION CLIENT — a pool read here would see the
           // pre-commit snapshot (versions one step behind what was just written)
-          const updatedChapters = (await client.query(
+          updatedChapters = (await client.query(
             'SELECT * FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number ASC',
             [bookId]
           )).rows;
