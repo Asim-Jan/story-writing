@@ -133,13 +133,14 @@ async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUr
  * character's main image; with neither, a portrait is made first and returned
  * too (the caller stores both).
  */
-export async function generateReference({ user, bookId, kind, character, sourceImageUrl, style, prompt: promptOverride }) {
+export async function generateReference({ user, bookId, kind, character, sourceImageUrl, style, prompt: promptOverride, onStage = () => {} }) {
   let source = sourceImageUrl || character.imageUrl || null;
   let portrait = null;
 
   let spec = buildReferencePrompt(kind, character, style, Boolean(source));
   if (spec.needsSourceImage && !source) {
     const portraitSpec = buildReferencePrompt('portrait', character, style);
+    await onStage('Drawing the base portrait (needed for the sheet)...');
     portrait = await renderAndStore({ user, bookId, spec: portraitSpec, prompt: portraitSpec.prompt, characterId: character.id });
     source = portrait.imageUrl;
     spec = buildReferencePrompt(kind, character, style, true);
@@ -149,6 +150,7 @@ export async function generateReference({ user, bookId, kind, character, sourceI
   // the source picture when there is one. If the sheet fails after a portrait
   // was made, the error carries the portrait so it isn't lost (it's stored,
   // and the next attempt would otherwise draw a different one).
+  await onStage(kind === 'portrait' ? 'Drawing the portrait...' : `Drawing the ${kind.replace('-', ' ')}...`);
   try {
     const image = kind !== 'portrait' && source ? await mediaUrlToDataUrl(user, source) : undefined;
     const reference = await renderAndStore({

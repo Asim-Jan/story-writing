@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import helmet from 'helmet';
 import axios from 'axios';
 import { speakLongText } from './utils/speech.js';
+import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './services/mediaJobs.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
@@ -4159,65 +4160,59 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // ==================== LEGACY SYNCHRONOUS ENDPOINTS (kept for backward compatibility) ====================
 
 // Image Generation endpoint using OpenAI DALL-E
-app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
-  try {
-    const { prompt, context, size, model, sourceImageUrl } = req.body;
+// One image for a book: optional prompt rewrite with the book's context, then
+// the SAI bridge (text-to-image, or an edit of one of the app's own images),
+// stored in MinIO. Used by POST /api/generate-image and the book media jobs.
+async function generateBookImage({ user, bookId, prompt, context, size, model, sourceImageUrl }) {
+  if (!prompt) throw Object.assign(new Error('Prompt is required'), { status: 400 });
 
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
+  // The bridge renders up to 1536 px a side. The old DALL-E sizes (1792 px)
+  // map to the nearest 16:9 / 9:16 it supports; any other WxH from 256 to
+  // 1536 (multiples of 16) is used as given.
+  const LEGACY_SIZES = { '1792x1024': '1536x864', '1024x1792': '864x1536' };
+  const sizeMatch = /^(\d{3,4})x(\d{3,4})$/.exec(LEGACY_SIZES[size] || size || '');
+  const imageSize = sizeMatch && [sizeMatch[1], sizeMatch[2]].every(n => n >= 256 && n <= 1536 && n % 16 === 0)
+    ? `${sizeMatch[1]}x${sizeMatch[2]}`
+    : '1024x1024';
+  // flux2-klein-9b (fast, the default) or qwen-image-2.1 (best at text in
+  // the image and at faithful edits)
+  const imageModel = model === 'qwen-image-2.1' ? 'qwen-image-2.1' : 'flux2-klein-9b';
+  // Optional: edit one of the app's own images instead of drawing from scratch
+  let sourceImage;
+  if (sourceImageUrl) {
+    sourceImage = await mediaUrlToDataUrl(user, sourceImageUrl);
+  }
+
+  // Get the pooled SAI client (validates the gateway key exists)
+  const userOpenai = await getUserOpenAI(user.userId);
+
+  // Step 1: Optionally enhance the prompt with book context
+  let enhancedPrompt = prompt;
+
+  if (context) {
+    console.log('Preprocessing image prompt with book context...');
+
+    let contextString = '';
+    if (context.bookTitle) contextString += `Book: ${context.bookTitle}\n`;
+    if (context.overview) contextString += `Story: ${context.overview}\n`;
+    if (context.characters && context.characters.length > 0) {
+      contextString += `Characters: ${context.characters.map(c => `${c.name}${c.role ? ` (${c.role})` : ''}`).join(', ')}\n`;
+    }
+    if (context.locations && context.locations.length > 0) {
+      contextString += `Locations: ${context.locations.map(l => l.name).join(', ')}\n`;
+    }
+    // The subject of THIS image, in full (the lists above are names only)
+    if (context.character) contextString += `Subject character: ${describeCharacter(context.character)}\n`;
+    if (context.location) {
+      contextString += `Subject location: ${[context.location.name, context.location.type, context.location.description].filter(Boolean).join(', ').slice(0, 600)}\n`;
     }
 
-    // The bridge renders up to 1536 px a side. The old DALL-E sizes (1792 px)
-    // map to the nearest 16:9 / 9:16 it supports; any other WxH from 256 to
-    // 1536 (multiples of 16) is used as given.
-    const LEGACY_SIZES = { '1792x1024': '1536x864', '1024x1792': '864x1536' };
-    const sizeMatch = /^(\d{3,4})x(\d{3,4})$/.exec(LEGACY_SIZES[size] || size || '');
-    const imageSize = sizeMatch && [sizeMatch[1], sizeMatch[2]].every(n => n >= 256 && n <= 1536 && n % 16 === 0)
-      ? `${sizeMatch[1]}x${sizeMatch[2]}`
-      : '1024x1024';
-    // flux2-klein-9b (fast, the default) or qwen-image-2.1 (best at text in
-    // the image and at faithful edits)
-    const imageModel = model === 'qwen-image-2.1' ? 'qwen-image-2.1' : 'flux2-klein-9b';
-    // Optional: edit one of the app's own images instead of drawing from scratch
-    let sourceImage;
-    if (sourceImageUrl) {
-      try {
-        sourceImage = await mediaUrlToDataUrl(req.user, sourceImageUrl);
-      } catch (err) {
-        return res.status(err.status || 400).json({ error: err.message });
-      }
-    }
-
-    // Get the pooled SAI client (validates the gateway key exists)
-    const userOpenai = await getUserOpenAI(req.user.userId);
-
-    // Step 1: Optionally enhance the prompt with book context
-    let enhancedPrompt = prompt;
-
-    if (context) {
-      console.log('Preprocessing image prompt with book context...');
-
-      let contextString = '';
-      if (context.bookTitle) contextString += `Book: ${context.bookTitle}\n`;
-      if (context.overview) contextString += `Story: ${context.overview}\n`;
-      if (context.characters && context.characters.length > 0) {
-        contextString += `Characters: ${context.characters.map(c => `${c.name}${c.role ? ` (${c.role})` : ''}`).join(', ')}\n`;
-      }
-      if (context.locations && context.locations.length > 0) {
-        contextString += `Locations: ${context.locations.map(l => l.name).join(', ')}\n`;
-      }
-      // The subject of THIS image, in full (the lists above are names only)
-      if (context.character) contextString += `Subject character: ${describeCharacter(context.character)}\n`;
-      if (context.location) {
-        contextString += `Subject location: ${[context.location.name, context.location.type, context.location.description].filter(Boolean).join(', ').slice(0, 600)}\n`;
-      }
-
-      const promptEnhancement = await userOpenai.chat.completions.create({
-        model: SAI_CHAT_FAST,
-        messages: [
-          {
-            role: 'system',
-            content: `You are helping enhance image generation prompts for a text-to-image model. Given a user's basic image request and their book context, create a detailed, vivid image prompt that incorporates relevant context details.
+    const promptEnhancement = await userOpenai.chat.completions.create({
+      model: SAI_CHAT_FAST,
+      messages: [
+        {
+          role: 'system',
+          content: `You are helping enhance image generation prompts for a text-to-image model. Given a user's basic image request and their book context, create a detailed, vivid image prompt that incorporates relevant context details.
 
 Your enhanced prompt should be clear, descriptive, and optimized for image generation. Include:
 - Visual details (colors, lighting, composition)
@@ -4225,52 +4220,59 @@ Your enhanced prompt should be clear, descriptive, and optimized for image gener
 - Relevant context from the book (character appearances, location details, atmosphere)
 
 Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt text, nothing else.`
-          },
-          {
-            role: 'user',
-            content: `Book Context:\n${contextString}\n\nUser's Image Request: ${prompt}\n\nCreate an enhanced image generation prompt:`
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 500,
-      });
-
-      // A reply that is all thinking leaves no text: fall back to the user's prompt
-      // (an empty prompt still generated, and still cost a request).
-      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0]) || '').trim() || prompt;
-      console.log('Enhanced prompt:', enhancedPrompt);
-    }
-
-    // Step 2: Generate image via the SAI media bridge
-    console.log('Generating image via SAI media bridge...');
-
-    const imageResult = await saiImage({
-      prompt: enhancedPrompt,
-      model: imageModel,
-      size: imageSize,
-      image: sourceImage,
+        },
+        {
+          role: 'user',
+          content: `Book Context:\n${contextString}\n\nUser's Image Request: ${prompt}\n\nCreate an enhanced image generation prompt:`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 500,
     });
-    const buffer = imageResult.buffer;
 
-    // Upload to MinIO
-    const filename = `visual-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
-    const uploadResult = await mediaStorage.upload('images', buffer, filename, {
-      'x-amz-meta-type': 'generated-visual',
-      'x-amz-meta-prompt': (prompt || '').substring(0, 200),
-      // Note: No bookId for standalone image generation - backward compatibility only
-    }, setMediaBookMapping);
-    await recordMediaOwner('images', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
+    // A reply that is all thinking leaves no text: fall back to the user's prompt
+    // (an empty prompt still generated, and still cost a request).
+    enhancedPrompt = (saiTextOf(promptEnhancement.choices[0]) || '').trim() || prompt;
+    console.log('Enhanced prompt:', enhancedPrompt);
+  }
 
-    console.log('Image saved to MinIO:', uploadResult.storageKey);
+  // Step 2: Generate image via the SAI media bridge
+  console.log('Generating image via SAI media bridge...');
 
-    // Return storage key and proxy URL (portable across devices)
-    res.json({
-      imageUrl: `/api/media/images/${filename}`,
-      filename,
-      storageKey: uploadResult.storageKey,
-      bucket: uploadResult.bucket,
-    });
+  const imageResult = await saiImage({
+    prompt: enhancedPrompt,
+    model: imageModel,
+    size: imageSize,
+    image: sourceImage,
+  });
+  const buffer = imageResult.buffer;
+
+  // Upload to MinIO
+  const filename = `visual-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
+  const uploadResult = await mediaStorage.upload('images', buffer, filename, {
+    'x-amz-meta-type': 'generated-visual',
+    'x-amz-meta-prompt': (prompt || '').substring(0, 200),
+    // Note: No bookId for standalone image generation - backward compatibility only
+  }, setMediaBookMapping);
+  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
+
+  console.log('Image saved to MinIO:', uploadResult.storageKey);
+
+  return {
+    imageUrl: `/api/media/images/${filename}`,
+    filename,
+    storageKey: uploadResult.storageKey,
+    bucket: uploadResult.bucket,
+    prompt: enhancedPrompt,
+  };
+}
+
+app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
+  try {
+    const { prompt, context, size, model, sourceImageUrl, bookId } = req.body;
+    res.json(await generateBookImage({ user: req.user, bookId, prompt, context, size, model, sourceImageUrl }));
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error('Error generating image:', error);
 
     if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
@@ -4410,11 +4412,149 @@ async function checkReferenceRequest(req, res) {
   return true;
 }
 
-// A reference can take minutes (a cold portrait, then a sheet), and the site
-// sits behind Cloudflare, which drops any request that sends nothing for
-// 100 s. So the POST starts a job and returns 202 at once; the client polls
-// GET /api/characters/reference/jobs/:jobId. The job state lives in Redis for
-// a day. One quota slot per job, refunded only if nothing was produced.
+// ==================== BOOK MEDIA JOBS ====================
+// Every generation is a server job listed per book (services/mediaJobs.js), so
+// progress and results outlive the screen that started it. The site sits
+// behind Cloudflare (a silent request dies at 100 s), so POST answers 202 at
+// once and the client polls. One quota slot per job, refunded if it produced
+// nothing. The server does not write the book; the client applies the result
+// and acks the job after its next save.
+
+const MEDIA_JOB_TARGETS = {
+  reference: ['character'],
+  image: ['character', 'location', 'chapter', 'cover', 'visual'],
+  animation: ['animation'],
+};
+
+// Validate before the quota middleware, so a bad request costs nothing.
+async function validateMediaJob(req, res, next) {
+  try {
+    const { bookId } = req.params;
+    const { type, target, params } = req.body || {};
+    if (!MEDIA_JOB_TARGETS[type]) return res.status(400).json({ error: `type must be one of: ${Object.keys(MEDIA_JOB_TARGETS).join(', ')}` });
+    if (!target || !MEDIA_JOB_TARGETS[type].includes(target.type)) {
+      return res.status(400).json({ error: `target.type for ${type} must be one of: ${MEDIA_JOB_TARGETS[type].join(', ')}` });
+    }
+    if (!params || typeof params !== 'object') return res.status(400).json({ error: 'params are required' });
+    if (type === 'reference') {
+      if (!REFERENCE_KINDS.includes(params.kind)) return res.status(400).json({ error: `kind must be one of: ${REFERENCE_KINDS.join(', ')}` });
+      if (!params.character?.name) return res.status(400).json({ error: 'Character data is required' });
+    }
+    if (type === 'image' && !params.prompt) return res.status(400).json({ error: 'Prompt is required' });
+    if (type === 'animation') {
+      if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
+      if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
+    }
+    if (type !== 'animation' && !minioAvailable) return res.status(503).json({ error: 'Media storage is unavailable right now' });
+    const book = await getBook(bookId);
+    if (!book) return res.status(404).json({ error: 'Book not found' });
+    if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
+      return res.status(403).json({ error: 'You do not have permission to edit this book' });
+    }
+    req.mediaJobBook = book;
+    next();
+  } catch (error) {
+    console.error('Media job validation failed:', error.message);
+    res.status(500).json({ error: 'Failed to start the job' });
+  }
+}
+
+// The work for one job. Returns run(report) for startMediaJob.
+function mediaJobRunner(req) {
+  const { bookId } = req.params;
+  const { type, target, params } = req.body;
+  const user = req.user;
+  if (type === 'reference') {
+    return async (report) => {
+      try {
+        return await generateReference({
+          user, bookId, kind: params.kind, character: params.character, sourceImageUrl: params.sourceImageUrl,
+          style: params.style, prompt: params.prompt, onStage: (message) => report({ message }),
+        });
+      } catch (error) {
+        if (error.portrait) error.partial = { reference: null, portrait: error.portrait };
+        throw error;
+      }
+    };
+  }
+  if (type === 'image') {
+    return async (report) => {
+      await report({ message: 'Drawing the image...' });
+      const image = await generateBookImage({
+        user, bookId, prompt: params.prompt, context: params.context, size: params.size,
+        model: params.model, sourceImageUrl: params.sourceImageUrl,
+      });
+      return { imageUrl: image.imageUrl, prompt: image.prompt };
+    };
+  }
+  // animation: per-scene status for the UI
+  const scenes = params.scenes;
+  return async (report) => {
+    const status = scenes.map(sc => ({ sceneNumber: sc.sceneNumber, status: 'pending' }));
+    const mark = (n, patch) => { const row = status.find(r => r.sceneNumber === n); if (row) Object.assign(row, patch); };
+    const project = await renderAnimation({
+      bookId, book: req.mediaJobBook, transcriptId: target.id, scenes, options: params.options || {},
+      onProgress: (event) => {
+        if (event.stage === 'generating') mark(event.sceneNumber, { status: 'rendering' });
+        if (event.stage === 'scene-complete') mark(event.sceneNumber, { status: 'completed', videoUrl: event.result?.videoUrl });
+        if (event.stage === 'scene-failed') mark(event.sceneNumber, { status: 'failed', error: event.error });
+        const done = status.filter(r => r.status === 'completed' || r.status === 'failed').length;
+        return report({
+          message: event.stage === 'assembling' ? event.message : `Rendering scene ${Math.min(done + 1, scenes.length)} of ${scenes.length}`,
+          current: done, total: scenes.length, scenes: status.map(r => ({ ...r })),
+        });
+      },
+    });
+    return { project };
+  };
+}
+
+function mediaJobLabel({ type, params }) {
+  if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
+  if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
+  return `Image: ${String(params.prompt).slice(0, 40)}`;
+}
+
+app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, requireFeature('media_generation'), validateMediaJob, consumeAIQuota, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const job = await startMediaJob({
+      redis: await getRedisClient(),
+      userId,
+      bookId: req.params.bookId,
+      type: req.body.type,
+      target: req.body.target,
+      label: mediaJobLabel(req.body),
+      run: mediaJobRunner(req),
+      onNothingProduced: () => refundAIQuota(userId),
+    });
+    res.status(202).json({ job });
+  } catch (error) {
+    console.error('Media job start failed:', error.message);
+    res.status(500).json({ error: 'Failed to start the job' });
+  }
+});
+
+app.get('/api/books/:bookId/media-jobs', authenticateToken, async (req, res) => {
+  try {
+    res.json({ jobs: await listMediaJobs(await getRedisClient(), req.params.bookId, req.user.userId) });
+  } catch (error) {
+    console.error('Media job list failed:', error.message);
+    res.status(500).json({ error: 'Failed to list jobs' });
+  }
+});
+
+app.post('/api/books/:bookId/media-jobs/:jobId/ack', authenticateToken, async (req, res) => {
+  try {
+    await ackMediaJob(await getRedisClient(), req.params.bookId, req.user.userId, req.params.jobId);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Media job ack failed:', error.message);
+    res.status(500).json({ error: 'Failed to acknowledge the job' });
+  }
+});
+
+// Compatibility: the 2.23.34 reference routes, now on the same jobs.
 app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, kind, character, sourceImageUrl, style, prompt } = req.body || {};
@@ -4422,30 +4562,25 @@ app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeatu
       return res.status(400).json({ error: `kind must be one of: ${REFERENCE_KINDS.join(', ')}` });
     }
     if (!(await checkReferenceRequest(req, res))) return;
-
     const userId = req.user.userId;
-    const jobId = uuidv4();
-    const key = `charref:${jobId}`;
-    const redis = await getRedisClient();
-    await redis.set(key, JSON.stringify({ userId, kind, status: 'running', startedAt: new Date().toISOString() }), { EX: 86400 });
-    res.status(202).json({ jobId, status: 'running' });
-
-    (async () => {
-      let state;
-      try {
-        state = { status: 'done', ...(await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, prompt })) };
-      } catch (error) {
-        console.error('Character reference job failed:', error.message);
-        state = {
-          status: 'failed',
-          error: error.status ? error.message : 'Image generation failed',
-          detail: error.status ? undefined : error.message,
-          portrait: error.portrait || null,
-        };
-        if (!error.portrait) await refundAIQuota(userId).catch(err => console.error('AI quota refund failed:', err.message));
-      }
-      await redis.set(key, JSON.stringify({ userId, kind, ...state, finishedAt: new Date().toISOString() }), { EX: 86400 });
-    })().catch(err => console.error('Character reference job bookkeeping failed:', err.message));
+    const job = await startMediaJob({
+      redis: await getRedisClient(),
+      userId,
+      bookId,
+      type: 'reference',
+      target: { type: 'character', id: character.id || null },
+      label: `${kind}: ${character.name}`,
+      run: async (report) => {
+        try {
+          return await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, prompt, onStage: (message) => report({ message }) });
+        } catch (error) {
+          if (error.portrait) error.partial = { reference: null, portrait: error.portrait };
+          throw error;
+        }
+      },
+      onNothingProduced: () => refundAIQuota(userId),
+    });
+    res.status(202).json({ jobId: job.jobId, status: 'running' });
   } catch (error) {
     referenceError(res, error);
   }
@@ -4453,14 +4588,10 @@ app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeatu
 
 app.get('/api/characters/reference/jobs/:jobId', authenticateToken, async (req, res) => {
   try {
-    const redis = await getRedisClient();
-    const raw = await redis.get(`charref:${req.params.jobId}`);
-    const job = raw ? JSON.parse(raw) : null;
-    if (!job || job.userId !== req.user.userId) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-    const { userId, ...state } = job;
-    res.status(job.status === 'running' ? 202 : 200).json(state);
+    const job = await getMediaJob(await getRedisClient(), req.params.jobId, req.user.userId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.status === 'running') return res.status(202).json({ status: 'running', progress: job.progress });
+    res.json({ status: job.status, ...(job.result || {}), error: job.error || undefined, detail: job.detail || undefined });
   } catch (error) {
     console.error('Character reference job lookup failed:', error.message);
     res.status(500).json({ error: 'Failed to read the job' });
@@ -5682,6 +5813,32 @@ app.post('/api/video/parse-transcript', authenticateToken, consumeAIQuota, async
 });
 
 // Generate video for scenes (streaming progress)
+// Render a film from parsed scenes: one SAI video clip per scene, joined by
+// ffmpeg. onProgress gets the generator's events (generating, scene-complete,
+// scene-failed) plus 'assembling'. Returns the animation project; throws when
+// every scene failed. Used by the book media jobs and the old SSE route.
+async function renderAnimation({ bookId, book, transcriptId, scenes, options = {}, onProgress = () => {} }) {
+  onProgress({ stage: 'starting', message: `Generating ${scenes.length} video scenes...` });
+  const generator = new VideoGenerator(null, bookId);
+  const results = await generator.generateBatch(scenes, onProgress, options);
+  const completed = results.filter(r => r.status === 'completed');
+  if (completed.length === 0) throw new Error('All scenes failed to generate');
+
+  onProgress({ stage: 'assembling', message: `Assembling ${completed.length} of ${scenes.length} scenes into the film...` });
+  const title = book.transcripts?.find(t => String(t.id) === String(transcriptId))?.title || 'Animation';
+  const finalVideo = await new VideoAssembler(bookId).assembleFilm(results, { title, ...options });
+  finalVideo.duration = completed.reduce((n, r) => n + (r.duration || 0), 0);
+  return {
+    id: `anim-${uuidv4()}`,
+    transcriptId,
+    title,
+    scenes: scenes.map((scene, idx) => ({ ...scene, ...results[idx] })),
+    finalVideo,
+    status: 'completed',
+    createdAt: new Date().toISOString(),
+  };
+}
+
 app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireFeature('media_generation'), consumeAIQuota, async (req, res) => {
   try {
     const { bookId, transcriptId, scenes, options = {} } = req.body;
@@ -5713,63 +5870,16 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireF
     res.on('close', () => clearInterval(keepalive));
 
     try {
-      sendProgress({ stage: 'starting', message: `Generating ${scenes.length} video scenes...` });
-
-      // Generate videos (pass bookId for media access control)
-      const generator = new VideoGenerator(null, bookId);
-      const results = await generator.generateBatch(scenes, sendProgress, options);
-
-      const successCount = results.filter(r => r.status === 'completed').length;
-      const failedCount = results.filter(r => r.status === 'failed').length;
-
-      if (successCount === 0) {
-        sendProgress({ stage: 'error', message: 'All scenes failed to generate' });
-        res.end();
-        return;
-      }
-
-      sendProgress({
-        stage: 'generation-complete',
-        message: `Generated ${successCount}/${scenes.length} scenes`,
-        successCount,
-        failedCount,
-      });
-
-      // Assemble video
-      sendProgress({ stage: 'assembling', message: 'Assembling final video...' });
-
-      const assembler = new VideoAssembler(bookId);
-      const finalVideo = await assembler.assembleFilm(results, {
-        title: book.transcripts?.find(t => t.id.toString() === transcriptId)?.title || 'Animation',
-        ...options,
-      });
-      finalVideo.duration = results.filter(r => r.status === 'completed').reduce((n, r) => n + (r.duration || 0), 0);
-
-      // Create animation project in book
-      const animationProject = {
-        id: Date.now(),
-        transcriptId,
-        title: book.transcripts?.find(t => t.id.toString() === transcriptId)?.title || 'Animation',
-        scenes: scenes.map((scene, idx) => ({
-          ...scene,
-          ...results[idx],
-        })),
-        finalVideo,
-        status: 'completed',
-        createdAt: new Date().toISOString(),
-      };
-
+      const animationProject = await renderAnimation({ bookId, book, transcriptId, scenes, options, onProgress: sendProgress });
       await BookDataService.applyServerWrite(bookId, req.user.userId, (fresh) => ({
         animation_projects: [...(fresh.animationProjects || []), animationProject],
       }));
-
       sendProgress({
         stage: 'complete',
         message: 'Animation film complete!',
         animationProject,
-        videoUrl: finalVideo.videoUrl,
+        videoUrl: animationProject.finalVideo.videoUrl,
       });
-
       res.end();
     } catch (genError) {
       console.error('Video generation error:', genError);

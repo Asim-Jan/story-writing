@@ -88,6 +88,13 @@ function makeWav(pcmBytes) {
 async function fakeGateway() {
   const port = await freePort();
   const requests = [];
+  // a real 1-second MP4 for the video path (ffmpeg joins the clips)
+  const { default: ffmpegPath } = await import('ffmpeg-static');
+  const clipPath = path.join(os.tmpdir(), `regress-clip-${process.pid}.mp4`);
+  await new Promise((resolve, reject) => {
+    const ff = spawn(ffmpegPath, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x240:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', clipPath]);
+    ff.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))));
+  });
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => { body += d; });
@@ -103,6 +110,22 @@ async function fakeGateway() {
           return;
         }
         res.end(JSON.stringify({ created: 0, model: parsed?.model, data: [{ b64_json: PNG_B64 }] }));
+        return;
+      }
+      if (req.url.endsWith('/video/generations')) {
+        res.statusCode = 202;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'running', job_id: `v${requests.length}` }));
+        return;
+      }
+      if (req.url.includes('/video/jobs/')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/files/clip.mp4`, seconds: 1 }));
+        return;
+      }
+      if (req.url === '/files/clip.mp4') {
+        res.setHeader('Content-Type', 'video/mp4');
+        res.end(fs.readFileSync(clipPath));
         return;
       }
       if (req.url.endsWith('/audio/speech')) {
@@ -201,7 +224,8 @@ async function makeUser(db, label) {
   );
   await db.query(
     `INSERT INTO quotas (user_id, max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs)
-     VALUES ($1, 3, 50000, 30, 10, 1) ON CONFLICT (user_id) DO NOTHING`,
+     VALUES ($1, 3, 50000, 30, 100, 1)
+     ON CONFLICT (user_id) DO UPDATE SET max_ai_requests_per_day = 100`,
     [rows[0].id]
   );
   const token = jwt.sign({ userId: rows[0].id, email, tokenVersion: 1 }, JWT_SECRET, { expiresIn: '1h' });
@@ -488,6 +512,74 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   const b3 = imageCalls().length;
   r = await call('POST', '/api/generate-image', owner.token, { prompt: 'a lighthouse', size: '1792x1024', bookId: book.id });
   check('generate-image maps 1792x1024 to 1536x864', r.status === 200 && imageCalls()[b3]?.body?.size === '1536x864', `size ${imageCalls()[b3]?.body?.size}`);
+
+  // ── book media jobs: progress and results outlive the screen ──
+  const jobsUrl = `/api/books/${book.id}/media-jobs`;
+  const waitJob = async (token, jobId) => {
+    for (let i = 0; i < 600; i++) {
+      const list = await call('GET', jobsUrl, token);
+      const job = (list.json?.jobs || []).find(j => j.jobId === jobId);
+      if (job && job.status !== 'running') return job;
+      await new Promise(res => setTimeout(res, 200));
+    }
+    return null;
+  };
+  const qj = await usedQuota();
+  r = await call('POST', jobsUrl, owner.token, { type: 'image', target: { type: 'location', id: 'loc1' }, params: {} });
+  await new Promise(res => setTimeout(res, 300));
+  check('media job: a bad request = 400 and costs no quota', r.status === 400 && (await usedQuota()) === qj, `status ${r.status}`);
+  r = await call('POST', jobsUrl, owner.token, { type: 'image', target: { type: 'location', id: 'loc1' }, params: { prompt: 'a misty harbour' } });
+  check('media job: start = 202 with a running job', r.status === 202 && r.json?.job?.status === 'running' && r.json?.job?.target?.id === 'loc1', `status ${r.status}`);
+  const imageJobId = r.json?.job?.jobId;
+  let listed = await call('GET', jobsUrl, owner.token);
+  check('media job: listed for its book while it runs or right after', (listed.json?.jobs || []).some(j => j.jobId === imageJobId));
+  let done = await waitJob(owner.token, imageJobId);
+  check('media job: image done with an imageUrl the owner can read', done?.status === 'done' && /^\/api\/media\/images\//.test(done?.result?.imageUrl || '') &&
+    (await fetch(`${call.base}${done.result.imageUrl}`, { headers: { Authorization: `Bearer ${owner.token}` } })).status === 200, JSON.stringify(done).slice(0, 200));
+  listed = await call('GET', jobsUrl, stranger.token);
+  check('media job: another user\'s list does not show it', (listed.json?.jobs || []).length === 0);
+  r = await call('POST', `${jobsUrl}/${imageJobId}/ack`, owner.token);
+  listed = await call('GET', jobsUrl, owner.token);
+  check('media job: ack removes it from the list', r.status === 200 && !(listed.json?.jobs || []).some(j => j.jobId === imageJobId));
+
+  r = await call('POST', jobsUrl, owner.token, { type: 'reference', target: { type: 'character', id: 'c1' }, params: { kind: 'turnaround', character } });
+  done = await waitJob(owner.token, r.json?.job?.jobId);
+  check('media job: reference done with reference + portrait', done?.status === 'done' && done?.result?.reference?.kind === 'turnaround' && done?.result?.portrait?.kind === 'portrait');
+  await call('POST', `${jobsUrl}/${done?.jobId}/ack`, owner.token);
+
+  // a job whose process died (no heartbeat for minutes) reads as interrupted
+  {
+    const redis = createClient({ url: `redis://${REDIS.host}:${REDIS.port}` });
+    await redis.connect();
+    const ghost = { jobId: 'ghost-1', userId: owner.id, bookId: book.id, type: 'image', target: { type: 'cover', id: null }, label: 'x',
+      status: 'running', progress: {}, result: null, error: null, startedAt: new Date(Date.now() - 600000).toISOString(),
+      updatedAt: new Date(Date.now() - 600000).toISOString(), finishedAt: null };
+    await redis.set('mjob:ghost-1', JSON.stringify(ghost), { EX: 600 });
+    await redis.zAdd(`mjobs:book:${book.id}:${owner.id}`, { score: Date.now(), value: 'ghost-1' });
+    listed = await call('GET', jobsUrl, owner.token);
+    const g = (listed.json?.jobs || []).find(j => j.jobId === 'ghost-1');
+    check('media job: a stale running job is reported as interrupted', g?.status === 'failed' && /interrupted/i.test(g?.error || ''), JSON.stringify(g));
+    await call('POST', `${jobsUrl}/ghost-1/ack`, owner.token);
+    await redis.quit();
+  }
+
+  // animation: per-scene progress and a project result (the server does not write the book)
+  const versionBefore = (await db.query('SELECT version FROM books WHERE id = $1', [book.id])).rows[0].version;
+  r = await call('POST', jobsUrl, owner.token, { type: 'animation', target: { type: 'animation', id: 't1' }, params: {
+    scenes: [{ sceneNumber: 1, title: 'A', visualPrompt: 'a lighthouse', duration: 1 }, { sceneNumber: 2, title: 'B', visualPrompt: 'waves', duration: 1 }] } });
+  const animId = r.json?.job?.jobId;
+  let sawProgress = false;
+  for (let i = 0; i < 300; i++) {
+    const j = (await call('GET', jobsUrl, owner.token)).json?.jobs?.find(x => x.jobId === animId);
+    if (j?.progress?.scenes?.some(sc => sc.status === 'completed' || sc.status === 'rendering')) sawProgress = true;
+    if (j && j.status !== 'running') { done = j; break; }
+    await new Promise(res => setTimeout(res, 500));
+  }
+  check('media job: animation reports per-scene progress', sawProgress);
+  check('media job: animation done with a project and a playable film', done?.status === 'done' && /^\/api\/media\/videos\//.test(done?.result?.project?.finalVideo?.videoUrl || '') &&
+    done?.result?.project?.finalVideo?.duration === 2, JSON.stringify(done).slice(0, 240));
+  check('media job: the server did not write the book (no 409 for the user)', (await db.query('SELECT version FROM books WHERE id = $1', [book.id])).rows[0].version === versionBefore);
+  await call('POST', `${jobsUrl}/${animId}/ack`, owner.token);
 
   // long text to speech = one valid WAV
   const longText = 'The tide came in slowly over the black sand. '.repeat(250); // ~11k chars, 3 chunks
