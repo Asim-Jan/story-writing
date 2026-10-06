@@ -21,15 +21,10 @@ const ProfilePage = ({ onBack }) => {
     createdAt: ''
   });
 
-  // API Keys
-  const [apiKeys, setApiKeys] = useState({
-    openaiApiKey: '',
-    geminiApiKey: ''
-  });
 
   // Preferences
   const [preferences, setPreferences] = useState({
-    defaultModel: 'gpt-4o-mini',
+    defaultModel: 'sai-chat',
     defaultVoice: 'alloy',
     autoSave: true,
     enableNotifications: true,
@@ -92,10 +87,6 @@ const ProfilePage = ({ onBack }) => {
 
       if (response.ok) {
         const data = await response.json();
-        setApiKeys({
-          openaiApiKey: data.openaiApiKey || '',
-          geminiApiKey: data.geminiApiKey || ''
-        });
         // Load preferences if they exist in the response
         if (data.preferences) {
           setPreferences(prev => ({ ...prev, ...data.preferences }));
@@ -204,7 +195,7 @@ const ProfilePage = ({ onBack }) => {
     }
   };
 
-  const handleSaveApiKeys = async () => {
+  const handleSavePreferences = async () => {
     setSaving(true);
     setMessage(null);
 
@@ -217,11 +208,7 @@ const ProfilePage = ({ onBack }) => {
           'Authorization': `Bearer ${token}`
         },
         credentials: 'include',
-        body: JSON.stringify({
-          openaiApiKey: apiKeys.openaiApiKey || null,
-          geminiApiKey: apiKeys.geminiApiKey || null,
-          preferences: preferences
-        })
+        body: JSON.stringify({ preferences })
       });
 
       if (response.ok) {
@@ -364,17 +351,6 @@ const ProfilePage = ({ onBack }) => {
                   Account
                 </button>
                 <button
-                  onClick={() => setActiveTab('api-keys')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                    activeTab === 'api-keys'
-                      ? 'bg-purple-600 text-white'
-                      : 'text-gray-700 hover:bg-purple-50'
-                  }`}
-                >
-                  <Key className="w-5 h-5" />
-                  API Keys
-                </button>
-                <button
                   onClick={() => setActiveTab('preferences')}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                     activeTab === 'preferences'
@@ -490,7 +466,7 @@ const ProfilePage = ({ onBack }) => {
                 </div>
               )}
 
-              {/* API Keys Tab */}
+              {/* API Keys Tab — retired with the SAI migration */}
               {activeTab === 'api-keys' && (
                 <div>
                   <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-2">
@@ -502,73 +478,12 @@ const ProfilePage = ({ onBack }) => {
                     <div className="flex gap-3">
                       <AlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
                       <div className="text-sm text-blue-800">
-                        <p className="font-semibold mb-1">Use Your Own API Keys</p>
+                        <p className="font-semibold mb-1">No API keys needed</p>
                         <p>
-                          Add your own OpenAI and Google Gemini API keys to use your own credits instead of the system's.
-                          If left empty, the system will use default keys.
+                          All AI features run on the platform's own models, included with your plan.
+                          Usage is metered against your plan's quota on the Usage & Limits tab.
                         </p>
                       </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        OpenAI API Key
-                      </label>
-                      <input
-                        type="password"
-                        value={apiKeys.openaiApiKey}
-                        onChange={(e) => setApiKeys({ ...apiKeys, openaiApiKey: e.target.value })}
-                        placeholder="sk-proj-..."
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Get your API key from{' '}
-                        <a
-                          href="https://platform.openai.com/api-keys"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-purple-600 hover:underline"
-                        >
-                          OpenAI Platform
-                        </a>
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Google Gemini API Key
-                      </label>
-                      <input
-                        type="password"
-                        value={apiKeys.geminiApiKey}
-                        onChange={(e) => setApiKeys({ ...apiKeys, geminiApiKey: e.target.value })}
-                        placeholder="AIza..."
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Get your API key from{' '}
-                        <a
-                          href="https://aistudio.google.com/apikey"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-purple-600 hover:underline"
-                        >
-                          Google AI Studio
-                        </a>
-                      </p>
-                    </div>
-
-                    <div className="flex justify-end pt-4 border-t">
-                      <button
-                        onClick={handleSaveApiKeys}
-                        disabled={saving}
-                        className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <Save className="w-5 h-5" />
-                        {saving ? 'Saving...' : 'Save API Keys'}
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -592,9 +507,8 @@ const ProfilePage = ({ onBack }) => {
                         onChange={(e) => setPreferences({ ...preferences, defaultModel: e.target.value })}
                         className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                       >
-                        <option value="gpt-4o-mini">GPT-4o Mini (Fast & Cost-effective)</option>
-                        <option value="gpt-4o">GPT-4o (Most Capable)</option>
-                        <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                        <option value="sai-chat">SAI Long-form (Best quality)</option>
+                        <option value="sai-chat-fast">SAI Fast (Quick & cost-effective)</option>
                       </select>
                     </div>
 
@@ -656,7 +570,7 @@ const ProfilePage = ({ onBack }) => {
 
                     <div className="flex justify-end pt-4 border-t">
                       <button
-                        onClick={handleSaveApiKeys}
+                        onClick={handleSavePreferences}
                         disabled={saving}
                         className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                       >

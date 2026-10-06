@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>SAI Cloud</title>
+  <!-- ORDNANCE app mark: the instrument roundel (mark.svg) re-weighted for favicon sizes —
+       ring 2.4/32 and a 6.5 oxide centre so both still read at 16px. Opaque night-chart
+       ground, so it reads the same on a light or a dark tab strip and works as an
+       apple-touch-icon (iOS composites over black otherwise). No gradients, no shadows. -->
+  <rect width="32" height="32" fill="#10161A"/>
+  <circle cx="16" cy="16" r="9.5" fill="none" stroke="#E4E7E4" stroke-width="2.4"/>
+  <path d="M16 1.6V5.9M16 30.4V26.1M1.6 16H5.9M30.4 16H26.1" stroke="#E4E7E4" stroke-width="2.4"/>
+  <rect x="12.75" y="12.75" width="6.5" height="6.5" fill="#E2795C"/>
+</svg>

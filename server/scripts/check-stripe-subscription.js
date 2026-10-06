@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 
-const stripe = new Stripe('sk_test_51SwljiReFoIBAm6QwjxOePiqUiK91bPKDjMf1bJ0yI8pC2ULsy2PrejtFUKTPc2udmx7TovlNP3bHg8VmOV2hCLT00rlVe9Res');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
 async function checkSubscriptions() {
   try {

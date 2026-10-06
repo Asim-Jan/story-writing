@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 
-const stripe = new Stripe('sk_test_51SwljiReFoIBAm6QwjxOePiqUiK91bPKDjMf1bJ0yI8pC2ULsy2PrejtFUKTPc2udmx7TovlNP3bHg8VmOV2hCLT00rlVe9Res');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
 async function setupProducts() {
   try {
@@ -48,7 +48,7 @@ async function setupProducts() {
     console.log('='.repeat(60));
     console.log('Environment Variables for ECS:');
     console.log('='.repeat(60));
-    console.log('STRIPE_SECRET_KEY=sk_test_51SwljiReFoIBAm6QwjxOePiqUiK91bPKDjMf1bJ0yI8pC2ULsy2PrejtFUKTPc2udmx7TovlNP3bHg8VmOV2hCLT00rlVe9Res');
+    console.log('STRIPE_SECRET_KEY=<from your environment>');
     console.log(`STRIPE_PRICE_ID_BASIC=${basicPrice.id}`);
     console.log(`STRIPE_PRICE_ID_PREMIUM=${premiumPrice.id}`);
     console.log('STRIPE_WEBHOOK_SECRET=(will be set after webhook is created)');

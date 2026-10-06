@@ -1,4 +1,7 @@
 import pg from 'pg';
+import dotenv from 'dotenv';
+
+dotenv.config();
 import crypto from 'crypto';
 
 const { Client } = pg;
@@ -6,12 +9,12 @@ const { Client } = pg;
 async function setupDatabase() {
   // Connect to default postgres database as master user
   const masterClient = new Client({
-    host: 'story-writing-postgres.cxsu2memgs31.eu-west-2.rds.amazonaws.com',
-    port: 5432,
+    host: process.env.POSTGRES_HOST || 'localhost',
+    port: parseInt(process.env.POSTGRES_PORT || '5432'),
     user: 'postgres',
-    password: 'cMCqKr1rOvT03dFIA8vZF1e0jWQqu4',
+    password: process.env.POSTGRES_PASSWORD,
     database: 'postgres',
-    ssl: { rejectUnauthorized: false }
+    ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false } : false
   });
 
   try {
@@ -55,12 +58,12 @@ async function setupDatabase() {
 
     // Connect to story_writing database to grant privileges
     const appDbClient = new Client({
-      host: 'story-writing-postgres.cxsu2memgs31.eu-west-2.rds.amazonaws.com',
-      port: 5432,
+      host: process.env.POSTGRES_HOST || 'localhost',
+      port: parseInt(process.env.POSTGRES_PORT || '5432'),
       user: 'postgres',
-      password: 'cMCqKr1rOvT03dFIA8vZF1e0jWQqu4',
-      database: 'story_writing',
-      ssl: { rejectUnauthorized: false }
+      password: process.env.POSTGRES_PASSWORD,
+      database: process.env.POSTGRES_DB || 'story_writing',
+      ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false } : false
     });
 
     await appDbClient.connect();

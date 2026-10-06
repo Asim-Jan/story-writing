@@ -1,5 +1,5 @@
-import OpenAI from 'openai';
 import { createClient } from 'redis';
+import { saiSpeech, VOICE_MAP } from '../../saiClient.js';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
 import { setMediaBookMapping } from '../../utils/mediaMapping.js';
@@ -51,20 +51,15 @@ function chunkText(text, maxChars = 4000) {
 }
 
 export async function processAudioGeneration(job) {
-  const { userId, bookId, chapterId, text, voice = 'alloy', openaiApiKey } = job.data;
+  const { userId, bookId, chapterId, text, voice = 'alloy' } = job.data;
 
   try {
     await updateJobStatus(job.id, { status: 'active', progress: 10 });
 
     await initRedis();
 
-    // Validate user's API key exists
-    if (!openaiApiKey) {
-      throw new Error('OpenAI API key is required for audio generation');
-    }
-
-    // Create OpenAI client with user's API key
-    const userOpenai = new OpenAI({ apiKey: openaiApiKey });
+    // Friendly voice names map onto the SAI bridge's vibevoice set.
+    const selectedVoice = VOICE_MAP[voice] || voice;
 
     // Check if text needs chunking
     const chunks = text.length > 4000 ? chunkText(text) : [text];
@@ -84,13 +79,10 @@ export async function processAudioGeneration(job) {
         message: `Generating chunk ${i + 1}/${chunks.length}...`
       });
 
-      const mp3 = await userOpenai.audio.speech.create({
-        model: 'tts-1',
-        voice: voice,
-        input: chunks[i],
+      const buffer = await saiSpeech({
+        text: chunks[i],
+        voice: selectedVoice,
       });
-
-      const buffer = Buffer.from(await mp3.arrayBuffer());
       audioBuffers.push(buffer);
     }
 
@@ -99,12 +91,13 @@ export async function processAudioGeneration(job) {
     // Combine all audio buffers
     const buffer = Buffer.concat(audioBuffers);
 
-    // Upload to MinIO with access control mapping
-    const filename = `chapter-${chapterId}-${Date.now()}.mp3`;
+    // Upload to MinIO with access control mapping (the bridge returns WAV)
+    const filename = `chapter-${chapterId}-${Date.now()}.wav`;
     const uploadResult = await mediaStorage.upload('audio', buffer, filename, {
       bookId,
       userId,
       chapterId,
+      'x-amz-meta-voice': selectedVoice,
     }, setMediaBookMapping);
 
     await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });

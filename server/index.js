@@ -2,9 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
-import OpenAI from 'openai';
 import axios from 'axios';
-import { GoogleGenAI } from '@google/genai';
+import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
+import { extractJSON } from './utils/extractJSON.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -33,7 +33,6 @@ import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
-import { encrypt, decrypt } from './utils/encryption.js';
 import { setMediaBookMapping, getMediaBookMapping } from './utils/mediaMapping.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
 import {
@@ -127,16 +126,6 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// Initialize Google GenAI for image generation
-const genai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
 
 // Create public/images directory if it doesn't exist
 const imagesDir = path.join(__dirname, '..', 'public', 'images');
@@ -622,61 +611,31 @@ const getUserEmailKey = (email) => `user:email:${email}`;
 const getPasswordResetKey = (token) => `password_reset:${token}`;
 
 // Helper to get user's API keys - NO FALLBACK to system keys
+// AI is billed to ONE pooled SAI gateway key — there are no per-user API keys
+// any more. Metering is the app's own quota system (aiLimiter + checkAIQuota).
+// The helpers below keep their call sites stable; they just hand back the
+// shared SAI client.
 const getUserApiKeysHelper = async (userId) => {
-  try {
-    // Get user with settings from database
-    const user = await getUserSettings(userId);
-
-    if (!user || !user.ai_config) {
-      return {
-        openaiKey: null,
-        geminiKey: null,
-        usingUserKeys: false
-      };
-    }
-
-    const aiConfig = user.ai_config || {};
-
-    // SECURITY: Decrypt API keys if they exist (already encrypted in DB)
-    // Support both camelCase (old) and snake_case (new) field names
-    const openaiKey = (aiConfig.openai_api_key || aiConfig.openaiApiKey)
-      ? decrypt(aiConfig.openai_api_key || aiConfig.openaiApiKey)
-      : null;
-    const geminiKey = (aiConfig.gemini_api_key || aiConfig.geminiApiKey)
-      ? decrypt(aiConfig.gemini_api_key || aiConfig.geminiApiKey)
-      : null;
-
-    return {
-      openaiKey,
-      geminiKey,
-      usingUserKeys: !!(openaiKey || geminiKey)
-    };
-  } catch (error) {
-    console.error('Error fetching user API keys:', error);
-    return {
-      openaiKey: null,
-      geminiKey: null,
-      usingUserKeys: false
-    };
-  }
+  return {
+    openaiKey: null,
+    geminiKey: null,
+    usingUserKeys: false,
+    sai: saiConfigured(),
+  };
 };
 
-// Helper to validate and get OpenAI client with user's key
+// Kept for call-site stability: every AI endpoint used to demand a per-user key
+// and return 403 MISSING_OPENAI_KEY — now the pooled client is always available.
 const getUserOpenAI = async (userId) => {
-  const apiKeys = await getUserApiKeysHelper(userId);
-  if (!apiKeys.openaiKey) {
-    throw new Error('MISSING_OPENAI_KEY');
+  if (!saiConfigured()) {
+    throw new Error('SAI_API_KEY_NOT_CONFIGURED');
   }
-  return new OpenAI({ apiKey: apiKeys.openaiKey });
+  return getSAIClient();
 };
 
-// Helper to validate and get Gemini client with user's key
 const getUserGemini = async (userId) => {
-  const apiKeys = await getUserApiKeysHelper(userId);
-  if (!apiKeys.geminiKey) {
-    throw new Error('MISSING_GEMINI_KEY');
-  }
-  return new GoogleGenAI({ apiKey: apiKeys.geminiKey });
+  // Gemini was retired with the SAI API migration; kept so old imports don't break.
+  throw new Error('SAI_API_KEY_NOT_CONFIGURED');
 };
 
 // Authentication middleware
@@ -3061,10 +3020,10 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate books with AI.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate books with AI pending service config). Please try again later.'
         });
       }
       throw error;
@@ -3092,7 +3051,9 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
     // Increment AI counter after successful generation
     await incrementAICounter(req.user.userId);
 
-    // Create book in database with UUID
+    // Create book in database with UUID (the orchestrator produced the payload;
+    // the row must be INSERTed first — an UPDATE on a missing row is a silent no-op
+    // in PostgreSQL-only mode)
     const bookId = uuidv4();
     const bookData = {
       ...result.bookData,
@@ -3113,7 +3074,11 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
       keys: Object.keys(bookData)
     });
 
-    await updateBook(bookId, req.user.id, bookData);
+    await createBook({
+      ...bookData,
+      title: bookData.bookTitle || bookData.title || 'Untitled Story',
+      description: bookData.overview || bookData.description || '',
+    });
 
     // Add book to user's book list
     const updatedUser = {
@@ -3699,11 +3664,11 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       return res.status(400).json({ error: 'Invalid type' });
     }
 
-    // Get user's OpenAI client (validates key exists)
+    // Get the pooled SAI client (validates the gateway key exists)
     const userOpenai = await getUserOpenAI(req.user.userId);
 
     const completion = await userOpenai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt + contextString }
@@ -3712,7 +3677,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       max_tokens: parseInt(process.env.OPENAI_MAX_TOKENS) || 16384,
     });
 
-    const responseText = completion.choices[0].message.content;
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
 
     // Extract token usage from OpenAI response
     const usage = completion.usage || {};
@@ -3721,7 +3686,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
     const totalTokens = usage.total_tokens || (promptTokens + completionTokens);
 
     // Calculate cost
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const model = SAI_CHAT;
     const costData = await costTracking.calculateTextCost(model, promptTokens, completionTokens);
 
     // Clean the response
@@ -3730,7 +3695,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
       .replace(/```\n?/g, '')
       .trim();
 
-    const generatedData = JSON.parse(cleanedText);
+    const generatedData = extractJSON(cleanedText);
 
     // Save generation to history database with token usage and cost
     try {
@@ -3765,10 +3730,10 @@ Respond ONLY with valid JSON in this exact format (no markdown, no backticks, no
   } catch (error) {
     console.error('Error generating content:', error);
 
-    if (error.message === 'MISSING_OPENAI_KEY') {
-      return res.status(403).json({
-        error: 'API key required',
-        message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
+    if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+      return res.status(503).json({
+        error: 'AI unavailable',
+        message: 'AI is unavailable right now (use AI features pending service config). Please try again later.'
       });
     }
 
@@ -4003,10 +3968,11 @@ app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, asyn
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    const ALLOWED_SIZES = ['1024x1024', '1792x1024', '1024x1792'];
-    const imageSize = ALLOWED_SIZES.includes(size) ? size : '1024x1024';
+    // Size is now free-form (the bridge snaps to the model's supported grid);
+    // legacy DALL-E sizes still map through.
+    const imageSize = ['1024x1024', '1792x1024', '1024x1792'].includes(size) ? size : '1024x1024';
 
-    // Get user's OpenAI client (validates key exists)
+    // Get the pooled SAI client (validates the gateway key exists)
     const userOpenai = await getUserOpenAI(req.user.userId);
 
     // Step 1: Optionally enhance the prompt with book context
@@ -4026,13 +3992,13 @@ app.post('/api/generate-image', authenticateToken, aiLimiter, requireMinIO, asyn
       }
 
       const promptEnhancement = await userOpenai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           {
             role: 'system',
-            content: `You are helping enhance image generation prompts for DALL-E. Given a user's basic image request and their book context, create a detailed, vivid image prompt that incorporates relevant context details.
+            content: `You are helping enhance image generation prompts for a text-to-image model. Given a user's basic image request and their book context, create a detailed, vivid image prompt that incorporates relevant context details.
 
-Your enhanced prompt should be clear, descriptive, and optimized for DALL-E image generation. Include:
+Your enhanced prompt should be clear, descriptive, and optimized for image generation. Include:
 - Visual details (colors, lighting, composition)
 - Style references if appropriate
 - Relevant context from the book (character appearances, location details, atmosphere)
@@ -4048,25 +4014,19 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = promptEnhancement.choices[0].message.content.trim();
+      enhancedPrompt = (promptEnhancement.choices[0].message.content || promptEnhancement.choices[0].message.reasoning_content || promptEnhancement.choices[0].message.reasoning || '').trim();
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
-    // Step 2: Generate image with DALL-E 3
-    console.log('Generating image with DALL-E 3...');
+    // Step 2: Generate image via the SAI media bridge
+    console.log('Generating image via SAI media bridge...');
 
-    const response = await userOpenai.images.generate({
-      model: 'dall-e-3',
+    const imageResult = await saiImage({
       prompt: enhancedPrompt,
-      n: 1,
+      model: 'flux2-klein-9b',
       size: imageSize,
-      quality: 'standard',
-      response_format: 'b64_json'
     });
-
-    // Extract image data from response
-    const imageData = response.data[0].b64_json;
-    const buffer = Buffer.from(imageData, 'base64');
+    const buffer = imageResult.buffer;
 
     // Upload to MinIO
     const filename = `visual-${Date.now()}.png`;
@@ -4088,10 +4048,10 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
   } catch (error) {
     console.error('Error generating image:', error);
 
-    if (error.message === 'MISSING_OPENAI_KEY') {
-      return res.status(403).json({
-        error: 'API key required',
-        message: 'Please add your OpenAI API key in Profile > API Keys to use AI features.'
+    if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+      return res.status(503).json({
+        error: 'AI unavailable',
+        message: 'AI is unavailable right now (use AI features pending service config). Please try again later.'
       });
     }
 
@@ -4132,10 +4092,10 @@ app.post('/api/parse-transcript-to-comic', authenticateToken, async (req, res) =
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to parse transcripts.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (parse transcripts pending service config). Please try again later.'
         });
       }
       throw error;
@@ -4169,7 +4129,7 @@ Return JSON array of panels:
 Aim for 6-12 panels per page worth of content.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: SAI_CHAT,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `Transcript:\n\n${transcript}` }
@@ -4178,7 +4138,7 @@ Aim for 6-12 panels per page worth of content.`;
       max_tokens: 6000,
     });
 
-    const responseText = completion.choices[0].message.content;
+    const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
     const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const panels = JSON.parse(cleaned);
 
@@ -4202,15 +4162,14 @@ app.post('/api/generate-character-reference', authenticateToken, requireMinIO, a
       return res.status(400).json({ error: 'Character data is required' });
     }
 
-    // Get user's Gemini client (validates key exists)
-    let userGenai;
+    // Get the pooled SAI client (validates the gateway key exists)
     try {
-      userGenai = await getUserGemini(req.user.userId);
+      await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_GEMINI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your Google Gemini API key in Profile > API Keys to generate character references.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate character references pending service config). Please try again later.'
         });
       }
       throw error;
@@ -4221,37 +4180,32 @@ app.post('/api/generate-character-reference', authenticateToken, requireMinIO, a
     // Build detailed character description
     const characterPrompt = `${style}, character reference sheet, multiple angles, full body portrait of ${character.name}, ${character.age} years old, ${character.gender}, ${character.skinColor} skin, ${character.hairColor} hair, ${character.eyeColor} eyes, ${character.height}, ${character.build} build, ${character.personality}. Character design reference, turnaround, consistent character design, professional comic book style`;
 
-    const response = await userGenai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: characterPrompt,
+    const imageResult = await saiImage({
+      prompt: characterPrompt,
+      model: 'character-sheet',
+      size: '1536x1024',
     });
+    const buffer = imageResult.buffer;
 
-    // Extract image data
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        const imageData = part.inlineData.data;
-        const buffer = Buffer.from(imageData, 'base64');
+    {
+      const filename = `character-ref-${characterId || Date.now()}.png`;
+      const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
+        'x-amz-meta-type': 'character-reference',
+        'x-amz-meta-character-id': String(characterId || ''),
+      });
 
-        const filename = `character-ref-${characterId || Date.now()}.png`;
-        const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
-          'x-amz-meta-type': 'character-reference',
-          'x-amz-meta-character-id': String(characterId || ''),
-        });
+      console.log('Character reference saved to MinIO:', uploadResult.storageKey);
 
-        console.log('Character reference saved to MinIO:', uploadResult.storageKey);
-
-        res.json({
-          imageUrl: `/api/media/comics/${filename}`,
-          filename,
-          characterId,
-          storageKey: uploadResult.storageKey,
-          bucket: uploadResult.bucket,
-        });
-        return;
-      }
+      res.json({
+        imageUrl: `/api/media/comics/${filename}`,
+        filename,
+        characterId,
+        storageKey: uploadResult.storageKey,
+        bucket: uploadResult.bucket,
+      });
+      return;
     }
 
-    res.status(500).json({ error: 'No image generated' });
   } catch (error) {
     console.error('Character reference generation error:', error);
     res.status(500).json({ error: 'Failed to generate character reference', details: error.message });
@@ -4267,15 +4221,14 @@ app.post('/api/generate-comic-panel', authenticateToken, requireMinIO, async (re
       return res.status(400).json({ error: 'Scene description is required' });
     }
 
-    // Get user's Gemini client (validates key exists)
-    let userGenai;
+    // Get the pooled SAI client (validates the gateway key exists)
     try {
-      userGenai = await getUserGemini(req.user.userId);
+      await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_GEMINI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your Google Gemini API key in Profile > API Keys to generate comic panels.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate comic panels pending service config). Please try again later.'
         });
       }
       throw error;
@@ -4304,35 +4257,30 @@ app.post('/api/generate-comic-panel', authenticateToken, requireMinIO, async (re
 
     console.log('Comic panel prompt:', fullPrompt.substring(0, 200) + '...');
 
-    const response = await userGenai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: fullPrompt,
+    const imageResult = await saiImage({
+      prompt: fullPrompt,
+      model: 'flux2-klein-9b',
+      size: '1024x1024',
     });
+    const buffer = imageResult.buffer;
 
-    // Extract image data
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        const imageData = part.inlineData.data;
-        const buffer = Buffer.from(imageData, 'base64');
+    {
+      const filename = `comic-panel-${Date.now()}.png`;
+      const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
+        'x-amz-meta-type': 'comic-panel',
+      });
 
-        const filename = `comic-panel-${Date.now()}.png`;
-        const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
-          'x-amz-meta-type': 'comic-panel',
-        });
+      console.log('Comic panel saved to MinIO:', uploadResult.storageKey);
 
-        console.log('Comic panel saved to MinIO:', uploadResult.storageKey);
-
-        res.json({
-          imageUrl: `/api/media/comics/${filename}`,
-          filename,
-          storageKey: uploadResult.storageKey,
-          bucket: uploadResult.bucket,
-        });
-        return;
-      }
+      res.json({
+        imageUrl: `/api/media/comics/${filename}`,
+        filename,
+        storageKey: uploadResult.storageKey,
+        bucket: uploadResult.bucket,
+      });
+      return;
     }
 
-    res.status(500).json({ error: 'No image generated' });
   } catch (error) {
     console.error('Comic panel generation error:', error);
     res.status(500).json({ error: 'Failed to generate comic panel', details: error.message });
@@ -4371,14 +4319,14 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
       return res.status(400).json({ error: 'Text is required' });
     }
 
-    // OpenAI TTS supports: alloy, echo, fable, onyx, nova, shimmer
-    const validVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
-    const selectedVoice = validVoices.includes(voice) ? voice : 'alloy';
+    // Friendly voice names map onto the SAI bridge's vibevoice set
+    // (en-davis_man, en-emma_woman, ...). Direct bridge ids also accepted.
+    const selectedVoice = VOICE_MAP[voice] || voice;
 
     console.log(`Generating TTS audio with voice: ${selectedVoice}, speed: ${speed}, text length: ${text.length}`);
 
-    // Get user's OpenAI client (validates key exists)
-    const userOpenai = await getUserOpenAI(req.user.userId);
+    // Get the pooled SAI client (validates the gateway key exists)
+    await getUserOpenAI(req.user.userId);
 
     // Check if text needs chunking
     const chunks = text.length > 4000 ? chunkText(text) : [text];
@@ -4390,14 +4338,11 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
       console.log(`Generating chunk ${i + 1}/${chunks.length}`);
 
       try {
-        const mp3 = await userOpenai.audio.speech.create({
-          model: 'tts-1', // or 'tts-1-hd' for higher quality
+        const buffer = await saiSpeech({
+          text: chunks[i],
           voice: selectedVoice,
-          input: chunks[i],
           speed: speed, // 0.25 to 4.0
         });
-
-        const buffer = Buffer.from(await mp3.arrayBuffer());
         audioBuffers.push(buffer);
       } catch (chunkError) {
         console.error(`Error generating chunk ${i + 1}:`, chunkError);
@@ -4410,8 +4355,8 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
       ? Buffer.concat(audioBuffers)
       : audioBuffers[0];
 
-    // Upload to MinIO
-    const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}.mp3`;
+    // Upload to MinIO (the bridge returns WAV)
+    const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}.wav`;
     const uploadResult = await mediaStorage.upload('audio', finalBuffer, filename, {
       'x-amz-meta-type': 'tts-audio',
       'x-amz-meta-voice': selectedVoice,
@@ -4432,10 +4377,10 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
     console.error('TTS generation error:', error);
     console.error('Error stack:', error.stack);
 
-    if (error.message === 'MISSING_OPENAI_KEY') {
-      return res.status(403).json({
-        error: 'API key required',
-        message: 'Please add your OpenAI API key in Profile > API Keys to generate audio.'
+    if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+      return res.status(503).json({
+        error: 'AI unavailable',
+        message: 'AI is unavailable right now (generate audio pending service config). Please try again later.'
       });
     }
 
@@ -4461,10 +4406,10 @@ app.post('/api/generate-audiobook', authenticateToken, async (req, res) => {
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate audiobooks.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate audiobooks pending service config). Please try again later.'
         });
       }
       throw error;
@@ -4482,20 +4427,19 @@ app.post('/api/generate-audiobook', authenticateToken, async (req, res) => {
 
       console.log(`Generating audio for chapter ${i + 1}/${chapters.length}`);
 
-      const mp3 = await userOpenai.audio.speech.create({
-        model: 'tts-1',
-        voice: voice,
-        input: `Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`,
+      const buffer = await saiSpeech({
+        text: `Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`,
+        voice: VOICE_MAP[voice] || voice,
         speed: speed,
       });
 
-      const buffer = Buffer.from(await mp3.arrayBuffer());
-      const filename = `chapter-${chapter.number || i + 1}-${voice}.mp3`;
+      const usedVoice = VOICE_MAP[voice] || voice;
+      const filename = `chapter-${chapter.number || i + 1}-${usedVoice}.wav`;
 
       const uploadResult = await mediaStorage.upload('audio', buffer, filename, {
         'x-amz-meta-type': 'audiobook',
         'x-amz-meta-chapter': String(chapter.number || i + 1),
-        'x-amz-meta-voice': voice,
+        'x-amz-meta-voice': usedVoice,
       });
 
       audioFiles.push({
@@ -4552,10 +4496,10 @@ app.get('/api/health', async (req, res) => {
     health.services.minio = { status: 'error', error: error.message };
   }
 
-  // Check API Keys
-  health.services.apiKeys = {
-    openai: !!process.env.OPENAI_API_KEY,
-    gemini: !!process.env.GEMINI_API_KEY,
+  // Check AI service (SAI gateway)
+  health.services.ai = {
+    sai: saiConfigured(),
+    models: { longForm: SAI_CHAT, fast: SAI_CHAT_FAST },
   };
 
   // Overall status
@@ -4604,10 +4548,10 @@ app.post('/api/analyze-continuity', authenticateToken, async (req, res) => {
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to use AI continuity analysis.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (use AI continuity analysis pending service config). Please try again later.'
         });
       }
       throw error;
@@ -4672,7 +4616,7 @@ ${chaptersToAnalyze.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary |
 Provide a thorough analysis with specific, actionable issues.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: SAI_CHAT_FAST,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
@@ -4681,8 +4625,8 @@ Provide a thorough analysis with specific, actionable issues.`;
       temperature: 0.3
     });
 
-    const analysisText = completion.choices[0].message.content;
-    const analysis = JSON.parse(analysisText);
+    const analysisText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+    const analysis = extractJSON(analysisText);
 
     // Save analysis to database for history
     try {
@@ -6469,10 +6413,10 @@ app.post('/api/rpg/quest/generate-dialogue', authenticateToken, aiLimiter, async
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate RPG dialogue.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate RPG dialogue pending service config). Please try again later.'
         });
       }
       throw error;
@@ -6503,7 +6447,7 @@ Create a dialogue tree with:
 Format as a JSON dialogue tree with nodes and choices.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         {
           role: 'system',
@@ -6518,7 +6462,7 @@ Format as a JSON dialogue tree with nodes and choices.`;
       max_tokens: 2000
     });
 
-    const dialogueContent = completion.choices[0].message.content;
+    const dialogueContent = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
 
     // Try to parse as JSON, otherwise return as text
     let dialogueTree;
@@ -6565,10 +6509,10 @@ app.post('/api/rpg/gm/generate-npc-response', authenticateToken, aiLimiter, asyn
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate NPC responses.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate NPC responses pending service config). Please try again later.'
         });
       }
       throw error;
@@ -6587,7 +6531,7 @@ Player's action or question: ${context}
 Respond in character as ${npc.name}. Keep the response natural, in-character, and appropriate for the situation. Include body language or actions in *italics* if relevant.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         {
           role: 'system',
@@ -6602,7 +6546,7 @@ Respond in character as ${npc.name}. Keep the response natural, in-character, an
       max_tokens: 300
     });
 
-    const response = completion.choices[0].message.content;
+    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
     res.json({ success: true, response });
 
   } catch (error) {
@@ -6621,10 +6565,10 @@ app.post('/api/rpg/gm/generate-encounter', authenticateToken, aiLimiter, async (
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate encounters.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate encounters pending service config). Please try again later.'
         });
       }
       throw error;
@@ -6646,7 +6590,7 @@ Create an encounter with:
 Make it interesting and appropriate for the setting.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         {
           role: 'system',
@@ -6663,7 +6607,7 @@ Make it interesting and appropriate for the setting.`;
 
     const encounter = {
       id: Date.now(),
-      description: completion.choices[0].message.content,
+      description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
       difficulty,
       createdAt: new Date().toISOString()
     };
@@ -6686,10 +6630,10 @@ app.post('/api/rpg/gm/generate-plot-twist', authenticateToken, aiLimiter, async 
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate plot twists.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate plot twists pending service config). Please try again later.'
         });
       }
       throw error;
@@ -6714,7 +6658,7 @@ Generate a creative plot twist that:
 Provide 2-3 plot twist options.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         {
           role: 'system',
@@ -6729,7 +6673,7 @@ Provide 2-3 plot twist options.`;
       max_tokens: 600
     });
 
-    const twist = completion.choices[0].message.content;
+    const twist = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
     res.json({ success: true, twist });
 
   } catch (error) {
@@ -6876,10 +6820,10 @@ app.post('/api/rpg/ai-dm/respond', authenticateToken, aiLimiter, async (req, res
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to use AI Dungeon Master.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (use AI Dungeon Master pending service config). Please try again later.'
         });
       }
       throw error;
@@ -6912,7 +6856,7 @@ Your role:
 Respond to the player's action naturally and engagingly.`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         { role: 'system', content: systemPrompt },
         ...conversationHistory
@@ -6921,7 +6865,7 @@ Respond to the player's action naturally and engagingly.`;
       max_tokens: 500
     });
 
-    const response = completion.choices[0].message.content;
+    const response = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
 
     res.json({
       success: true,
@@ -6945,10 +6889,10 @@ app.post('/api/rpg/ai-dm/generate-quest', authenticateToken, aiLimiter, async (r
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate quests.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate quests pending service config). Please try again later.'
         });
       }
       throw error;
@@ -6968,7 +6912,7 @@ Create a quest with:
 Format as JSON with: title, description, objectives (array of strings), rewards (xp, gold)`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         {
           role: 'system',
@@ -6982,11 +6926,11 @@ Format as JSON with: title, description, objectives (array of strings), rewards 
 
     let quest;
     try {
-      quest = JSON.parse(completion.choices[0].message.content);
+      quest = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
     } catch {
       quest = {
         title: 'Procedural Quest',
-        description: completion.choices[0].message.content,
+        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
         objectives: ['Complete the quest'],
         rewards: { experience: partyLevel * 100, gold: partyLevel * 50 }
       };
@@ -7014,10 +6958,10 @@ app.post('/api/rpg/ai-dm/generate-balanced-encounter', authenticateToken, aiLimi
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to generate encounters.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (generate encounters pending service config). Please try again later.'
         });
       }
       throw error;
@@ -7039,7 +6983,7 @@ For each enemy include: name, HP, AC, attack bonus, damage.
 Return as JSON: { description, enemies: [{name, hp, maxHp, ac, attackBonus, damage}] }`;
 
     const completion = await userOpenai.chat.completions.create({
-      model: 'gpt-4',
+      model: SAI_CHAT_FAST,
       messages: [
         {
           role: 'system',
@@ -7053,10 +6997,10 @@ Return as JSON: { description, enemies: [{name, hp, maxHp, ac, attackBonus, dama
 
     let encounter;
     try {
-      encounter = JSON.parse(completion.choices[0].message.content);
+      encounter = JSON.parse(completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '');
     } catch {
       encounter = {
-        description: completion.choices[0].message.content,
+        description: completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '',
         enemies: []
       };
     }
@@ -7083,24 +7027,21 @@ app.post('/api/rpg/ai-dm/narrate', authenticateToken, async (req, res) => {
     try {
       userOpenai = await getUserOpenAI(req.user.userId);
     } catch (error) {
-      if (error.message === 'MISSING_OPENAI_KEY') {
-        return res.status(403).json({
-          error: 'API key required',
-          message: 'Please add your OpenAI API key in Profile > API Keys to use narration.'
+      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+        return res.status(503).json({
+          error: 'AI unavailable',
+          message: 'AI is unavailable right now (use narration pending service config). Please try again later.'
         });
       }
       throw error;
     }
 
-    const mp3 = await userOpenai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'onyx',
-      input: text.substring(0, 4096)
+    const buffer = await saiSpeech({
+      text: text.substring(0, 4096),
+      voice: VOICE_MAP.onyx, // deep male narrator
     });
 
-    const buffer = Buffer.from(await mp3.arrayBuffer());
-
-    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Type', 'audio/wav');
     res.send(buffer);
 
   } catch (error) {
@@ -7404,7 +7345,7 @@ app.get('/api/users/settings', authenticateToken, async (req, res) => {
         openaiApiKey: null,
         geminiApiKey: null,
         preferences: {
-          defaultModel: 'gpt-4o-mini',
+          defaultModel: 'sai-chat',
           defaultVoice: 'alloy',
           autoSave: true,
           enableNotifications: true,
@@ -7413,18 +7354,14 @@ app.get('/api/users/settings', authenticateToken, async (req, res) => {
       });
     }
 
-    const aiConfig = user.ai_config || {};
-    const preferences = user.preferences || {};
+    const preferences = (user && user.preferences) || {};
 
-    // SECURITY: Decrypt API keys for display (mask all but last 4 chars)
-    const openaiKey = aiConfig.openai_api_key ? decrypt(aiConfig.openai_api_key) : null;
-    const geminiKey = aiConfig.gemini_api_key ? decrypt(aiConfig.gemini_api_key) : null;
-
+    // BYO API keys were removed — all AI runs on the pooled SAI gateway key.
     res.json({
-      openaiApiKey: openaiKey ? '***' + openaiKey.slice(-4) : null,
-      geminiApiKey: geminiKey ? '***' + geminiKey.slice(-4) : null,
+      openaiApiKey: null,
+      geminiApiKey: null,
       preferences: {
-        defaultModel: preferences.defaultModel || 'gpt-4o-mini',
+        defaultModel: preferences.defaultModel || 'sai-chat',
         defaultVoice: preferences.defaultVoice || 'alloy',
         autoSave: preferences.autoSave !== undefined ? preferences.autoSave : true,
         enableNotifications: preferences.enableNotifications !== undefined ? preferences.enableNotifications : true,
@@ -7437,20 +7374,15 @@ app.get('/api/users/settings', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user settings (API API keys and preferences)
+// Update user settings (preferences only — API keys were removed with the SAI migration)
 app.put('/api/users/settings', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { openaiApiKey, geminiApiKey, preferences } = req.body;
+    const { preferences } = req.body;
 
-    // SECURITY: Encrypt API keys before storing
     const settings = {
-      ai_config: {
-        openai_api_key: openaiApiKey ? encrypt(openaiApiKey) : null,
-        gemini_api_key: geminiApiKey ? encrypt(geminiApiKey) : null
-      },
       preferences: preferences || {
-        defaultModel: 'gpt-4o-mini',
+        defaultModel: 'sai-chat',
         defaultVoice: 'alloy',
         autoSave: true,
         enableNotifications: true,
@@ -7461,12 +7393,11 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
     // Use updateUserSettings from dataAdapter to handle both PostgreSQL and Redis
     await updateUserSettings(userId, settings);
 
-    // Return masked keys for security (don't send back encrypted keys)
     res.json({
       message: 'Settings updated successfully',
       settings: {
-        openaiApiKey: openaiApiKey ? '***' + openaiApiKey.slice(-4) : null,
-        geminiApiKey: geminiApiKey ? '***' + geminiApiKey.slice(-4) : null,
+        openaiApiKey: null,
+        geminiApiKey: null,
         preferences: settings.preferences
       }
     });
@@ -8217,7 +8148,7 @@ app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req
         prompt TEXT NOT NULL,
         result JSONB NOT NULL,
 
-        model VARCHAR(50) DEFAULT 'gpt-4o-mini',
+        model VARCHAR(50) DEFAULT 'sai-chat',
         prompt_tokens INTEGER,
         completion_tokens INTEGER,
         total_tokens INTEGER,

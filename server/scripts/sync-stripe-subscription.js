@@ -2,16 +2,16 @@ import Stripe from 'stripe';
 import pkg from 'pg';
 const { Pool } = pkg;
 
-const stripe = new Stripe('sk_test_51SwljiReFoIBAm6QwjxOePiqUiK91bPKDjMf1bJ0yI8pC2ULsy2PrejtFUKTPc2udmx7TovlNP3bHg8VmOV2hCLT00rlVe9Res');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
 // Database connection
 const pool = new Pool({
-  host: 'story-writing-postgres.cxsu2memgs31.eu-west-2.rds.amazonaws.com',
-  port: 5432,
-  database: 'story_writing',
-  user: 'story_user',
-  password: process.env.POSTGRES_PASSWORD || 'POSTGRES_PASSWORD_HERE',
-  ssl: { rejectUnauthorized: false }
+  host: process.env.POSTGRES_HOST || 'localhost',
+  port: parseInt(process.env.POSTGRES_PORT || '5432'),
+  database: process.env.POSTGRES_DB || 'story_writing',
+  user: process.env.POSTGRES_USER || 'story_user',
+  password: process.env.POSTGRES_PASSWORD,
+  ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false } : false
 });
 
 function getTierQuotas(tier) {

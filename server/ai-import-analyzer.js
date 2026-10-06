@@ -1,4 +1,5 @@
-import OpenAI from 'openai';
+import { getSAIClient, SAI_CHAT_FAST } from './saiClient.js';
+import { extractJSON } from './utils/extractJSON.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,19 +11,8 @@ dotenv.config();
 export class AIImportAnalyzer {
   constructor(redisClient, openaiClient = null) {
     this.redisClient = redisClient;
-
-    // Accept provided OpenAI client (user's key) or fall back to env var for backward compatibility
-    if (openaiClient) {
-      this.openai = openaiClient;
-    } else if (process.env.OPENAI_API_KEY) {
-      console.warn('⚠️ AIImportAnalyzer: Using system OpenAI key. Consider passing user API client.');
-      this.openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-      });
-    } else {
-      console.warn('⚠️ OPENAI_API_KEY not set. AI analysis features will not work.');
-      this.openai = null;
-    }
+    // The pooled SAI gateway client (any passed client is honoured for tests)
+    this.openai = openaiClient || getSAIClient();
   }
 
   getOpenAI() {
@@ -116,7 +106,7 @@ Extract all relevant metadata from this chapter.`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -125,9 +115,9 @@ Extract all relevant metadata from this chapter.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error(`Chapter analysis error for chapter ${chapter.number}:`, error);
       throw error;
@@ -184,7 +174,7 @@ Identify unique characters and consolidate the information.`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -193,9 +183,9 @@ Identify unique characters and consolidate the information.`;
         max_tokens: 6000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Character consolidation error:', error);
       throw error;
@@ -242,7 +232,7 @@ Identify unique locations and consolidate the information.`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -251,9 +241,9 @@ Identify unique locations and consolidate the information.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Location consolidation error:', error);
       throw error;
@@ -301,7 +291,7 @@ Identify and consolidate plot threads.`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -310,9 +300,9 @@ Identify and consolidate plot threads.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Plot thread consolidation error:', error);
       throw error;
@@ -351,7 +341,7 @@ Write a comprehensive book overview.`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -360,7 +350,7 @@ Write a comprehensive book overview.`;
         max_tokens: 800,
       });
 
-      return completion.choices[0].message.content.trim();
+      return completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || ''.trim();
     } catch (error) {
       console.error('Overview generation error:', error);
       return 'Overview generation failed.';
@@ -411,7 +401,7 @@ Extract all significant timeline events.`;
 
     try {
       const completion = await this.getOpenAI().chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: SAI_CHAT_FAST,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -420,9 +410,9 @@ Extract all significant timeline events.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content;
+      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
+      return extractJSON(cleaned);
     } catch (error) {
       console.error('Timeline generation error:', error);
       return [];

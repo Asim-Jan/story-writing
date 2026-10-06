@@ -70,3 +70,6 @@ RDS_CREDENTIALS.txt
 
 # Security-sensitive admin scripts
 scripts/create-admin.js
+
+# Kubernetes secrets (never commit real values)
+k8s/secrets.yaml

@@ -58,7 +58,7 @@ async function loadPricing() {
  */
 async function getPricing(modelName) {
   const pricing = await loadPricing();
-  return pricing[modelName] || pricing['gpt-4o-mini']; // Fallback to default
+  return pricing[modelName] || pricing['sai-chat'] || pricing['gpt-4o-mini']; // Fallback to default
 }
 
 /**
