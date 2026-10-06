@@ -361,8 +361,12 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     alert('Metadata refreshed! Word counts recalculated.');
   };
 
-  const generateWithAI = async (type) => {
-    if (!aiPrompt.trim()) return;
+  const generateWithAI = async (type, promptOverride = null) => {
+    // promptOverride: callers like ChapterGeneratorModal pass THEIR prompt —
+    // the old signature dropped it and read the shared aiPrompt (empty in that
+    // flow → the call returned early: the 'From Timeline' generator was a no-op).
+    const effectivePrompt = promptOverride ?? aiPrompt;
+    if (!effectivePrompt.trim()) return;
 
     setGeneratingAI(true);
     setAiSuggestion(null);
@@ -375,7 +379,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         },
         body: JSON.stringify({
           type,
-          prompt: aiPrompt,
+          prompt: effectivePrompt,
           context: {
             bookTitle: data.bookTitle,
             overview: data.overview,
@@ -649,6 +653,10 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                     return;
                   }
                   setActiveTab(tab.id);
+                  // The editingId is per-tab state (a character id must not be
+                  // interpreted as a location id after switching tabs); clear
+                  // it with the tab so every form starts fresh.
+                  setEditingId(null);
                   if (window.innerWidth < 1024) {
                     setSidebarOpen(false);
                   }
@@ -973,6 +981,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               resetCharacterForm={resetCharacterForm}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -999,6 +1008,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               editLocation={editLocation}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -1025,6 +1035,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               editPlotline={editPlotline}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -1063,6 +1074,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               editChapter={editChapter}
               deleteItem={deleteItem}
               editingId={editingId}
+              setEditingId={setEditingId}
               generateWithAI={generateWithAI}
               aiSuggestion={aiSuggestion}
               acceptAISuggestion={acceptAISuggestion}
@@ -1211,6 +1223,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           {activeTab === 'continuity' && (
             <ContinuityTab
               data={data}
+              setData={setData}
               onAnalyze={handleContinuityAnalysis}
               analyzing={generatingAI}
             />

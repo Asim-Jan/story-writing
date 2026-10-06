@@ -456,6 +456,15 @@ const ChaptersTabView = ({
                     <ImproveButton
                       content={selectedChapter.summary}
                       contentType="chapter summary"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          chapters: prev.chapters.map(c =>
+                            c.id === selectedChapter.id ? { ...c, summary: improved } : c
+                          ),
+                        }));
+                        setSelectedChapter({ ...selectedChapter, summary: improved });
+                      }}
                       context={data}
                     />
                   </div>
@@ -470,6 +479,15 @@ const ChaptersTabView = ({
                     <ImproveButton
                       content={selectedChapter.content}
                       contentType="chapter content"
+                      onImprove={(improved) => {
+                        setData(prev => ({
+                          ...prev,
+                          chapters: prev.chapters.map(c =>
+                            c.id === selectedChapter.id ? { ...c, content: improved } : c
+                          ),
+                        }));
+                        setSelectedChapter({ ...selectedChapter, content: improved });
+                      }}
                       context={data}
                     />
                   </div>

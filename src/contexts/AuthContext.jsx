@@ -50,6 +50,13 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
+  // A 401 from ANY in-app fetch (useBook dispatches auth:expired) signs out.
+  useEffect(() => {
+    const onExpired = () => { logout(); };
+    window.addEventListener('auth:expired', onExpired);
+    return () => window.removeEventListener('auth:expired', onExpired);
+  }, []);
+
   const login = (userData, authToken) => {
     setUser(userData);
     setToken(authToken);

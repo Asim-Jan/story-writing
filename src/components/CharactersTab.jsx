@@ -34,6 +34,7 @@ const CharactersTab = ({
   aiContext
 }) => {
   const [selectedCharacter, setSelectedCharacter] = useState(null);
+  const [showForm, setShowForm] = useState(false); // mobile: the add form lives in the detail pane; without this the New Character click did nothing visible on phones
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
   const [generatingImage, setGeneratingImage] = useState(null);
   const [pendingImage, setPendingImage] = useState(null);
@@ -176,7 +177,7 @@ const CharactersTab = ({
   };
 
   const isMobile = useIsMobile();
-  const showingDetail = selectedCharacter !== null || editingId;
+  const showingDetail = selectedCharacter !== null || editingId || showForm;
 
   return (
     <div className="flex flex-col md:flex-row h-full relative">
@@ -188,6 +189,7 @@ const CharactersTab = ({
               onClick={() => {
                 setSelectedCharacter(null);
                 resetCharacterForm();
+                setShowForm(true); // mobile: make the form pane visible
               }}
               className="flex-1 px-4 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center justify-center gap-2 font-semibold"
             >
@@ -307,7 +309,7 @@ const CharactersTab = ({
       {/* Right panel - Character details or form */}
       {viewMode === 'list' && (
         <div className={`${isMobile && showingDetail ? 'fixed inset-0 z-50 bg-white' : isMobile ? 'hidden' : 'flex-1'} overflow-y-auto p-4 sm:p-6`}>
-          {selectedCharacter ? (
+          {(selectedCharacter || showForm) ? (
           // View existing character
           <div className="max-w-4xl mx-auto">
             <div className="bg-white lg:rounded-lg lg:shadow-sm lg:border lg:border-gray-200 p-3 sm:p-6 lg:p-8">
@@ -560,7 +562,7 @@ const CharactersTab = ({
                 <div className="flex items-center gap-2 flex-1 min-w-0">
                   {/* Mobile back button */}
                   <button
-                    onClick={() => setEditingId(null)}
+                    onClick={() => { setEditingId(null); setShowForm(false); }}
                     className="lg:hidden p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
                     title="Back to characters"
                   >
