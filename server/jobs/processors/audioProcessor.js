@@ -1,4 +1,5 @@
 import { saiSpeech, VOICE_MAP } from '../../saiClient.js';
+import { BookDataService } from '../../db/dataService.js';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
 import { setMediaBookMapping } from '../../utils/mediaMapping.js';
