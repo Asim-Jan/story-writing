@@ -27,7 +27,12 @@ export async function processVideoGeneration(job) {
 
     const parser = new VideoSceneParser();
     // the real method name (parseTranscript doesn't exist — the job crashed here)
-    const scenes = await parser.parseTranscriptToScenes(transcript.content, config);
+    // the parser takes the transcript OBJECT plus the book's characters and
+    // locations (transcript.content doesn't exist: the job always failed here)
+    const scenes = await parser.parseTranscriptToScenes(transcript, {
+      characters: book.characters || [],
+      locations: book.locations || [],
+    });
 
     await updateJobStatus(job, {
       status: 'active',
@@ -74,11 +79,15 @@ export async function processVideoGeneration(job) {
 
     // Persist through the data service (the Redis write was landing in an
     // empty store — animation projects never survived a reload)
+    // the shape the Animation Studio reads (it showed nothing for `video`)
+    finalVideo.duration = sceneVideos.reduce((n, v) => n + (v.duration || 0), 0);
     const project = {
       id: `anim-${Date.now()}`,
       transcriptId,
-      video: finalVideo,
+      title: transcript.title || 'Animation',
+      finalVideo,
       scenes: sceneVideos,
+      status: 'completed',
       createdAt: new Date().toISOString(),
     };
     await BookDataService.applyServerWrite(bookId, job.data.userId, (fresh) => ({

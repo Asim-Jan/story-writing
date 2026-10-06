@@ -32,6 +32,19 @@ export function getSAIClient() {
       maxRetries: 2,
       timeout: 120000,
     });
+    // Thinking OFF by default for every chat call in the app. Left on, the
+    // models spend small budgets (RPG tools: 300-600 tokens) entirely on
+    // reasoning and return an empty answer, and JSON callers parse nothing.
+    // The gateway turns this flag into reasoning_effort:"low" for GLM.
+    // A caller that wants thinking passes its own chat_template_kwargs or
+    // reasoning_effort.
+    const create = client.chat.completions.create.bind(client.chat.completions);
+    client.chat.completions.create = (params, options) => create(
+      params.chat_template_kwargs || params.reasoning_effort
+        ? params
+        : { ...params, chat_template_kwargs: { enable_thinking: false } },
+      options
+    );
   }
   return client;
 }
@@ -106,12 +119,19 @@ export async function saiChat({ model = SAI_CHAT, messages, max_tokens = 4096, t
  * The bridge returns {data:[{url}]} pointing at a public output URL.
  * @returns {Promise<{buffer: Buffer, url: string, model: string}>}
  */
-export async function saiImage({ prompt, model = 'flux2-klein-9b', size = '1024x1024', image = undefined }) {
+export async function saiImage({ prompt, model = 'flux2-klein-9b', size = '1024x1024', image = undefined, negative = undefined, seed = undefined }) {
   const openai = getSAIClient();
+  // `image` (a data: URL) turns any recipe into an EDIT of that picture; the
+  // character-sheet recipes require it. Send `size` explicitly: without it
+  // the bridge resizes edits to the input's aspect.
   const body = { model, prompt, size, n: 1 };
   if (image) body.image = image;
+  if (negative) body.negative = negative;
+  if (seed !== undefined) body.seed = seed;
 
-  const payload = await openai.post('/images/generations', { body });
+  // Sheets and Qwen edits take 30 s warm and up to ~3 min cold. No SDK
+  // retries: a retry would start a second render of the same image.
+  const payload = await openai.post('/images/generations', { body, timeout: 300000, maxRetries: 0 });
   const item = payload.data?.[0];
   if (!item) throw new Error('SAI_IMAGE_NO_DATA');
 
@@ -155,7 +175,7 @@ export async function saiSpeech({ text, voice = 'en-davis_man', speed = 1.0 }) {
       'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model: 'tts-1', voice, input: text, speed }),
+    body: JSON.stringify({ voice, input: text, speed, response_format: 'wav' }),
   });
 
   if (!res.ok) {

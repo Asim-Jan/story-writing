@@ -210,7 +210,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
           <h2 className="text-3xl font-bold">Animation Studio</h2>
         </div>
         <p className="text-purple-100">
-          Transform your transcripts into AI-generated animated films using Google Veo 3
+          Transform your transcripts into AI-generated animated films with SAI video
         </p>
       </div>
 
@@ -380,7 +380,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
               ⚡ Estimated Cost: ${(parsedScenes.length * 0.10).toFixed(2)} - ${(parsedScenes.length * 0.15).toFixed(2)}
             </p>
             <p className="text-blue-700 text-xs mt-1">
-              ~{parsedScenes.length} scenes × 8 seconds × $0.10-0.15 per scene using Veo 3
+              ~{parsedScenes.length} scenes of up to 10 seconds each, rendered by SAI video (a few minutes per scene)
             </p>
             <p className="text-blue-700 text-xs mt-1">
               Generation time: {Math.ceil(parsedScenes.length * 30 / 60)} - {Math.ceil(parsedScenes.length * 45 / 60)} minutes
@@ -520,9 +520,9 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-6">
         <h4 className="font-bold text-purple-900 mb-3">About Animation Studio</h4>
         <ul className="space-y-2 text-sm text-purple-800">
-          <li>• <strong>AI Video Generation:</strong> Uses Google Veo 3 to create cinematic 8-second video clips</li>
+          <li>• <strong>AI Video Generation:</strong> Each scene becomes a short cinematic clip (up to 10 seconds)</li>
           <li>• <strong>Scene Parsing:</strong> Automatically breaks transcripts into filmable scenes</li>
-          <li>• <strong>Native Audio:</strong> Veo 3 generates synchronized dialogue and sound effects</li>
+          <li>• <strong>Native Audio:</strong> clips come with generated sound</li>
           <li>• <strong>Professional Assembly:</strong> FFmpeg stitches scenes into complete films</li>
           <li>• <strong>High Quality:</strong> 1080p output with smooth transitions</li>
           <li>• <strong>Cloud Storage:</strong> All videos stored in MinIO, accessible from any device</li>
