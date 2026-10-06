@@ -252,6 +252,17 @@ async function mainSuite(gateway) {
     check('empty-chapters payload over existing chapters = 409', r.status === 409, `got ${r.status}`);
     check('...and the book row is untouched (atomic)', before.title === after.title && before.version === after.version);
 
+    // two new chapters with no number: each gets its own, no UNIQUE 500
+    const book2 = (await db.query(
+      `INSERT INTO books (owner_id, title) VALUES ($1, 'Unnumbered') RETURNING id, version`, [owner.id]
+    )).rows[0];
+    r = await call('PUT', `/api/books/${book2.id}`, owner.token, {
+      version: book2.version,
+      chapters: [{ id: 1, number: '', title: 'A', content: 'a' }, { id: 2, number: '', title: 'B', content: 'b' }],
+    });
+    const nums = (await db.query('SELECT chapter_number FROM chapters WHERE book_id = $1 ORDER BY chapter_number', [book2.id])).rows.map(x => x.chapter_number);
+    check('unnumbered new chapters save = 200 with distinct numbers', r.status === 200 && nums.join(',') === '1,2', `status ${r.status}, numbers ${nums}`);
+
     console.log('\n== roles on save');
     const cur = await dbVersion(db, book.id);
     r = await call('PUT', `/api/books/${book.id}`, editor.token, { title: 'Editor', version: cur });

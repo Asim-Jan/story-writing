@@ -115,10 +115,16 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   };
 
   // Dispatch quota refresh event after successful save
+  // Save Now goes through autosave so its status, baseline and error handling
+  // stay in step (calling saveBook directly left "Unsaved changes" showing,
+  // sent a second PUT 30 s later, and let a failed save escape uncaught).
   const handleSaveBook = async () => {
-    await saveBook();
-    // Dispatch custom event to refresh quotas
-    window.dispatchEvent(new Event('quotaRefresh'));
+    try {
+      await autosave.saveNow();
+      window.dispatchEvent(new Event('quotaRefresh'));
+    } catch {
+      // the error is already on screen (useBook's onSaveError / saveBook)
+    }
   };
 
   // Warn on navigation if unsaved changes
@@ -313,10 +319,18 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           )
         }));
       } else {
-        setData(prev => ({
-          ...prev,
-          chapters: [...prev.chapters, { id: Date.now(), ...chapterForm, wordCount }]
-        }));
+        setData(prev => {
+          // A blank Chapter Number used to become 0 for every new chapter: the
+          // second one collided with the first and every save failed. Default
+          // to the next number.
+          const given = parseInt(chapterForm.number, 10);
+          const next = (prev.chapters || []).reduce((m, c) => Math.max(m, parseInt(c.number, 10) || 0), 0) + 1;
+          const number = given > 0 ? String(given) : String(next);
+          return {
+            ...prev,
+            chapters: [...prev.chapters, { id: Date.now(), ...chapterForm, number, wordCount }]
+          };
+        });
       }
       setChapterForm({ number: '', title: '', summary: '', content: '' });
       setEditingId(null);

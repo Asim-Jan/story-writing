@@ -853,11 +853,16 @@ export class BookDataService {
 
     const chaptersToKeep = new Set();
 
+    // number arrives as a string from the client (and from some AI payloads).
+    // A missing or zero number gets the next free one: two unnumbered chapters
+    // both became 0 and hit UNIQUE(book_id, chapter_number) on every save.
+    const numberOf = (ch) => parseInt(ch.number ?? ch.chapterNumber ?? ch.chapter_number ?? 0, 10) || 0;
+    let nextNumber = Math.max(0, ...chaptersArray.map(numberOf)) + 1;
+
     for (const chapter of chaptersArray) {
-      // number arrives as a string from the client (and from some AI payloads)
       const chapterData = {
         book_id: bookId,
-        chapter_number: parseInt(chapter.number ?? chapter.chapterNumber ?? chapter.chapter_number ?? 0, 10) || 0,
+        chapter_number: numberOf(chapter) || nextNumber++,
         title: chapter.title || '',
         content: chapter.content || '',
         scenes: chapter.scenes || [],
