@@ -88,6 +88,8 @@ function makeWav(pcmBytes) {
 async function fakeGateway() {
   const port = await freePort();
   const requests = [];
+  const videoJobs = new Map();
+  const failedOnce = new Set();
   // a real 1-second MP4 for the video path (ffmpeg joins the clips)
   const { default: ffmpegPath } = await import('ffmpeg-static');
   const clipPath = path.join(os.tmpdir(), `regress-clip-${process.pid}.mp4`);
@@ -113,13 +115,23 @@ async function fakeGateway() {
         return;
       }
       if (req.url.endsWith('/video/generations')) {
+        const jobId = `v${requests.length}`;
+        videoJobs.set(jobId, parsed?.prompt || '');
         res.statusCode = 202;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ status: 'running', job_id: `v${requests.length}` }));
+        res.end(JSON.stringify({ status: 'running', job_id: jobId }));
         return;
       }
       if (req.url.includes('/video/jobs/')) {
         res.setHeader('Content-Type', 'application/json');
+        // a prompt containing FAIL_ONCE fails its first render (a transient Station error)
+        const prompt = videoJobs.get(req.url.split('/').pop()) || '';
+        if (prompt.includes('FAIL_ONCE') && !failedOnce.has(prompt)) {
+          failedOnce.add(prompt);
+          res.statusCode = 500;
+          res.end(JSON.stringify({ status: 'failed', error: 'generation failed: weight is on cpu' }));
+          return;
+        }
         res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/files/clip.mp4`, seconds: 1 }));
         return;
       }
@@ -574,7 +586,7 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   r = await call('POST', jobsUrl, owner.token, { type: 'animation', target: { type: 'animation', id: 't1' }, params: {
     options: { style: 'animated' },
     scenes: [{ sceneNumber: 1, title: 'A', visualPrompt: 'Mira climbs the lighthouse stairs', characters: ['Mira'], duration: 1 },
-      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves', characters: ['mira vale'], duration: 1 }] } });
+      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves FAIL_ONCE', characters: ['mira vale'], duration: 1 }] } });
   const animId = r.json?.job?.jobId;
   let sawProgress = false;
   for (let i = 0; i < 300; i++) {
@@ -596,8 +608,11 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
     (keyframes[0]?.body?.prompt || '').slice(0, 200));
   check('film: scene 2 keyframe references the portrait AND the previous clip\'s last frame', keyframes[1]?.body?.images?.length === 2 && /previous shot/.test(keyframes[1]?.body?.prompt || ''));
   check('film: every clip starts from its keyframe, in the locked style, never "realistic"',
-    starts.length === 2 && starts.every(v => /^data:image\//.test(v.body?.image || '') && /stylised 3D animated/.test(v.body?.prompt || '') && !/realistic/i.test(v.body?.prompt || '')),
+    starts.length === 3 && starts.every(v => /^data:image\//.test(v.body?.image || '') && /stylised 3D animated/.test(v.body?.prompt || '') && !/realistic/i.test(v.body?.prompt || '')),
     (starts[0]?.body?.prompt || '').slice(0, 160));
+  check('film: a clip that fails once is retried and the scene still renders',
+    done?.result?.project?.scenes?.[1]?.status === 'completed' && starts.length === 3,
+    `scene2 ${done?.result?.project?.scenes?.[1]?.status}`);
   check('film: the project records the style, keyframes and cast',
     done?.result?.project?.style === 'animated' && done.result.project.scenes.every(sc => /^\/api\/media\/images\/keyframe-/.test(sc.keyframeUrl || '') && sc.cast?.[0] === 'Mira Vale'));
   await call('POST', `${jobsUrl}/${animId}/ack`, owner.token);
