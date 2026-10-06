@@ -198,9 +198,13 @@ export const consumeAIQuota = async (req, res, next) => {
     // for a request that produced nothing. 2xx/4xx keep the slot (429-class
     // validation errors still consumed capacity).
     req.quotas = quotas;
-    res.on('finish', () => {
+    // 'close' fires for BOTH completed responses and client aborts; 'finish'
+    // never fires on an abort, which made the refund branch dead. On an abort
+    // statusCode is unset — treat that as a refund too.
+    res.on('close', () => {
       const code = res.statusCode;
-      if (code >= 500 || req.aborted) {
+      const aborted = !res.writableEnded;
+      if (aborted || code >= 500) {
         refundAIQuota(userId).catch(err =>
           console.error('AI quota refund failed:', err.message));
       }

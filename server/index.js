@@ -3968,6 +3968,13 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
   try {
     const { bookId, contentType, itemId, config } = req.body;
 
+    // the queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and read/write it
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
+
     if (!bookId || !contentType) {
       return res.status(400).json({ error: 'bookId and contentType are required' });
     }
@@ -3991,6 +3998,13 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
 app.post('/api/jobs/queue/import', authenticateToken, aiLimiter, async (req, res) => {
   try {
     const { bookId, chapterIndex, chapter } = req.body;
+
+    // the queue routes previously accepted ANY bookId — a job for someone
+    // else's book would run and read/write it
+    const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have access to this book' });
+    }
 
     if (!bookId || chapterIndex === undefined || !chapter) {
       return res.status(400).json({ error: 'bookId, chapterIndex, and chapter are required' });
@@ -4249,7 +4263,7 @@ Aim for 6-12 panels per page worth of content.`;
 });
 
 // Generate character reference image for consistent comic panels
-app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, async (req, res) => {
   try {
     const { characterId, character, style = 'comic book art' } = req.body;
 
@@ -4309,7 +4323,7 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
 });
 
 // Generate comic panel/scene image with character references
-app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, async (req, res) => {
   try {
     const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
 
@@ -5844,7 +5858,7 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
 // ==================== GRAMMAR CHECK ENDPOINT ====================
 
 // Grammar and spell check using LanguageTool
-app.post('/api/grammar-check', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
+app.post('/api/grammar-check', authenticateToken, aiLimiter, async (req, res) => {
   try {
     const { text, language = 'en-US' } = req.body;
 
@@ -6275,15 +6289,12 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // Get RPG data
-    const rpgKey = `rpg:${bookId}`;
-    const rpgDataStr = await getRPGData(bookId);
-
-    if (!rpgDataStr) {
+    // getRPGData already returns the PARSED object — parsing it again threw
+    // 'Unexpected token o' and every GET 500'd (saved campaigns never loaded).
+    const rpgData = await getRPGData(bookId);
+    if (!rpgData) {
       return res.json({ rpgData: null });
     }
-
-    const rpgData = JSON.parse(rpgDataStr);
     res.json({ rpgData });
   } catch (error) {
     console.error('Get RPG data error:', error);

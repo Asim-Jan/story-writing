@@ -83,7 +83,7 @@ export async function processVideoGeneration(job) {
       scenes: sceneVideos,
       createdAt: new Date().toISOString(),
     });
-    await BookDataService.update(bookId, job.data.userId, { animationProjects: projects }, updatedBook.version);
+    await BookDataService.update(bookId, job.data.userId, { animation_projects: projects }, updatedBook.version);
 
     await updateJobStatus(job.id, {
       status: 'completed',

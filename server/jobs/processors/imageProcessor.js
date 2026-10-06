@@ -70,7 +70,11 @@ export async function processImageGeneration(job) {
       const book = await BookDataService.findById(bookId);
       if (book) {
         const updates = {};
-        if (imageType === 'character' && itemId) {
+        if (imageType === 'cover') {
+          // the book's own cover (this branch was lost in an earlier rewrite —
+          // covers were generated, uploaded, then never attached)
+          updates.metadata = { ...(book.metadata || {}), coverImage: uploadResult };
+        } else if (imageType === 'character' && itemId) {
           const character = (book.characters || []).find(c => c.id === itemId);
           if (character) {
             character.visual = uploadResult;
