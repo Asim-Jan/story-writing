@@ -594,7 +594,12 @@ export class BookDataService {
 
         if (chapters && Array.isArray(chapters)) {
           await this.syncChaptersInClient(client, bookId, chapters);
-          const updatedChapters = await ChapterRepository.findByBookId(bookId);
+          // reload ON THE TRANSACTION CLIENT — a pool read here would see the
+          // pre-commit snapshot (versions one step behind what was just written)
+          const updatedChapters = (await client.query(
+            'SELECT * FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number ASC',
+            [bookId]
+          )).rows;
           if (updated) {
             updated.chapters = (updatedChapters || []).map(ch => this.mapChapterFromPostgres(ch));
           }
@@ -765,28 +770,39 @@ export class BookDataService {
 
       if (existingChapter) {
         chaptersToKeep.add(existingChapter.id);
-        const fields = ['chapter_number = $2', 'title = $3', 'content = $4', 'scenes = $5', 'notes = $6', 'status = $7'];
-        const values = [existingChapter.id, chapterData.chapter_number, chapterData.title,
-          chapterData.content, JSON.stringify(chapterData.scenes), chapterData.notes, chapterData.status];
+        // Update through the repository ON THIS CLIENT: that carries the
+        // version bump (trigger-checked), the word-count recompute, and the
+        // chapter_versions history the old sync silently skipped. The
+        // expectedVersion is the row's version read moments ago INSIDE this
+        // transaction, so the optimistic check is against data no one else
+        // could have changed between the read and the write.
+        const updates = {
+          chapter_number: chapterData.chapter_number,
+          title: chapterData.title,
+          content: chapterData.content,
+          scenes: chapterData.scenes,
+          notes: chapterData.notes,
+          status: chapterData.status,
+        };
         if (chapterData.cover_image !== null) {
-          fields.push('cover_image = $8', 'cover_image_filename = $9');
-          values.push(chapterData.cover_image, chapterData.cover_image_filename);
+          updates.cover_image = chapterData.cover_image;
+          updates.cover_image_filename = chapterData.cover_image_filename;
         }
-        const result = await client.query(
-          `UPDATE chapters SET ${fields.join(', ')} WHERE id = $1 AND deleted_at IS NULL`,
-          values
+        const result = await ChapterRepository.update(
+          existingChapter.id, updates, existingChapter.version, null, client
         );
-        if (result.rowCount === 0) {
+        if (!result) {
           throw new Error(`CONFLICT: chapter ${existingChapter.id} vanished mid-save`);
         }
       } else {
+        const wordCount = (chapterData.content || '').trim().split(/\s+/).filter(Boolean).length;
         const inserted = await client.query(
-          `INSERT INTO chapters (book_id, chapter_number, title, content, scenes, notes, status, cover_image, cover_image_filename)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `INSERT INTO chapters (book_id, chapter_number, title, content, scenes, notes, status, cover_image, cover_image_filename, word_count)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            RETURNING *`,
           [bookId, chapterData.chapter_number, chapterData.title, chapterData.content,
             JSON.stringify(chapterData.scenes), chapterData.notes, chapterData.status,
-            chapterData.cover_image, chapterData.cover_image_filename]
+            chapterData.cover_image, chapterData.cover_image_filename, wordCount]
         );
         chaptersToKeep.add(inserted.rows[0].id);
       }

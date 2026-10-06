@@ -90,14 +90,14 @@ export class ChapterRepository {
    * @param {string} userId - User making the update (for version history)
    * @returns {Promise<object>} Updated chapter
    */
-  static async update(chapterId, updates, expectedVersion, userId = null) {
-    return await transaction(async (client) => {
+  static async update(chapterId, updates, expectedVersion, userId = null, existingClient = null) {
+    const run = async (client) => {
       const fields = [];
       const values = [];
       let paramCount = 1;
 
       // Allowed fields
-      const allowedFields = ['title', 'content', 'scenes', 'notes', 'status'];
+      const allowedFields = ['chapter_number', 'title', 'content', 'scenes', 'notes', 'status', 'cover_image', 'cover_image_filename'];
 
       let newContent = null;
       let newScenes = null;
@@ -202,7 +202,11 @@ export class ChapterRepository {
       }
 
       return updatedChapter;
-    });
+    };
+    // existingClient: run on the CALLER'S transaction (the save-path book save
+    // syncs chapters inside the book-update transaction; a nested BEGIN would
+    // error or silently commit early).
+    return existingClient ? await run(existingClient) : await transaction(run);
   }
 
   /**
