@@ -19,51 +19,50 @@ const QuickFixModal = ({ issue, onApply, onCancel }) => {
   const getSeverityColor = (severity) => {
     switch (severity) {
       case 'critical':
-        return 'text-red-600 bg-red-50 border-red-200';
+        return 'text-[var(--red)] bg-[var(--bg2)] border-[var(--red)]';
       case 'warning':
-        return 'text-yellow-600 bg-yellow-50 border-yellow-200';
+        return 'text-[var(--warn)] bg-[var(--bg2)] border-[var(--warn)]';
       case 'info':
-        return 'text-blue-600 bg-blue-50 border-blue-200';
+        return 'text-[var(--blue)] bg-[var(--bg2)] border-[var(--line2)]';
       default:
-        return 'text-gray-600 bg-gray-50 border-gray-200';
+        return 'text-[var(--dim)] bg-[var(--bg2)] border-[var(--line)]';
     }
   };
 
   const getCategoryIcon = (category) => {
     switch (category) {
       case 'timeline':
-        return '📅';
+        return '⛁';   // timeline block
       case 'character':
-        return '👤';
+        return '✍';    // persona
       case 'location':
-        return '📍';
+        return '⌖';    // position
       case 'plot':
-        return '📖';
+        return '▶';    // thread
       case 'style':
-        return '✍️';
+        return '✎';    // prose
       default:
-        return '📝';
+        return '⚠';
     }
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+      <div className="card max-w-3xl w-full max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white p-6 relative">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--line)]">
+          <h2 className="text-lg font-bold text-[var(--ink)] flex items-center gap-2">
+            <AlertCircle size={18} className="text-[var(--warn)]" />
+            Apply Continuity Fix
+          </h2>
           <button
             onClick={onCancel}
-            className="absolute top-4 right-4 text-white hover:bg-white/20 rounded-full p-2"
+            className="iconb"
+            title="Cancel"
+            aria-label="Cancel"
           >
-            <X size={24} />
+            <X size={18} />
           </button>
-          <div className="flex items-center gap-3 mb-2">
-            <AlertCircle size={32} />
-            <h2 className="text-2xl font-bold">Apply Continuity Fix</h2>
-          </div>
-          <p className="text-purple-100">
-            Review and edit the suggested fix before applying it to your story
-          </p>
         </div>
 
         {/* Content */}
@@ -75,17 +74,17 @@ const QuickFixModal = ({ issue, onApply, onCancel }) => {
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="font-bold text-lg">{issue.title}</h3>
-                  <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${getSeverityColor(issue.severity)}`}>
+                  <span className={`pill uppercase ${getSeverityColor(issue.severity)}`}>
                     {issue.severity}
                   </span>
-                  <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs font-medium capitalize">
+                  <span className="pill capitalize">
                     {issue.category}
                   </span>
                 </div>
                 <p className="text-sm mb-2">{issue.description}</p>
                 {issue.location && (
                   <p className="text-xs opacity-75 font-medium">
-                    📍 Location: {issue.location}
+                    Location: {issue.location}
                   </p>
                 )}
               </div>
@@ -94,27 +93,27 @@ const QuickFixModal = ({ issue, onApply, onCancel }) => {
 
           {/* Suggestion Editor */}
           <div className="mb-6">
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
+            <label className="lbl block mb-1.5">
               Edit Suggestion Before Applying:
             </label>
             <textarea
               value={editedSuggestion}
               onChange={(e) => setEditedSuggestion(e.target.value)}
-              className="w-full h-40 p-4 border-2 border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+              className="w-full h-40 p-3 resize-none text-sm"
               placeholder="Enter your fix suggestion here..."
             />
-            <p className="text-xs text-gray-500 mt-2">
+            <p className="text-xs text-[var(--dim2)] mt-2">
               This suggestion will be applied to the relevant part of your story. You can edit it to better fit your narrative.
             </p>
           </div>
 
           {/* Application Strategy Info */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-            <h4 className="font-semibold text-blue-900 mb-2 flex items-center gap-2">
+          <div className="border border-[var(--line2)] bg-[var(--glass2)] p-4 mb-5">
+            <p className="lbl mb-2 flex items-center gap-2">
               <CheckCircle size={16} />
               How This Will Be Applied:
-            </h4>
-            <ul className="text-sm text-blue-800 space-y-1">
+            </p>
+            <ul className="text-sm text-[var(--dim)] space-y-1">
               {issue.category === 'character' && (
                 <li>• The suggestion will be added to the character's arc notes</li>
               )}

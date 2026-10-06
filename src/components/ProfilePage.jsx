@@ -296,7 +296,7 @@ const ProfilePage = ({ onBack }) => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center">
         <div className="text-center">
           <User className="w-16 h-16 text-purple-600 mx-auto mb-4 animate-pulse" />
           <p className="text-xl text-gray-700">Loading profile...</p>
@@ -306,7 +306,7 @@ const ProfilePage = ({ onBack }) => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50">
+    <div className="min-h-screen bg-[var(--bg)]">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         {/* Header */}
         <div className="mb-8">
@@ -732,7 +732,7 @@ const ProfilePage = ({ onBack }) => {
                           </div>
                         </div>
                       ) : !loadingSubscription && (
-                        <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
+                        <div className="card p-5">
                           <h3 className="text-lg font-semibold text-gray-900 mb-4">Upgrade Your Plan</h3>
                           <p className="text-sm text-gray-600 mb-6">
                             Choose a plan that fits your writing needs and unlock more features.
@@ -825,7 +825,7 @@ const ProfilePage = ({ onBack }) => {
                       )}
 
                       {/* Tier Badge */}
-                      <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
+                      <div className="card p-5">
                         <div className="flex items-center justify-between">
                           <div>
                             <h3 className="text-lg font-semibold text-gray-900 mb-1">

@@ -60,25 +60,21 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
   const getQuotaColor = (current, max) => {
     if (!max) return 'text-gray-400';
     const percentage = (current / max) * 100;
-    if (percentage < 80) return 'text-green-600';
-    if (percentage < 100) return 'text-yellow-600';
-    return 'text-red-600';
+    if (percentage < 80) return 'text-[var(--ok)]';
+    if (percentage < 100) return 'text-[var(--warn)]';
+    return 'text-[var(--red)]';
   };
 
   const getQuotaBackground = (current, max) => {
-    if (!max) return 'bg-gray-100';
-    const percentage = (current / max) * 100;
-    if (percentage < 80) return 'bg-green-50 border-green-200';
-    if (percentage < 100) return 'bg-yellow-50 border-yellow-200';
-    return 'bg-red-50 border-red-200';
+    return 'bg-[var(--bg2)] border-b border-[var(--line)]';
   };
 
   const getProgressColor = (current, max) => {
-    if (!max) return 'bg-gray-300';
+    if (!max) return 'bg-[var(--line)]';
     const percentage = (current / max) * 100;
-    if (percentage < 80) return 'bg-green-500';
-    if (percentage < 100) return 'bg-yellow-500';
-    return 'bg-red-500';
+    if (percentage < 80) return 'bg-[var(--ok)]';
+    if (percentage < 100) return 'bg-[var(--warn)]';
+    return 'bg-[var(--red)]';
   };
 
   const formatNumber = (num) => {
@@ -91,14 +87,14 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
 
   if (error) {
     return (
-      <div className="bg-red-50 border-b border-red-200 px-4 py-2 flex items-center justify-between text-sm">
+      <div className="bg-[var(--bg2)] border-b border-[var(--red)] px-4 py-2 flex items-center justify-between text-sm">
         <div className="flex items-center gap-2">
-          <AlertCircle size={16} className="text-red-500" />
-          <span className="text-red-700">{error}</span>
+          <AlertCircle size={16} className="text-[var(--red)]" />
+          <span className="text-[var(--red)]">{error}</span>
         </div>
         <button
           onClick={() => setIsMinimized(true)}
-          className="text-red-500 hover:text-red-700"
+          className="text-[var(--red)]"
         >
           <X size={16} />
         </button>
@@ -117,7 +113,7 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
           className="w-full flex items-center justify-between text-sm font-medium"
         >
           <span className={getQuotaColor(usage.current_books, limits.max_books)}>
-            Usage: {usage.current_books}/{limits.max_books} books
+            Usage: {usage.current_books}/{limits.max_books >= 999999 ? '∞' : limits.max_books} books
           </span>
           <ChevronDown size={16} />
         </button>
@@ -126,29 +122,27 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
   }
 
   return (
-    <div className={`border-b ${getQuotaBackground(usage.current_books, limits.max_books)} px-4 py-3`}>
+    <div className={`border-b ${getQuotaBackground(usage.current_books, limits.max_books)} px-4 py-2.5`}>
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-gray-700">
-            Your Usage
-          </h3>
+          <p className="lbl">Your Usage</p>
           <div className="flex items-center gap-2">
             <button
               onClick={() => onNavigateToProfile && onNavigateToProfile()}
-              className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+              className="text-xs text-[var(--blue)] hover:underline"
             >
               View Details
             </button>
             <button
               onClick={() => setIsCollapsed(true)}
-              className="lg:hidden text-gray-500 hover:text-gray-700"
+              className="lg:hidden text-[var(--dim)] hover:text-[var(--ink)]"
             >
               <ChevronUp size={16} />
             </button>
             <button
               onClick={() => setIsMinimized(true)}
-              className="text-gray-500 hover:text-gray-700"
+              className="text-[var(--dim)] hover:text-[var(--ink)]"
             >
               <X size={16} />
             </button>
@@ -158,64 +152,64 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
         {/* Quota Cards - Grid Layout */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* Books */}
-          <div className="bg-white rounded-lg p-3 shadow-sm border">
+          <div className="border border-[var(--line)] bg-[var(--glass)] p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-gray-600">Books</span>
-              <span className={`text-sm font-bold ${getQuotaColor(usage.current_books, limits.max_books)}`}>
-                {usage.current_books}/{formatNumber(limits.max_books)}
+              <span className="lbl">Books</span>
+              <span className={`text-sm font-bold num ${getQuotaColor(usage.current_books, limits.max_books)}`}>
+                {usage.current_books}/{limits.max_books >= 999999 ? '∞' : formatNumber(limits.max_books)}
               </span>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
+            <div className="w-full bg-[var(--glass2)] h-1.5">
               <div
-                className={`h-2 rounded-full transition-all ${getProgressColor(usage.current_books, limits.max_books)}`}
+                className={`h-1.5 transition-all ${getProgressColor(usage.current_books, limits.max_books)}`}
                 style={{ width: `${Math.min((usage.current_books / limits.max_books) * 100, 100)}%` }}
               />
             </div>
           </div>
 
           {/* Words */}
-          <div className="bg-white rounded-lg p-3 shadow-sm border">
+          <div className="border border-[var(--line)] bg-[var(--glass)] p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-gray-600">Words</span>
-              <span className={`text-sm font-bold ${getQuotaColor(usage.current_words, limits.max_words)}`}>
+              <span className="lbl">Words</span>
+              <span className={`text-sm font-bold num ${getQuotaColor(usage.current_words, limits.max_words)}`}>
                 {formatNumber(usage.current_words)}/{formatNumber(limits.max_words)}
               </span>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
+            <div className="w-full bg-[var(--glass2)] h-1.5">
               <div
-                className={`h-2 rounded-full transition-all ${getProgressColor(usage.current_words, limits.max_words)}`}
+                className={`h-1.5 transition-all ${getProgressColor(usage.current_words, limits.max_words)}`}
                 style={{ width: `${Math.min((usage.current_words / limits.max_words) * 100, 100)}%` }}
               />
             </div>
           </div>
 
           {/* Chapters */}
-          <div className="bg-white rounded-lg p-3 shadow-sm border">
+          <div className="border border-[var(--line)] bg-[var(--glass)] p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-gray-600">Chapters</span>
-              <span className={`text-sm font-bold ${getQuotaColor(usage.current_chapters, limits.max_chapters)}`}>
+              <span className="lbl">Chapters</span>
+              <span className={`text-sm font-bold num ${getQuotaColor(usage.current_chapters, limits.max_chapters)}`}>
                 {usage.current_chapters}/{formatNumber(limits.max_chapters)}
               </span>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
+            <div className="w-full bg-[var(--glass2)] h-1.5">
               <div
-                className={`h-2 rounded-full transition-all ${getProgressColor(usage.current_chapters, limits.max_chapters)}`}
+                className={`h-1.5 transition-all ${getProgressColor(usage.current_chapters, limits.max_chapters)}`}
                 style={{ width: `${Math.min((usage.current_chapters / limits.max_chapters) * 100, 100)}%` }}
               />
             </div>
           </div>
 
           {/* AI Requests */}
-          <div className="bg-white rounded-lg p-3 shadow-sm border">
+          <div className="border border-[var(--line)] bg-[var(--glass)] p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-gray-600">AI Requests Today</span>
-              <span className={`text-sm font-bold ${getQuotaColor(usage.ai_requests_today, limits.max_ai_requests_per_day)}`}>
+              <span className="lbl">AI Requests Today</span>
+              <span className={`text-sm font-bold num ${getQuotaColor(usage.ai_requests_today, limits.max_ai_requests_per_day)}`}>
                 {usage.ai_requests_today}/{limits.max_ai_requests_per_day}
               </span>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
+            <div className="w-full bg-[var(--glass2)] h-1.5">
               <div
-                className={`h-2 rounded-full transition-all ${getProgressColor(usage.ai_requests_today, limits.max_ai_requests_per_day)}`}
+                className={`h-1.5 transition-all ${getProgressColor(usage.ai_requests_today, limits.max_ai_requests_per_day)}`}
                 style={{ width: `${Math.min((usage.ai_requests_today / limits.max_ai_requests_per_day) * 100, 100)}%` }}
               />
             </div>

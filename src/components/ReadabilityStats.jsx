@@ -151,7 +151,7 @@ export default function ReadabilityStats({ text, compact = false }) {
 
           {/* Tips */}
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-            <h4 className="font-semibold text-blue-900 mb-2 text-sm">💡 Writing Tips</h4>
+            <p className="lbl mb-2">Writing Tips</p>
             <ul className="text-xs text-blue-800 space-y-1">
               {metrics.fleschScore < 50 && (
                 <li>• Try using shorter sentences to improve readability</li>

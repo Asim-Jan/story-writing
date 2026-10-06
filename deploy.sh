@@ -155,31 +155,23 @@ k3s_rollout() {
     fi
 }
 
-# Function to build and push backend
-deploy_backend() {
-    echo -e "${GREEN}Building backend v$NEW_VERSION...${NC}"
-    build_and_push "$DOCKERHUB_BACKEND" "$GHCR_BACKEND" -f Dockerfile.backend .
-    k3s_rollout backend
-    echo -e "${GREEN}✓ Backend v$NEW_VERSION pushed${NC}"
-}
-
-# Function to build and push frontend
-deploy_frontend() {
-    echo -e "${GREEN}Building frontend v$NEW_VERSION (VITE_API_URL=$VITE_API_URL)...${NC}"
-    build_and_push "$DOCKERHUB_FRONTEND" "$GHCR_FRONTEND" \
+# Build and push the ONE app image (backend + the built frontend it serves;
+# the nginx frontend deployment is gone — SAI-Cloud shape)
+deploy_app() {
+    echo -e "${GREEN}Building app v$NEW_VERSION (VITE_API_URL=$VITE_API_URL)...${NC}"
+    build_and_push "$DOCKERHUB_BACKEND" "$GHCR_BACKEND" \
         --build-arg VITE_API_URL=$VITE_API_URL \
-        -f Dockerfile.frontend .
-    k3s_rollout frontend
-    echo -e "${GREEN}✓ Frontend v$NEW_VERSION pushed${NC}"
+        -f Dockerfile.backend .
+    k3s_rollout backend
+    k3s_rollout worker
+    echo -e "${GREEN}✓ App v$NEW_VERSION pushed${NC}"
 }
 
 # Deploy based on service argument
 case $SERVICE in
-    backend)  deploy_backend ;;
-    frontend) deploy_frontend ;;
-    all)      deploy_backend; deploy_frontend ;;
+    backend|frontend|all|app)  deploy_app ;;
     *)
-        echo -e "${RED}Invalid service. Use: frontend, backend, or all${NC}"
+        echo -e "${RED}Invalid service. Use: all, app, backend, or frontend${NC}"
         exit 1
         ;;
 esac

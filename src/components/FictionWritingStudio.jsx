@@ -33,7 +33,9 @@ import { useQuotaWarnings, shouldShowDailyDigest, markDailyDigestShown } from '.
 
 const FictionWritingStudio = ({ bookId, onBack }) => {
   const [activeTab, setActiveTab] = useState('overview');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
   const [showProfile, setShowProfile] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });
@@ -579,7 +581,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 font-serif overflow-hidden">
+    <div className="flex h-screen bg-[var(--bg)] overflow-hidden">
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -591,25 +593,25 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
       {/* Sidebar */}
       <div className={`${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      } lg:translate-x-0 fixed lg:relative z-50 lg:z-0 w-72 sm:w-64 bg-amber-50 border-r border-amber-200 transition-transform duration-300 h-full flex flex-col`}>
-        <div className="p-6 border-b border-amber-200">
+      } lg:translate-x-0 fixed lg:relative z-50 lg:z-0 w-72 sm:w-64 bg-[var(--glass)] border-r border-[var(--line)] transition-transform duration-150 h-full flex flex-col`}>
+        <div className="p-4 border-b border-[var(--line)]">
           <div className="flex items-center gap-2 mb-4">
             <Book className="text-amber-700" size={24} />
             <input
               type="text"
               value={data.bookTitle}
               onChange={(e) => setData(prev => ({ ...prev, bookTitle: e.target.value }))}
-              className="text-xl font-bold bg-transparent border-none outline-none text-amber-900 w-full"
+              className="text-lg font-bold bg-transparent border-none outline-none text-[var(--ink)] w-full focus:ring-0"
             />
           </div>
           <div className="relative">
-            <Search size={16} className="absolute left-3 top-3 text-amber-600" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dim2)]" />
             <input
               type="text"
               placeholder="Search..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 rounded-lg border border-amber-300 bg-white text-sm focus:ring-2 focus:ring-amber-400 outline-none"
+              className="w-full pl-9 pr-3 py-2 text-sm"
             />
           </div>
         </div>
@@ -637,13 +639,13 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                     setSidebarOpen(false);
                   }
                 }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition-all ${
+                className={`w-full flex items-center gap-3 px-4 py-2.5 mb-0.5 text-sm transition-colors ${
                   isActive
-                    ? 'bg-amber-200 text-amber-900 font-semibold'
+                    ? 'text-[var(--ink)] font-semibold bg-[var(--glass2)]'
                     : isRestricted
-                    ? 'opacity-50 cursor-not-allowed text-amber-600 hover:opacity-60'
-                    : 'text-amber-800 hover:bg-amber-100'
-                }`}
+                    ? 'opacity-50 cursor-not-allowed text-[var(--dim)]'
+                    : 'text-[var(--dim)] hover:text-[var(--ink)] hover:bg-[var(--glass2)]'
+                } ${isActive ? 'border-l-2 border-[var(--blue)]' : 'border-l-2 border-transparent'}`}
                 title={isRestricted ? `Requires ${tab.requiredTier} subscription` : ''}
               >
                 {isRestricted ? (
@@ -653,12 +655,12 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                 )}
                 <span className="flex-1 text-left">{tab.label}</span>
                 {tab.id === 'characters' && data.characters.length > 0 && (
-                  <span className="ml-auto bg-amber-300 text-amber-900 text-xs px-2 py-1 rounded-full">
+                  <span className="ml-auto pill num text-[10px]">
                     {data.characters.length}
                   </span>
                 )}
                 {isRestricted && (
-                  <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                  <span className="pill text-[10px]">
                     {tab.requiredTier}
                   </span>
                 )}
@@ -669,7 +671,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-4 flex items-center justify-between">
+        <header className="bg-[var(--bg2)] border-b border-[var(--line)] px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2 sm:gap-4">
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -691,25 +693,25 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             {/* Autosave Status Indicator */}
             <div className="hidden sm:flex items-center gap-2 text-sm">
               {autosave?.status === 'saving' && (
-                <span className="flex items-center gap-1 text-blue-600">
+                <span className="flex items-center gap-1 text-[var(--blue)] mono text-xs">
                   <RefreshCw size={14} className="animate-spin" />
                   Saving...
                 </span>
               )}
               {autosave?.status === 'saved' && autosave?.lastSaved && (
-                <span className="flex items-center gap-1 text-green-600">
+                <span className="flex items-center gap-1 text-[var(--ok)] mono text-xs">
                   <Save size={14} />
                   Saved {new Date(autosave.lastSaved).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               )}
               {autosave?.status === 'unsaved' && (
-                <span className="flex items-center gap-1 text-amber-600">
-                  <span className="w-2 h-2 bg-amber-600 rounded-full animate-pulse"></span>
+                <span className="flex items-center gap-1 text-[var(--warn)] mono text-xs">
+                  <span className="w-1.5 h-1.5 bg-[var(--warn)]"></span>
                   Unsaved changes
                 </span>
               )}
               {autosave?.status === 'error' && (
-                <span className="flex items-center gap-1 text-red-600">
+                <span className="flex items-center gap-1 text-[var(--red)] mono text-xs">
                   <X size={14} />
                   Save failed
                 </span>
@@ -717,7 +719,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             </div>
             <button
               onClick={() => setShowProfile(true)}
-              className="p-2 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
+              className="iconb"
               title="Profile"
             >
               <User size={20} />
@@ -725,7 +727,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             <button
               onClick={handleSaveBook}
               disabled={saving}
-              className="px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 text-sm sm:text-base"
+              className="btn pri sm"
             >
               <Save size={16} />
               <span className="hidden sm:inline">{saving ? 'Saving...' : 'Save Now'}</span>
@@ -740,12 +742,12 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           {activeTab === 'overview' && (
             <div className="max-w-6xl mx-auto">
               {/* Story Overview Section */}
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 sm:p-8 mb-6">
+              <div className="card p-4 sm:p-6 mb-6">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-2xl sm:text-3xl font-bold text-gray-800">Story Overview</h2>
+                  <h2 className="text-lg sm:text-xl font-bold text-[var(--ink)] rule2 inline-block">Story Overview</h2>
                   <button
                     onClick={refreshMetadata}
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 font-semibold"
+                    className="btn sm"
                   >
                     <RefreshCw size={16} />
                     Refresh Stats
@@ -755,51 +757,39 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                   value={data.overview}
                   onChange={(e) => setData(prev => ({ ...prev, overview: e.target.value }))}
                   placeholder="Write your story's synopsis, themes, and main concepts here..."
-                  className="w-full h-48 p-4 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-amber-400 outline-none"
+                  className="w-full h-48 p-4 resize-none text-sm leading-relaxed"
                 />
               </div>
 
               {/* Quick Stats Grid */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 sm:p-6 border border-blue-200">
-                  <div className="flex items-center gap-2 sm:gap-3 mb-2">
-                    <Users className="text-blue-700" size={20} sm:size={24} />
-                    <h3 className="font-bold text-blue-900 text-sm sm:text-base">Characters</h3>
-                  </div>
-                  <p className="text-2xl sm:text-3xl font-bold text-blue-700">{data.characters.length}</p>
-                  <p className="text-sm text-blue-600 mt-1">
+                <div className="card p-4">
+                  <p className="lbl mb-2">Characters</p>
+                  <p className="text-2xl font-bold text-[var(--ink)] num">{data.characters.length}</p>
+                  <p className="text-xs text-[var(--dim)] mono mt-1">
                     {data.characters.filter(c => c.role?.toLowerCase().includes('main') || c.role?.toLowerCase().includes('protagonist')).length} main
                   </p>
                 </div>
-                <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-6 border border-green-200">
-                  <div className="flex items-center gap-3 mb-2">
-                    <MapPin className="text-green-700" size={24} />
-                    <h3 className="font-bold text-green-900">Locations</h3>
-                  </div>
-                  <p className="text-3xl font-bold text-green-700">{data.locations.length}</p>
-                  <p className="text-sm text-green-600 mt-1">
+                <div className="card p-4">
+                  <p className="lbl mb-2">Locations</p>
+                  <p className="text-2xl font-bold text-[var(--ink)] num">{data.locations.length}</p>
+                  <p className="text-xs text-[var(--dim)] mono mt-1">
                     {data.locations.filter(l => l.imageUrl).length} with images
                   </p>
                 </div>
-                <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-6 border border-purple-200">
-                  <div className="flex items-center gap-3 mb-2">
-                    <Book className="text-purple-700" size={24} />
-                    <h3 className="font-bold text-purple-900">Chapters</h3>
-                  </div>
-                  <p className="text-3xl font-bold text-purple-700">{data.chapters.length}</p>
-                  <p className="text-sm text-purple-600 mt-1">
+                <div className="card p-4">
+                  <p className="lbl mb-2">Chapters</p>
+                  <p className="text-2xl font-bold text-[var(--ink)] num">{data.chapters.length}</p>
+                  <p className="text-xs text-[var(--dim)] mono mt-1">
                     {data.chapters.filter(c => c.content).length} written
                   </p>
                 </div>
-                <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-6 border border-amber-200">
-                  <div className="flex items-center gap-3 mb-2">
-                    <FileText className="text-amber-700" size={24} />
-                    <h3 className="font-bold text-amber-900">Total Words</h3>
-                  </div>
-                  <p className="text-3xl font-bold text-amber-700">
+                <div className="card p-4">
+                  <p className="lbl mb-2">Total Words</p>
+                  <p className="text-2xl font-bold text-[var(--ink)] num">
                     {data.chapters.reduce((sum, ch) => sum + (ch.wordCount || 0), 0).toLocaleString()}
                   </p>
-                  <p className="text-sm text-amber-600 mt-1">
+                  <p className="text-xs text-[var(--dim)] mono mt-1">
                     Avg: {data.chapters.length > 0 ? Math.round(data.chapters.reduce((sum, ch) => sum + (ch.wordCount || 0), 0) / data.chapters.length).toLocaleString() : 0}
                   </p>
                 </div>
@@ -808,21 +798,21 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               {/* Content Breakdown */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 {/* Plotlines */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 sm:p-6">
+                <div className="card p-4 sm:p-5">
                   <div className="flex items-center gap-3 mb-4">
-                    <Route className="text-indigo-600" size={24} />
-                    <h3 className="text-xl font-bold text-gray-800">Plotlines</h3>
+                    <Route className="text-[var(--dim)]" size={18} />
+                    <p className="lbl rule2 inline-block mb-3">Plotlines</p>
                   </div>
                   {data.plotlines.length === 0 ? (
-                    <p className="text-gray-500 italic">No plotlines yet</p>
+                    <p className="text-sm text-[var(--dim2)]">No plotlines yet</p>
                   ) : (
                     <div className="space-y-2">
                       {data.plotlines.slice(0, 5).map(plot => (
                         <div key={plot.id} className="flex items-start gap-2">
                           <span className={`mt-1 px-2 py-0.5 rounded text-xs font-semibold ${
-                            plot.status === 'active' ? 'bg-green-100 text-green-800' :
-                            plot.status === 'resolved' ? 'bg-blue-100 text-blue-800' :
-                            'bg-gray-100 text-gray-800'
+                            plot.status === 'active' ? 'pill text-[var(--ok)]' :
+                            plot.status === 'resolved' ? 'pill text-[var(--blue)]' :
+                            'pill text-[var(--dim)]'
                           }`}>
                             {plot.status}
                           </span>
@@ -837,13 +827,13 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                 </div>
 
                 {/* Timeline */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="card p-4 sm:p-5">
                   <div className="flex items-center gap-3 mb-4">
-                    <Clock className="text-rose-600" size={24} />
-                    <h3 className="text-xl font-bold text-gray-800">Timeline</h3>
+                    <Clock className="text-[var(--dim)]" size={18} />
+                    <p className="lbl rule2 inline-block mb-3">Timeline</p>
                   </div>
                   {(data.timelines || []).length === 0 ? (
-                    <p className="text-gray-500 italic">No timeline events yet</p>
+                    <p className="text-sm text-[var(--dim2)]">No timeline events yet</p>
                   ) : (
                     <div className="space-y-3">
                       <div className="flex justify-between text-sm">
@@ -868,10 +858,10 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               {/* Additional Stats */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {/* Visuals */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="card p-4 sm:p-5">
                   <div className="flex items-center gap-3 mb-4">
-                    <Palette className="text-pink-600" size={24} />
-                    <h3 className="text-xl font-bold text-gray-800">Visuals</h3>
+                    <Palette className="text-[var(--dim)]" size={18} />
+                    <p className="lbl rule2 inline-block mb-3">Visuals</p>
                   </div>
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
@@ -894,13 +884,13 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                 </div>
 
                 {/* Notes */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="card p-4 sm:p-5">
                   <div className="flex items-center gap-3 mb-4">
-                    <FileText className="text-teal-600" size={24} />
-                    <h3 className="text-xl font-bold text-gray-800">Notes</h3>
+                    <FileText className="text-[var(--dim)]" size={18} />
+                    <p className="lbl rule2 inline-block mb-3">Notes</p>
                   </div>
                   {data.notes.length === 0 ? (
-                    <p className="text-gray-500 italic">No notes yet</p>
+                    <p className="text-sm text-[var(--dim2)]">No notes yet</p>
                   ) : (
                     <div className="space-y-2">
                       {data.notes.slice(0, 3).map(note => (
@@ -914,13 +904,13 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                 </div>
 
                 {/* Transcripts */}
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="card p-4 sm:p-5">
                   <div className="flex items-center gap-3 mb-4">
-                    <Film className="text-violet-600" size={24} />
-                    <h3 className="text-xl font-bold text-gray-800">Transcripts</h3>
+                    <Film className="text-[var(--dim)]" size={18} />
+                    <p className="lbl rule2 inline-block mb-3">Transcripts</p>
                   </div>
                   {(data.transcripts || []).length === 0 ? (
-                    <p className="text-gray-500 italic">No transcripts yet</p>
+                    <p className="text-sm text-[var(--dim2)]">No transcripts yet</p>
                   ) : (
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">

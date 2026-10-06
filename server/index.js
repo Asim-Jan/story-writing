@@ -8058,6 +8058,33 @@ app.delete('/api/ai-generations/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ==== SPA static hosting (SAI-Cloud shape: ONE server for app + API) ====
+// The built frontend ships in the image at /app/public/dist; nginx is gone.
+// Every non-/api path falls back to index.html; assets get long-lived caching
+// (Vite fingerprints them) while index.html stays no-store so deploys go live
+// on the next reload without a cache-bust dance.
+const distDir = path.join(__dirname, '..', 'public', 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir, {
+    index: false,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-store');
+      } else if (/-[A-Za-z0-9_-]{8}\.(js|css|woff2|png|svg)$/.test(filePath) || filePath.includes('/fonts/')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
+
+  // SPA fallback — API 404s stay JSON (notFoundHandler below still wins for /api)
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+} else {
+  console.warn('No built frontend at public/dist — API-only mode');
+}
+
 app.use(notFoundHandler);
 
 // Global error handler (must be last)

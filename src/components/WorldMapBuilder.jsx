@@ -60,6 +60,20 @@ const WorldMapBuilder = ({ locations, onUpdateLocations, bookId }) => {
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
 
+    // ORDNANCE: canvas colours come from the live theme tokens (rule 6 —
+    // JS-drawn colours must read the sheet, not hardcode one theme)
+    const _cs = getComputedStyle(document.documentElement);
+    const _tok = (n) => _cs.getPropertyValue(n).trim();
+    const C = {
+      blue: _tok('--blue') || '#6EA8D8',
+      warn: _tok('--warn') || '#D9A441',
+      line: _tok('--line2') || '#3A4B54',
+      ink: _tok('--ink') || '#E4E7E4',
+      dim: _tok('--dim2') || '#6E7F88',
+      bg2: _tok('--bg2') || '#161E23',
+      glass: _tok('--glass') || '#141B20',
+    };
+
     // Set canvas size
     canvas.width = rect.width;
     canvas.height = rect.height;
@@ -73,7 +87,7 @@ const WorldMapBuilder = ({ locations, onUpdateLocations, bookId }) => {
     ctx.scale(zoom, zoom);
 
     // Draw connections
-    ctx.strokeStyle = '#9ca3af';
+    ctx.strokeStyle = C.dim;
     ctx.lineWidth = 2;
     connections.forEach(conn => {
       const fromNode = locationNodes.find(n => n.id === conn.from);
@@ -92,8 +106,8 @@ const WorldMapBuilder = ({ locations, onUpdateLocations, bookId }) => {
       const isConnecting = connectingFrom?.id === node.id;
 
       // Node circle
-      ctx.fillStyle = isSelected ? '#7c3aed' : isConnecting ? '#f59e0b' : '#ffffff';
-      ctx.strokeStyle = isSelected ? '#7c3aed' : '#d1d5db';
+      ctx.fillStyle = isSelected ? C.blue : isConnecting ? C.warn : C.bg2;
+      ctx.strokeStyle = isSelected ? C.blue : C.line;
       ctx.lineWidth = isSelected ? 3 : 2;
 
       ctx.beginPath();
@@ -102,7 +116,7 @@ const WorldMapBuilder = ({ locations, onUpdateLocations, bookId }) => {
       ctx.stroke();
 
       // Node label
-      ctx.fillStyle = '#1f2937';
+      ctx.fillStyle = C.ink;
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(node.name.substring(0, 15), node.x + 30, node.y + 75);

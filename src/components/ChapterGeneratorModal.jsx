@@ -378,7 +378,7 @@ Create engaging narrative content that flows naturally through all these scenes 
                       </select>
                       {appendMode && selectedTimelines.length > 1 && (
                         <p className="text-xs text-amber-600 mt-2">
-                          ⚠️ In append mode, only the first selected timeline will be used
+                          ⚠ In append mode, only the first selected timeline will be used
                         </p>
                       )}
                     </div>

@@ -407,10 +407,10 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
                         <div>
                           <h3 className="text-xl font-bold text-gray-800">{transcript.title}</h3>
                           <div className="flex gap-4 mt-1 text-sm text-gray-600">
-                            <span>📍 {transcript.sceneCount} scenes</span>
-                            <span>⏱️ {transcript.estimatedDuration}</span>
+                            <span>⌖ {transcript.sceneCount} scenes</span>
+                            <span>⏱ {transcript.estimatedDuration}</span>
                             {transcript.chapterNumber && (
-                              <span>📖 Chapter {transcript.chapterNumber}</span>
+                              <span>Chapter {transcript.chapterNumber}</span>
                             )}
                           </div>
                         </div>

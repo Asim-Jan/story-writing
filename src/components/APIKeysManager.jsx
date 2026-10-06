@@ -199,7 +199,7 @@ const APIKeysManager = () => {
             </div>
 
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4 text-sm text-yellow-800">
-              ⚠️ <strong>Important:</strong> Copy your API key immediately after generation.
+              ⚠ <strong>Important:</strong> Copy your API key immediately after generation.
               It won't be shown again in full.
             </div>
 
@@ -261,7 +261,7 @@ const APIKeysManager = () => {
             </div>
 
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4 text-sm text-yellow-800">
-              ⚠️ Save this key securely. It won't be shown in full again.
+              ⚠ Save this key securely. It won't be shown in full again.
             </div>
 
             <button

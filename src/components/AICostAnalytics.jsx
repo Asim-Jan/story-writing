@@ -68,7 +68,7 @@ const AICostAnalytics = () => {
     );
   }
 
-  const COLORS = ['#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
+  const COLORS = ordnanceChartColors(6);
 
   return (
     <div className="space-y-6">
@@ -176,8 +176,8 @@ const AICostAnalytics = () => {
               }}
             />
             <Legend />
-            <Line yAxisId="left" type="monotone" dataKey="dailyCost" name="Daily Cost" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 4 }} />
-            <Line yAxisId="right" type="monotone" dataKey="dailyRequests" name="Requests" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
+            <Line yAxisId="left" type="monotone" dataKey="dailyCost" name="Daily Cost" stroke={COLORS[0]} strokeWidth={2} dot={{ r: 4 }} />
+            <Line yAxisId="right" type="monotone" dataKey="dailyRequests" name="Requests" stroke={COLORS[2]} strokeWidth={2} dot={{ r: 4 }} />
           </LineChart>
         </ResponsiveContainer>
       </div>
