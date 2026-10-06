@@ -16,6 +16,11 @@ COPY postcss.config.js ./
 RUN npm install
 RUN cd server && npm install --production
 
+# npm run build lints src AND server (eslint no-undef) before vite, so the
+# image build is the gate: the builder needs the lint config and server sources
+COPY .eslintrc.cjs ./
+COPY server ./server
+
 ARG VITE_API_URL
 ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
