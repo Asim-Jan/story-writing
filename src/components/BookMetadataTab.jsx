@@ -30,6 +30,7 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
         credentials: 'include',
         body: JSON.stringify({
           prompt,
+          bookId: data.id,
           size: '1024x1792',
           context: {
             bookTitle: data.bookTitle,
