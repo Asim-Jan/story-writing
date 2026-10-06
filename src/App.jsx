@@ -19,12 +19,16 @@ function AppContent() {
   // Check URL on mount to see if we should open a specific book, admin panel, or verification page
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    const verifyToken = urlParams.get('token');
     const path = window.location.pathname;
 
-    // Handle email verification page (public route)
-    if (path === '/verify-email' || verifyToken) {
+    // Links from emails (public routes). Matched on the PATH: both links carry ?token=, so the
+    // query alone can't tell a verification link from a password reset.
+    if (path === '/verify-email') {
       setCurrentView('verify-email');
+      return;
+    }
+    if (path === '/reset-password') {
+      setCurrentView('reset-password');
       return;
     }
 
@@ -80,6 +84,12 @@ function AppContent() {
   // Show email verification page (public route - no auth required)
   if (currentView === 'verify-email') {
     return <EmailVerificationPage />;
+  }
+
+  // Password reset link (public route): the auth page opens on "choose a new password"
+  if (currentView === 'reset-password') {
+    const token = new URLSearchParams(window.location.search).get('token') || '';
+    return <AuthPage initialResetToken={token} onAuthSuccess={(u, t) => { window.history.replaceState({}, '', '/'); setCurrentView('list'); login(u, t); }} />;
   }
 
   // Show loading spinner while checking auth

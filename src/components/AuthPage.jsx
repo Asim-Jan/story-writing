@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Book, Mail, Lock, User, LogIn, UserPlus, BookOpen, Eye, EyeOff, Check, X } from 'lucide-react';
 import { validatePassword, getPasswordStrength, getPasswordError } from '../utils/passwordValidation';
 
-const AuthPage = ({ onAuthSuccess }) => {
+const AuthPage = ({ onAuthSuccess, initialResetToken = '' }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
-  const [showResetForm, setShowResetForm] = useState(false);
-  const [resetToken, setResetToken] = useState('');
+  // Opened from the link in a reset email: go straight to "choose a new password", token prefilled.
+  const [showResetForm, setShowResetForm] = useState(!!initialResetToken);
+  const [resetToken, setResetToken] = useState(initialResetToken);
+  const fromResetLink = !!initialResetToken;
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -100,7 +102,7 @@ const AuthPage = ({ onAuthSuccess }) => {
         throw new Error(data.error || 'Failed to send reset email');
       }
 
-      setSuccess(data.message);
+      setSuccess(data.message + ' The link in the email expires in 1 hour.');
 
       // For development: auto-fill token if provided
       if (data.resetToken) {
@@ -119,6 +121,13 @@ const AuthPage = ({ onAuthSuccess }) => {
     e.preventDefault();
     setError('');
     setSuccess('');
+
+    const strength = validatePassword(formData.password);
+    if (!strength.isValid) {
+      setError(getPasswordError(strength));
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -139,8 +148,10 @@ const AuthPage = ({ onAuthSuccess }) => {
         throw new Error(data.error || 'Failed to reset password');
       }
 
-      setSuccess('Password reset successfully! You can now log in.');
+      setSuccess('Password reset. You can now sign in with your new password.');
       setShowResetForm(false);
+      setResetToken('');
+      if (window.location.pathname === '/reset-password') window.history.replaceState({}, '', '/');
       setIsLogin(true);
       setFormData({ email: formData.email, password: '', name: '' });
     } catch (err) {
@@ -467,19 +478,21 @@ const AuthPage = ({ onAuthSuccess }) => {
               <p className="text-sm text-[var(--dim)] mb-5">Enter your new password</p>
 
               <form onSubmit={handleResetPassword} className="space-y-4">
-                <div>
-                  <label className="lbl block mb-1.5">
-                    Reset Token
-                  </label>
-                  <input
-                    type="text"
-                    value={resetToken}
-                    onChange={(e) => setResetToken(e.target.value)}
-                    required
-                    placeholder="Enter reset token"
-                    className="w-full px-4 py-2.5 text-sm"
-                  />
-                </div>
+                {!fromResetLink && (
+                  <div>
+                    <label className="lbl block mb-1.5">
+                      Reset code
+                    </label>
+                    <input
+                      type="text"
+                      value={resetToken}
+                      onChange={(e) => setResetToken(e.target.value)}
+                      required
+                      placeholder="Paste the code from the email"
+                      className="w-full px-4 py-2.5 text-sm"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="lbl block mb-1.5">
@@ -493,10 +506,11 @@ const AuthPage = ({ onAuthSuccess }) => {
                     onChange={handleChange}
                     required
                     placeholder="••••••••"
-                    minLength="6"
+                    minLength="8"
+                    autoComplete="new-password"
                     className="w-full px-4 py-2.5 text-sm"
                   />
-                  <p className="text-xs text-[var(--dim2)] mt-1 mono">Minimum 6 characters</p>
+                  <p className="text-xs text-[var(--dim2)] mt-1 mono">8+ characters with upper and lower case, a number and a symbol</p>
                 </div>
 
                 {error && (

@@ -48,7 +48,7 @@ import {
 } from './middleware/quotaEnforcement.js';
 import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
 import { validatePassword } from './utils/passwordValidation.js';
-import { sendVerificationEmail, sendWelcomeEmail } from './services/emailService.js';
+import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail, sendPasswordChangedEmail, verifyEmailTransport, isEmailConfigured } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
@@ -529,6 +529,17 @@ const registrationLimiter = rateLimit({
   },
 });
 
+// SECURITY: every endpoint that SENDS an email is capped, so the form can't be used to spam an
+// inbox (ours or a stranger's) or burn the Workspace mailbox's daily sending limit.
+const emailSendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many emails requested. Please wait a while and try again.' },
+  keyGenerator: (req) => `email:${String(req.body?.email || req.user?.userId || '').toLowerCase()}:${req.ip}`,
+});
+
 // Redis client - MUST be created before session middleware
 // Initialize Redis Client (via Data Adapter for session, jobs, etc.)
 let redisClient;
@@ -803,7 +814,6 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
     // Send verification email (non-blocking - don't fail registration if email fails)
     try {
       await sendVerificationEmail(email, name, verificationToken);
-      console.log(`✅ Verification email sent to ${email}`);
     } catch (err) {
       console.error('Failed to send verification email:', err);
       // Continue with registration even if email fails
@@ -979,9 +989,10 @@ app.get('/api/quotas', authenticateToken, async (req, res) => {
 });
 
 // Request password reset
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', emailSendLimiter, async (req, res) => {
+  const generic = { message: 'If an account exists with this email, you will receive password reset instructions.' };
   try {
-    const { email } = req.body;
+    const email = String(req.body?.email || '').trim();
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -991,7 +1002,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const user = await getUserByEmail(email);
     if (!user) {
       // Don't reveal if user exists
-      return res.json({ message: 'If an account exists with this email, you will receive password reset instructions.' });
+      return res.json(generic);
     }
 
     // Generate secure reset token with UUID
@@ -1000,12 +1011,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     // Store reset token in Redis with 1 hour expiration
     await setPasswordResetToken(resetToken, user.id, 3600);
 
-    // In a real app, send this via email. For now, just return it
-    console.log(`Password reset token for ${email}: ${resetToken}`);
+    try {
+      await sendPasswordResetEmail(user.email, user.name, resetToken);
+    } catch (err) {
+      // Same answer either way: the response must not reveal whether the address has an account.
+      console.error('Password reset email failed:', err.message);
+    }
 
     res.json({
-      message: 'If an account exists with this email, you will receive password reset instructions.',
-      // In production, send resetToken via email instead of API response
+      ...generic,
       ...(process.env.NODE_ENV === 'development' && { resetToken })
     });
   } catch (error) {
@@ -1023,8 +1037,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Token and new password are required' });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const strength = validatePassword(newPassword);
+    if (!strength.isValid) {
+      return res.status(400).json({ error: strength.error });
     }
 
     // Get userId from reset token
@@ -1053,6 +1068,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Delete reset token
     await deletePasswordResetToken(token);
 
+    sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
+
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
     console.error('Password reset error:', error);
@@ -1070,8 +1087,9 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    const strength = validatePassword(newPassword);
+    if (!strength.isValid) {
+      return res.status(400).json({ error: strength.error });
     }
 
     // Get user data
@@ -1097,7 +1115,8 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
-    console.log(`Password changed successfully for user ${user.email}`);
+    console.log(`Password changed for user ${userId}`);
+    sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
@@ -1167,7 +1186,7 @@ app.post('/api/auth/verify-email', async (req, res) => {
 });
 
 // Resend verification email
-app.post('/api/auth/resend-verification', authenticateToken, async (req, res) => {
+app.post('/api/auth/resend-verification', authenticateToken, emailSendLimiter, async (req, res) => {
   try {
     const userId = req.user.userId;
 
@@ -4501,6 +4520,8 @@ app.get('/api/health', async (req, res) => {
     sai: saiConfigured(),
     models: { longForm: SAI_CHAT, fast: SAI_CHAT_FAST },
   };
+
+  health.services.email = { configured: isEmailConfigured() };
 
   // Overall status
   health.status = isHealthy ? 'healthy' : 'degraded';
@@ -8284,6 +8305,7 @@ app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req
 })();
 
 app.listen(PORT, () => {
+  verifyEmailTransport().catch(() => {});
   console.log('\n🚀 Fiction Writing Studio Server');
   console.log('================================');
   console.log(`✓ Server running on port ${PORT}`);
