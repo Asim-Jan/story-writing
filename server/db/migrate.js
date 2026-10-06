@@ -10,7 +10,7 @@ import { query, getPool } from './postgres.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
-export async function runMigrations() {
+export async function runMigrations({ baselineExisting = null } = {}) {
   let pool;
   try {
     pool = getPool();
@@ -39,9 +39,14 @@ export async function runMigrations() {
   // process.exit(1) = an outage loop). If the schema is already populated,
   // record 01–13 as applied; only the genuinely new files (z98, z99, and
   // everything added after) actually run.
-  if (applied.size === 0) {
-    const booksTable = await query(`SELECT COUNT(*) AS n FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = 'books'`);
+  if (applied.size === 0 && baselineExisting !== false) {
+    // baselineExisting: the boot probe decides (it checks BEFORE schema.sql
+    // creates the books table — a fresh install must not be baselined).
+    // null (no caller decision) = the legacy self-probe.
+    const booksTable = baselineExisting !== null
+      ? { rows: [{ n: baselineExisting ? 1 : 0 }] }
+      : await query(`SELECT COUNT(*) AS n FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'books'`);
     if (booksTable.rows[0].n > 0) {
       const preRunner = files.filter(f => !f.startsWith('z'));
       for (const f of preRunner) {

@@ -247,15 +247,32 @@ export class BookRepository {
       : await query(sql, values);
 
     if (result.rowCount === 0) {
-      // Check if book exists
+      // Distinguish the three zero-row causes with CODED errors so the route
+      // maps them: version mismatch → CONFLICT (409), no write access →
+      // FORBIDDEN (403), missing row → NOT_FOUND (404). A stale editor save
+      // used to fall through to 'Not authorized' → 500.
       const book = await this.findById(bookId);
       if (!book) {
-        throw new Error('Book not found');
+        const err = new Error('Book not found');
+        err.code = 'NOT_FOUND';
+        throw err;
       }
-      if (book.owner_id !== userId) {
-        throw new Error('Not authorized to update this book');
+      const isOwner = book.owner_id === userId;
+      if (!isOwner) {
+        const collab = await query(
+          `SELECT 1 FROM collaborators c WHERE c.book_id = $1 AND c.user_id = $2
+             AND c.status = 'active' AND c.role IN ('editor', 'admin')`,
+          [bookId, userId]
+        );
+        if (collab.rowCount === 0) {
+          const err = new Error('Not authorized to update this book');
+          err.code = 'FORBIDDEN';
+          throw err;
+        }
       }
-      throw new Error('CONFLICT: Book was modified by another user. Please refresh and try again.');
+      const err = new Error('CONFLICT: Book was modified by another user. Please refresh and try again.');
+      err.code = 'CONFLICT';
+      throw err;
     }
 
     return result.rows[0];

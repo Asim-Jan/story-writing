@@ -8,6 +8,7 @@
     "worker": "nodemon server/jobs/workers.js",
     "client": "vite",
     "build": "eslint src server --quiet && vite build",
+    "test:regress": "node server/tests/regress.test.js",
     "preview": "vite preview",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down"

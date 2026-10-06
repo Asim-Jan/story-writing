@@ -68,9 +68,22 @@ export async function processContentGeneration(job) {
       const updates = {};
       if (contentType === 'chapter' && result) {
         const chapters = book.chapters || [];
-        const ch = chapters.find(c => c.id === itemId) || {};
-        Object.assign(ch, typeof result === 'object' ? result : { content: String(result) });
-        updates.chapters = chapters;
+        // A chapter job for a NEW chapter (no itemId) must APPEND the
+        // generated chapter — the old code found nothing (no id match) and
+        // saved the unchanged array: the job reported success and the
+        // chapter evaporated.
+        const ch = chapters.find(c => c.id === itemId);
+        if (ch) {
+          Object.assign(ch, typeof result === 'object' ? result : { content: String(result) });
+          updates.chapters = chapters;
+        } else {
+          const generated = typeof result === 'object' && !Array.isArray(result)
+            ? { title: 'Generated Chapter', status: 'draft', ...result }
+            : { title: 'Generated Chapter', status: 'draft', content: String(result) };
+          generated.number = generated.number || chapters.length + 1;
+          if (!generated.id) generated.id = `chapter-${Date.now()}`;
+          updates.chapters = [...chapters, generated];
+        }
       } else if (Array.isArray(result)) {
         if (contentType === 'character') updates.characters = [...(book.characters || []), ...result];
         else if (contentType === 'location') updates.locations = [...(book.locations || []), ...result];

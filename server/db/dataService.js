@@ -597,7 +597,11 @@ export class BookDataService {
     // Server-side writers (job callbacks, SSE stages) pass no version — they
     // hold a stale copy of the book by definition. They get the versionless
     // internal path: read the CURRENT version and write against it. User
-    // saves keep the strict client-version check.
+    // saves keep the strict client-version check. The read runs on the POOL
+    // (outside the transaction) — fine: it only matters for writers who pass
+    // no version, and the write itself re-verifies inside the transaction
+    // via the WHERE version = clause in the repo (or the chapter-only check
+    // below, which re-reads on the client).
     if (expectedVersion === null || expectedVersion === undefined) {
       const cur = await query('SELECT version FROM books WHERE id = $1 AND deleted_at IS NULL', [bookId]);
       expectedVersion = cur.rows[0]?.version ?? 1;
@@ -648,8 +652,22 @@ export class BookDataService {
               throw err;
             }
           }
+          // Stale CLIENT saves must conflict here too (7): a chapter-only
+          // PUT carrying an old version overwrote everything. The
+          // versionless path (server-side writers) is decided ABOVE by
+          // expectedVersion being read from the DB; a caller-supplied
+          // version that doesn't match = CONFLICT.
+          if (expectedVersion !== null && Number(expectedVersion) !== row.version) {
+            const err = new Error('CONFLICT: Book was modified by another user. Please refresh and try again.');
+            err.code = 'CONFLICT';
+            throw err;
+          }
           updated = this.mapBookFieldsFromPostgres(row);
-          await client.query('UPDATE books SET updated_at = NOW() WHERE id = $1', [bookId]);
+          // NO row update here: even 'SET updated_at' fires the version
+          // trigger and leaves the book one version ahead of what the save
+          // returned — the next save 409s. The sync's stats update (below)
+          // already touches the row once per save; that single bump is the
+          // one the final version read reports.
         }
 
         let updatedChapters = null;

@@ -49,7 +49,7 @@ import {
   incrementAICounter,
   updateQuotaUsage
 } from './middleware/quotaEnforcement.js';
-import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
+import { getTierQuotas, getTierLimitsDisplay, unlockedFeatures } from './config/tierQuotas.js';
 import { validatePassword } from './utils/passwordValidation.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail, sendPasswordChangedEmail, verifyEmailTransport, isEmailConfigured } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
@@ -1427,7 +1427,8 @@ app.get('/api/subscriptions/my',
       if (result.rows.length === 0) {
         return res.json({
           has_subscription: false,
-          subscription: null
+          subscription: null,
+          unlocked_features: unlockedFeatures()
         });
       }
 
@@ -1442,7 +1443,8 @@ app.get('/api/subscriptions/my',
           current_period_end: subscription.current_period_end,
           cancel_at_period_end: subscription.cancel_at_period_end,
           canceled_at: subscription.canceled_at
-        }
+        },
+        unlocked_features: unlockedFeatures()
       });
     } catch (error) {
       console.error('Get subscription error:', error);
@@ -3404,13 +3406,20 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
       try {
         var book = await updateBook(id, req.user.userId, updates, expectedVersion);
       } catch (saveError) {
-        if (saveError.message.includes('CONFLICT')) {
+        const code = saveError.code || (saveError.message.includes('CONFLICT') ? 'CONFLICT' : null);
+        if (code === 'CONFLICT') {
           const current = await getBook(id);
           return res.status(409).json({
             error: 'This book changed on the server while you were editing.',
             serverVersion: current?.version,
             serverUpdatedAt: current?.updated_at || current?.updatedAt
           });
+        }
+        if (code === 'FORBIDDEN') {
+          return res.status(403).json({ error: 'You do not have permission to edit this book' });
+        }
+        if (code === 'NOT_FOUND') {
+          return res.status(404).json({ error: 'Book not found' });
         }
         throw saveError;
       }
@@ -4170,7 +4179,10 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0])).trim();
+      const enhanced = (saiTextOf(promptEnhancement.choices[0])).trim();
+      // a thinking-only response extracts to '' — keep the user's prompt
+      // rather than handing klein an empty string
+      if (enhanced) enhancedPrompt = enhanced;
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
@@ -4311,7 +4323,7 @@ Aim for 6-12 panels per page worth of content.`;
 });
 
 // Generate character reference image for consistent comic panels
-app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, async (req, res) => {
   try {
     const { characterId, character, style = 'comic book art' } = req.body;
 
@@ -4371,7 +4383,7 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
 });
 
 // Generate comic panel/scene image with character references
-app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, async (req, res) => {
   try {
     const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
 
@@ -5836,7 +5848,7 @@ app.delete('/api/jobs/:jobId', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    await cleanupJob(jobId, req.user.userId);
+    await cleanupJob(`${job.type}:${jobId}`, req.user.userId);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete job error:', error);
@@ -5893,8 +5905,8 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
     await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type,
       { description: `Retry of ${jobId}` }, originalData);
 
-    // Clean up old job
-    await cleanupJob(jobId, req.user.userId);
+    // Clean up old job — the typed ref (the ids repeat across queues)
+    await cleanupJob(`${job.type}:${jobId}`, req.user.userId);
 
     res.json({ success: true, newJobId: newJob.id.toString() });
   } catch (error) {
@@ -6290,8 +6302,9 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, consumeAIQuota, asyn
 
     // Verify access (owner or collaborator)
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // RPG writes change the shared campaign — viewers are read-only
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have permission to modify this campaign' });
     }
 
     // Convert book elements to RPG data
@@ -6339,13 +6352,12 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     // Get RPG data
     const rpgKey = `rpg:${bookId}`;
-    const rpgDataStr = await getRPGData(bookId);
-
-    if (!rpgDataStr) {
+    // getRPGData already returns the PARSED object — parsing it again threw
+    // 'Unexpected token o' and every GET 500'd (saved campaigns never loaded).
+    const rpgData = await getRPGData(bookId);
+    if (!rpgData) {
       return res.json({ rpgData: null });
     }
-
-    const rpgData = JSON.parse(rpgDataStr);
     res.json({ rpgData });
   } catch (error) {
     console.error('Get RPG data error:', error);
@@ -6370,8 +6382,9 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // RPG writes change the shared campaign — viewers are read-only
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have permission to modify this campaign' });
     }
 
     // Update RPG data
@@ -6402,8 +6415,9 @@ app.delete('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // RPG writes change the shared campaign — viewers are read-only
+    if (!access?.has_access || access.access_role === 'viewer') {
+      return res.status(403).json({ error: 'You do not have permission to modify this campaign' });
     }
 
     // Delete RPG data
@@ -7323,6 +7337,11 @@ app.delete('/api/users/api-keys/:key', authenticateToken, async (req, res) => {
 });
 
 // External API: Get book chapters
+// PARKED (2026-10-06 review): the external API-key surface never worked
+// (ownership checks compared a field books don't have). Mounted BEFORE the
+// authenticated handlers so it 404s without a token — do not advertise it.
+app.get('/api/external/*', (req, res) => res.status(404).json({ error: 'Not available' }));
+
 app.get('/api/external/books/:bookId/chapters', authenticateApiKey, async (req, res) => {
   try {
     const { bookId } = req.params;
@@ -8471,24 +8490,34 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason?.stack || reason);
 });
 
-// Schema + migrations at boot: schema.sql is all IF NOT EXISTS (idempotent), and
-// the migration runner applies each migrations/*.sql file once (schema_migrations).
-// A fresh install self-heals; a live one only runs what's new.
-(async () => {
-  try {
-    const schemaPath = path.join(__dirname, 'db', 'schema.sql');
-    if (fs.existsSync(schemaPath)) {
-      await getPool().query(readFileSync(schemaPath, 'utf8'));
-      console.log('✓ schema.sql applied');
-    }
-    await runMigrations();
-  } catch (err) {
-    console.error('Migration failure — refusing to start on a half-migrated schema:', err.message);
-    process.exit(1);
-  }
-})();
+// Schema + migrations at boot, AWAITED before the server listens (blocker 8:
+// listen ungated meant /api/health 200'd during a failing migration and the
+// first prod boot served saves before z99's columns existed).
+// ORDER MATTERS for the baseline: the DB is probed BEFORE schema.sql runs —
+// schema.sql creates the books table, so a fresh install (no books) must NOT
+// be baselined (its migrations still have to run; baseline-after-schema would
+// mark 01–13 applied without them ever running = broken fresh installs).
+async function migrateAtBoot() {
+  const booksBefore = await getPool().query(`SELECT COUNT(*) AS n FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'books'`);
+  const isExistingDatabase = booksBefore.rows[0].n > 0;
 
-app.listen(PORT, () => {
+  const schemaPath = path.join(__dirname, 'db', 'schema.sql');
+  if (fs.existsSync(schemaPath)) {
+    await getPool().query(readFileSync(schemaPath, 'utf8'));
+    console.log('✓ schema.sql applied');
+  }
+  await runMigrations({ baselineExisting: isExistingDatabase });
+}
+
+migrateAtBoot()
+  .then(() => {
+    app.listen(PORT, () => {
+      verifyEmailTransport().catch(() => {});
+      ensureMediaOwnersTable().catch((err) => console.error('media_owners table check failed:', err.message));
+      console.log('\n🚀 Fiction Writing Studio Server');
+      console.log('================================');
+      console.log(`✓ Server running on port ${PORT}`);
   verifyEmailTransport().catch(() => {});
   ensureMediaOwnersTable().catch((err) => console.error('media_owners table check failed:', err.message));
   console.log('\n🚀 Fiction Writing Studio Server');
@@ -8516,4 +8545,9 @@ app.listen(PORT, () => {
   console.log(`  API: ${apiUrl}`);
   console.log(`  Health: ${apiUrl}/api/health`);
   console.log('================================\n');
-});
+    });
+  })
+  .catch((err) => {
+    console.error('Migration failure — refusing to start on a half-migrated schema:', err.message);
+    process.exit(1);
+  });

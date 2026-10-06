@@ -229,7 +229,8 @@ export const useBook = (bookId) => {
     },
     onSaveError: (err) => {
       setSaving(false);
-      setError('Autosave failed — your changes are still here; press Save Now to retry.');
+      // a 409 sets its own, specific message in saveBook — don't overwrite it
+      setError(prev => prev ?? 'Autosave failed — your changes are still here; press Save Now to retry.');
       console.error('Autosave error:', err);
     },
   });

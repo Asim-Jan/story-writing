@@ -62,7 +62,10 @@ export async function storeJobMetadata(jobId, userId, bookId, type, data, origin
     ...(originalData ? { jobData: originalData } : {}),
   };
 
-  await redisClient.set(`job:${jobId}`, JSON.stringify(metadata), { EX: 86400 }); // 24 hour expiry
+  // the type prefix: Bull ids are per-queue sequences and REPEAT (a Redis
+  // flush restarts them at 1), so job:<id> is ambiguous — user B's new
+  // audio job 901 would collide with user A's old image job 901.
+  await redisClient.set(`job:${type}:${jobId}`, JSON.stringify(metadata), { EX: 86400 }); // 24 hour expiry
 
   // Add to user's job list — WITH the type prefix (the id alone is
   // ambiguous across queues; see getJobStatus)
@@ -73,7 +76,16 @@ export async function storeJobMetadata(jobId, userId, bookId, type, data, origin
 
 // Update job status
 export async function updateJobStatus(jobId, updates) {
-  const existing = await redisClient.get(`job:${jobId}`);
+  // processors don't know the queue — scan the known prefixes; write back to
+  // the SAME (prefixed) key the job was found under
+  const types = ['image', 'audio', 'content', 'import', 'video'];
+  let existing = null;
+  let statusKey = null;
+  for (const t of types) {
+    statusKey = `job:${t}:${jobId}`;
+    existing = await redisClient.get(statusKey);
+    if (existing) break;
+  }
   if (!existing) return null;
 
   const metadata = JSON.parse(existing);
@@ -83,7 +95,7 @@ export async function updateJobStatus(jobId, updates) {
     updatedAt: new Date().toISOString(),
   };
 
-  await redisClient.set(`job:${jobId}`, JSON.stringify(updated), { EX: 86400 });
+  await redisClient.set(statusKey, JSON.stringify(updated), { EX: 86400 });
   return updated;
 }
 
@@ -121,15 +133,27 @@ export async function getUserJobs(userId, limit = 50) {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
-// Clean up old jobs — delete EVERY key shape the id may live under (the
-// prefixed ones for all types + the legacy unprefixed one)
-export async function cleanupJob(jobId, userId) {
+// Clean up old jobs. The ids repeat ACROSS types, so cleanup must target the
+// job's OWN type — deleting all types for an id killed another user's job
+// (the suite caught it). The ref in the user's set carries the type.
+export async function cleanupJob(jobRef, userId) {
   const types = ['image', 'audio', 'content', 'import', 'video'];
-  for (const t of types) {
-    await redisClient.del(`job:${t}:${jobId}`);
+  // the ref may be 'type:id' (new) or a bare id (legacy) — delete that type's
+  // key plus, for safety, the legacy unprefixed one
+  const [refType, refId] = refRefSplit(jobRef);
+  if (refType) {
+    await redisClient.del(`job:${refType}:${refId}`);
+  } else {
+    for (const t of types) await redisClient.del(`job:${t}:${jobRef}`);
   }
-  await redisClient.del(`job:${jobId}`);
-  await redisClient.sRem(`user:${userId}:jobs`, jobId);
+  await redisClient.del(`job:${jobRef}`);
+  await redisClient.sRem(`user:${userId}:jobs`, jobRef);
+}
+
+function refRefSplit(ref) {
+  const idx = ref.indexOf(':');
+  if (idx <= 0) return [null, ref];
+  return [ref.slice(0, idx), ref.slice(idx + 1)];
 }
 
 // Get active job count for user
