@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { FileText, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search, History } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
@@ -8,6 +8,7 @@ import ChapterGeneratorModal from './ChapterGeneratorModal';
 import ImagePreviewModal from './ImagePreviewModal';
 import RichTextEditor from './RichTextEditor';
 import VersionHistory from './VersionHistory';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 
 const ChaptersTabView = ({
   data,
@@ -33,8 +34,23 @@ const ChaptersTabView = ({
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [viewMode, setViewMode] = useState('list');
   const [showGeneratorModal, setShowGeneratorModal] = useState(false);
-  const [generatingImage, setGeneratingImage] = useState(null);
-  const [pendingImage, setPendingImage] = useState(null);
+  const [generatingImage, setGeneratingImage] = useState(null); // an upload in flight
+  const [pendingImage, setPendingImage] = useState(null); // an uploaded image awaiting approval
+  const { jobsFor, startJob } = useMediaJobsContext();
+  // Chapter covers are book media jobs: they keep running (and land on the
+  // chapter) while the user is elsewhere.
+  const coverJobs = (chapterId) => jobsFor('chapter', chapterId).filter(j => j.type === 'image');
+  const coverRunning = (chapterId) => coverJobs(chapterId).some(j => j.status === 'running');
+
+  // Keep the detail snapshot in step with the book, so a finished cover shows
+  // without re-selecting the chapter.
+  useEffect(() => {
+    if (!selectedChapter) return;
+    const live = data.chapters.find(ch => ch.id === selectedChapter.id);
+    if (live && live !== selectedChapter && live.coverImage !== selectedChapter.coverImage) {
+      setSelectedChapter(prev => ({ ...prev, coverImage: live.coverImage, coverImageFilename: live.coverImageFilename }));
+    }
+  }, [data.chapters]);
   const [selectedImage, setSelectedImage] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showVersionHistory, setShowVersionHistory] = useState(false);
@@ -74,58 +90,35 @@ const ChaptersTabView = ({
     resetForm();
   };
 
+  // Applied by the book-level jobs hook as the old accept step did: the image
+  // becomes the chapter cover and joins the visuals library.
   const handleGenerateImage = async (chapter) => {
     setGeneratingImage(chapter.id);
     try {
       // Build context-aware prompt based on chapter details
       const prompt = `Create a cover image for Chapter ${chapter.number}: ${chapter.title}. ${chapter.summary || ''}`;
-
-      const response = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          bookId: data.id,
-          context: {
-            bookTitle: data.bookTitle,
-            overview: data.overview,
-            characters: data.characters,
-            locations: data.locations,
-            plotlines: data.plotlines,
-            chapter: {
-              number: chapter.number,
-              title: chapter.title,
-              summary: chapter.summary,
-              content: chapter.content ? chapter.content.substring(0, 500) : '' // First 500 chars for context
-            }
+      await startJob('image', { type: 'chapter', id: chapter.id }, {
+        prompt,
+        context: {
+          bookTitle: data.bookTitle,
+          overview: data.overview,
+          characters: data.characters,
+          locations: data.locations,
+          plotlines: data.plotlines,
+          chapter: {
+            number: chapter.number,
+            title: chapter.title,
+            summary: chapter.summary,
+            content: chapter.content ? chapter.content.substring(0, 500) : '' // First 500 chars for context
           }
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        if (response.status === 403 && onUpgrade) {
-          // tier-gated: open the upgrade modal instead of a dead-end alert
-          onUpgrade({ featureName: 'Chapter cover images', requiredTier: 'Basic', requiredFeature: 'media_generation' });
-          setGeneratingImage(null);
-          return;
         }
-        throw new Error(errorData.error || 'Failed to generate image');
-      }
-
-      const { imageUrl, filename } = await response.json();
-
-      // Show pending image for approval
-      setPendingImage({
-        chapterId: chapter.id,
-        imageUrl,
-        filename,
-        description: `Chapter ${chapter.number}: ${chapter.title}`
-      });
+      }, `Chapter ${chapter.number} cover`);
     } catch (error) {
-      console.error('Error generating image:', error);
+      if (error.status === 403 && onUpgrade) {
+        // tier-gated: open the upgrade modal instead of a dead-end alert
+        onUpgrade({ featureName: 'Chapter cover images', requiredTier: 'Basic', requiredFeature: 'media_generation' });
+        return;
+      }
       alert(`Failed to generate image: ${error.message}`);
     } finally {
       setGeneratingImage(null);
@@ -389,11 +382,12 @@ const ChaptersTabView = ({
               <div className="flex flex-wrap gap-2 flex-shrink-0">
                 <button
                   onClick={() => handleGenerateImage(selectedChapter)}
-                  disabled={generatingImage === selectedChapter.id}
+                  disabled={generatingImage === selectedChapter.id || coverRunning(selectedChapter.id)}
+                  data-testid="chapter-generate"
                   className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-1 sm:gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
                 >
-                  <Image size={16} className={`${generatingImage === selectedChapter.id ? 'animate-spin' : ''} flex-shrink-0`} />
-                  <span className="hidden sm:inline">{generatingImage === selectedChapter.id ? 'Generating...' : 'Generate'}</span>
+                  <Image size={16} className={`${generatingImage === selectedChapter.id || coverRunning(selectedChapter.id) ? 'animate-spin' : ''} flex-shrink-0`} />
+                  <span className="hidden sm:inline">{generatingImage === selectedChapter.id || coverRunning(selectedChapter.id) ? 'Generating...' : 'Generate'}</span>
                 </button>
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -436,6 +430,8 @@ const ChaptersTabView = ({
                 </button>
               </div>
             </div>
+
+            <MediaJobList jobs={coverJobs(selectedChapter.id)} className="mb-4" />
 
             {/* Chapter Cover Image */}
             {selectedChapter.coverImage && (
