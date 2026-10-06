@@ -33,7 +33,7 @@ import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
-import { setMediaBookMapping, getMediaBookMapping } from './utils/mediaMapping.js';
+import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
 import {
   getUserQuotas,
@@ -48,7 +48,7 @@ import {
 } from './middleware/quotaEnforcement.js';
 import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
 import { validatePassword } from './utils/passwordValidation.js';
-import { sendVerificationEmail, sendWelcomeEmail } from './services/emailService.js';
+import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail, sendPasswordChangedEmail, verifyEmailTransport, isEmailConfigured } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
 import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
@@ -166,9 +166,31 @@ const upload = multer({
   }
 });
 
+// Images/audio attached to characters, locations and chapters. It used to share the import
+// uploader above, whose filter only allows .epub/.pdf/.docx/.txt, so every image upload failed.
+const MEDIA_UPLOAD_EXT = {
+  images: ['.png', '.jpg', '.jpeg', '.gif', '.webp'],
+  comics: ['.png', '.jpg', '.jpeg', '.gif', '.webp'],
+  audio: ['.mp3', '.wav', '.ogg'],
+};
+const mediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = new Set(Object.values(MEDIA_UPLOAD_EXT).flat());
+    if (allowed.has(ext)) cb(null, true);
+    else cb(new Error('Invalid file type. Images (PNG, JPG, GIF, WebP) or audio (MP3, WAV, OGG) only.'));
+  }
+});
+
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+// No fallback in production: a known default secret would let anyone mint an admin token.
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET is not set');
+}
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-insecure-secret';
 
 // Helper function to get the base URL from request
 function getBaseUrl(req) {
@@ -184,8 +206,9 @@ function getBaseUrl(req) {
   return `${protocol}://${host}`;
 }
 
-// Trust proxy - required for ALB/Load Balancer
-app.set('trust proxy', 1);
+// Trust proxy: two hops, Cloudflare then Traefik. With 1, req.ip was the Cloudflare EDGE address,
+// so every rate limit (sign-up, login, emails) was shared by everyone behind the same PoP.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 2));
 
 // Middleware
 app.use(cors({
@@ -529,6 +552,17 @@ const registrationLimiter = rateLimit({
   },
 });
 
+// SECURITY: every endpoint that SENDS an email is capped, so the form can't be used to spam an
+// inbox (ours or a stranger's) or burn the Workspace mailbox's daily sending limit.
+const emailSendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many emails requested. Please wait a while and try again.' },
+  keyGenerator: (req) => `email:${String(req.body?.email || req.user?.userId || '').toLowerCase()}:${req.ip}`,
+});
+
 // Redis client - MUST be created before session middleware
 // Initialize Redis Client (via Data Adapter for session, jobs, etc.)
 let redisClient;
@@ -575,7 +609,7 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // Set to false for HTTP, true when using HTTPS
+    secure: process.env.NODE_ENV === 'production', // the site is HTTPS-only behind Cloudflare
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     sameSite: 'lax'
@@ -745,7 +779,9 @@ async function searchWeb(query) {
 // Register new user
 app.post('/api/auth/register', registrationLimiter, async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { password } = req.body;
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const name = String(req.body?.name || '').trim();
 
     if (!email || !password || !name) {
       return res.status(400).json({ error: 'Email, password, and name are required' });
@@ -803,7 +839,6 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
     // Send verification email (non-blocking - don't fail registration if email fails)
     try {
       await sendVerificationEmail(email, name, verificationToken);
-      console.log(`✅ Verification email sent to ${email}`);
     } catch (err) {
       console.error('Failed to send verification email:', err);
       // Continue with registration even if email fails
@@ -815,7 +850,7 @@ app.post('/api/auth/register', registrationLimiter, async (req, res) => {
     // Set cookie
     res.cookie('token', token, {
       httpOnly: true,
-      secure: false, // Set to false for HTTP, true when using HTTPS
+      secure: process.env.NODE_ENV === 'production', // the site is HTTPS-only behind Cloudflare
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
@@ -917,7 +952,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     // Set cookie
     res.cookie('token', token, {
       httpOnly: true,
-      secure: false, // Set to false for HTTP, true when using HTTPS
+      secure: process.env.NODE_ENV === 'production', // the site is HTTPS-only behind Cloudflare
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
@@ -934,6 +969,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         role: user.role || 'user',
         tier: user.tier || 'free',
         status: user.status || 'active',
+        emailVerified: !!(user.email_verified ?? user.emailVerified),
         books: user.books || []
       },
       token
@@ -960,6 +996,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
       role: req.user.role || 'user',
       tier: req.user.tier || 'free',
       status: req.user.status || 'active',
+      emailVerified: !!(req.user.email_verified ?? req.user.emailVerified),
       books: req.user.books,
       createdAt: req.user.createdAt
     }
@@ -979,9 +1016,10 @@ app.get('/api/quotas', authenticateToken, async (req, res) => {
 });
 
 // Request password reset
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', emailSendLimiter, async (req, res) => {
+  const generic = { message: 'If an account exists with this email, you will receive password reset instructions.' };
   try {
-    const { email } = req.body;
+    const email = String(req.body?.email || '').trim();
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -991,7 +1029,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const user = await getUserByEmail(email);
     if (!user) {
       // Don't reveal if user exists
-      return res.json({ message: 'If an account exists with this email, you will receive password reset instructions.' });
+      return res.json(generic);
     }
 
     // Generate secure reset token with UUID
@@ -1000,12 +1038,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     // Store reset token in Redis with 1 hour expiration
     await setPasswordResetToken(resetToken, user.id, 3600);
 
-    // In a real app, send this via email. For now, just return it
-    console.log(`Password reset token for ${email}: ${resetToken}`);
+    try {
+      await sendPasswordResetEmail(user.email, user.name, resetToken);
+    } catch (err) {
+      // Same answer either way: the response must not reveal whether the address has an account.
+      console.error('Password reset email failed:', err.message);
+    }
 
     res.json({
-      message: 'If an account exists with this email, you will receive password reset instructions.',
-      // In production, send resetToken via email instead of API response
+      ...generic,
       ...(process.env.NODE_ENV === 'development' && { resetToken })
     });
   } catch (error) {
@@ -1023,8 +1064,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Token and new password are required' });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const strength = validatePassword(newPassword);
+    if (!strength.isValid) {
+      return res.status(400).json({ error: strength.error });
     }
 
     // Get userId from reset token
@@ -1053,6 +1095,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Delete reset token
     await deletePasswordResetToken(token);
 
+    sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
+
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
     console.error('Password reset error:', error);
@@ -1070,8 +1114,9 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    const strength = validatePassword(newPassword);
+    if (!strength.isValid) {
+      return res.status(400).json({ error: strength.error });
     }
 
     // Get user data
@@ -1097,7 +1142,8 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 
     await updateUser(userId, updatedUser);
 
-    console.log(`Password changed successfully for user ${user.email}`);
+    console.log(`Password changed for user ${userId}`);
+    sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
@@ -1167,7 +1213,7 @@ app.post('/api/auth/verify-email', async (req, res) => {
 });
 
 // Resend verification email
-app.post('/api/auth/resend-verification', authenticateToken, async (req, res) => {
+app.post('/api/auth/resend-verification', authenticateToken, emailSendLimiter, async (req, res) => {
   try {
     const userId = req.user.userId;
 
@@ -2765,7 +2811,7 @@ app.get('/api/admin/export/users',
 
       // Log export action
       await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+        `INSERT INTO admin_audit_log (admin_id, action, target_resource_type, changes)
          VALUES ($1, $2, $3, $4)`,
         [req.user.userId, 'export_users', 'users', JSON.stringify({ count: result.rows.length, filters: { tier, status, search } })]
       );
@@ -2845,7 +2891,7 @@ app.get('/api/admin/export/payments',
 
       // Log export action
       await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+        `INSERT INTO admin_audit_log (admin_id, action, target_resource_type, changes)
          VALUES ($1, $2, $3, $4)`,
         [req.user.userId, 'export_payments', 'payments', JSON.stringify({ count: result.rows.length })]
       );
@@ -2917,7 +2963,7 @@ app.get('/api/admin/export/subscriptions',
 
       // Log export action
       await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+        `INSERT INTO admin_audit_log (admin_id, action, target_resource_type, changes)
          VALUES ($1, $2, $3, $4)`,
         [req.user.userId, 'export_subscriptions', 'subscriptions', JSON.stringify({ count: result.rows.length })]
       );
@@ -2993,7 +3039,7 @@ app.get('/api/admin/export/activity',
 
       // Log export action
       await getPool().query(
-        `INSERT INTO admin_audit_log (admin_id, action, target_type, changes)
+        `INSERT INTO admin_audit_log (admin_id, action, target_resource_type, changes)
          VALUES ($1, $2, $3, $4)`,
         [req.user.userId, 'export_activity', 'activity_log', JSON.stringify({ count: result.rows.length })]
       );
@@ -4029,12 +4075,13 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
     const buffer = imageResult.buffer;
 
     // Upload to MinIO
-    const filename = `visual-${Date.now()}.png`;
+    const filename = `visual-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
     const uploadResult = await mediaStorage.upload('images', buffer, filename, {
       'x-amz-meta-type': 'generated-visual',
       'x-amz-meta-prompt': (prompt || '').substring(0, 200),
       // Note: No bookId for standalone image generation - backward compatibility only
     }, setMediaBookMapping);
+    await recordMediaOwner('images', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
 
     console.log('Image saved to MinIO:', uploadResult.storageKey);
 
@@ -4188,11 +4235,12 @@ app.post('/api/generate-character-reference', authenticateToken, requireMinIO, a
     const buffer = imageResult.buffer;
 
     {
-      const filename = `character-ref-${characterId || Date.now()}.png`;
+      const filename = `character-ref-${characterId || Date.now()}-${uuidv4().slice(0, 8)}.png`;
       const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
         'x-amz-meta-type': 'character-reference',
         'x-amz-meta-character-id': String(characterId || ''),
       });
+      await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
 
       console.log('Character reference saved to MinIO:', uploadResult.storageKey);
 
@@ -4265,10 +4313,11 @@ app.post('/api/generate-comic-panel', authenticateToken, requireMinIO, async (re
     const buffer = imageResult.buffer;
 
     {
-      const filename = `comic-panel-${Date.now()}.png`;
+      const filename = `comic-panel-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
       const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
         'x-amz-meta-type': 'comic-panel',
       });
+      await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
 
       console.log('Comic panel saved to MinIO:', uploadResult.storageKey);
 
@@ -4356,12 +4405,13 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireMinIO, asyn
       : audioBuffers[0];
 
     // Upload to MinIO (the bridge returns WAV)
-    const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}.wav`;
+    const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}-${uuidv4().slice(0, 8)}.wav`;
     const uploadResult = await mediaStorage.upload('audio', finalBuffer, filename, {
       'x-amz-meta-type': 'tts-audio',
       'x-amz-meta-voice': selectedVoice,
       'x-amz-meta-chapter-id': String(chapterId || ''),
     });
+    await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
 
     console.log('Audio saved to MinIO:', uploadResult.storageKey);
 
@@ -4434,13 +4484,14 @@ app.post('/api/generate-audiobook', authenticateToken, async (req, res) => {
       });
 
       const usedVoice = VOICE_MAP[voice] || voice;
-      const filename = `chapter-${chapter.number || i + 1}-${usedVoice}.wav`;
+      const filename = `chapter-${chapter.number || i + 1}-${usedVoice}-${uuidv4().slice(0, 8)}.wav`;
 
       const uploadResult = await mediaStorage.upload('audio', buffer, filename, {
         'x-amz-meta-type': 'audiobook',
         'x-amz-meta-chapter': String(chapter.number || i + 1),
         'x-amz-meta-voice': usedVoice,
       });
+      await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
 
       audioFiles.push({
         chapterNumber: chapter.number || i + 1,
@@ -4501,6 +4552,8 @@ app.get('/api/health', async (req, res) => {
     sai: saiConfigured(),
     models: { longForm: SAI_CHAT, fast: SAI_CHAT_FAST },
   };
+
+  health.services.email = { configured: isEmailConfigured() };
 
   // Overall status
   health.status = isHealthy ? 'healthy' : 'degraded';
@@ -5501,36 +5554,10 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
       return res.status(400).json({ error: 'Invalid bucket type' });
     }
 
-    // SECURITY: Get the book ID that owns this media file
-    const bookId = await getMediaBookMapping(bucketType, filename);
-
-    if (!bookId) {
-      // Media file has no ownership mapping - allow for backward compatibility
-      // (existing media files uploaded before this security fix)
-      console.warn(`⚠️  Media file has no ownership mapping: ${bucketType}/${filename}`);
-    } else {
-      // SECURITY: Verify user has access to this book
-      const book = await getBook(bookId);
-
-      if (!book) {
-        return res.status(404).json({
-          error: 'Media not found',
-          message: 'The book associated with this media no longer exists'
-        });
-      }
-
-      
-
-      // Check if user is owner or collaborator
-      const isOwner = book.ownerId === req.user.id;
-      const isCollaborator = book.collaborators?.some(c => c.email === req.user.email);
-
-      if (!isOwner && !isCollaborator) {
-        return res.status(403).json({
-          error: 'Not authorized to access this media',
-          message: 'You must be the book owner or a collaborator to access this media file.'
-        });
-      }
+    // SECURITY: deny unless this user owns the file, owns or collaborates on its book, or is an
+    // admin. Fail closed: a file with no recorded owner is not public.
+    if (!(await canAccessMedia(req.user, bucketType, filename, 'read'))) {
+      return res.status(404).json({ error: 'Media not found' });
     }
 
     // Get file stream from storage
@@ -5557,44 +5584,48 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
     const contentType = contentTypeMap[ext] || 'application/octet-stream';
 
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+    // private: these are per-user files behind auth, so Cloudflare and other shared caches must
+    // never keep a copy (it was `public` for a year, a .png the CDN could hand to anyone).
+    res.setHeader('Cache-Control', 'private, max-age=86400');
 
+    // Without an error listener a MinIO hiccup mid-stream is an uncaught exception: the API dies.
+    stream.on('error', (err) => {
+      console.error('Media stream error:', err.message);
+      if (!res.headersSent) res.status(502).json({ error: 'Failed to fetch media' });
+      else res.destroy(err);
+    });
     stream.pipe(res);
   } catch (error) {
     console.error('Media fetch error:', error);
     if (error.code === 'NotFound') {
       res.status(404).json({ error: 'Media not found' });
     } else {
-      res.status(500).json({ error: 'Failed to fetch media', details: error.message });
+      res.status(500).json({ error: 'Failed to fetch media' });
     }
   }
 });
 
 // Upload media file to MinIO
-app.post('/api/media/upload', authenticateToken, upload.single('file'), async (req, res) => {
+app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const { bucketType = 'images', metadata = '{}' } = req.body;
+    const { bucketType = 'images', bookId } = req.body;
 
     if (!['images', 'audio', 'comics'].includes(bucketType)) {
       return res.status(400).json({ error: 'Invalid bucket type' });
     }
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    if (!MEDIA_UPLOAD_EXT[bucketType].includes(ext)) {
+      return res.status(400).json({ error: `That file type can't go in ${bucketType}` });
+    }
 
-    const buffer = fs.readFileSync(req.file.path);
-    const filename = req.file.filename;
-
-    const result = await mediaStorage.upload(
-      bucketType,
-      buffer,
-      filename,
-      JSON.parse(metadata)
-    );
-
-    // Clean up temp file
-    fs.unlinkSync(req.file.path);
+    // Server-chosen, unguessable name: the client's name never reaches storage.
+    const filename = `upload-${uuidv4()}${ext}`;
+    const result = await mediaStorage.upload(bucketType, req.file.buffer, filename, { originalName: req.file.originalname });
+    await recordMediaOwner(bucketType, filename, { ownerId: req.user.id, bookId });
 
     res.json({
       ...result,
@@ -5602,14 +5633,7 @@ app.post('/api/media/upload', authenticateToken, upload.single('file'), async (r
     });
   } catch (error) {
     console.error('Media upload error:', error);
-    if (req.file && req.file.path) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {
-        // Ignore cleanup errors
-      }
-    }
-    res.status(500).json({ error: 'Failed to upload media', details: error.message });
+    res.status(500).json({ error: 'Failed to upload media' });
   }
 });
 
@@ -5622,7 +5646,14 @@ app.delete('/api/media/:bucketType/:filename', authenticateToken, async (req, re
       return res.status(400).json({ error: 'Invalid bucket type' });
     }
 
+    // SECURITY: only the file's owner (or its book's owner, or an admin) may delete it. This had
+    // no check at all: any signed-in user could delete anyone's file by name.
+    if (!(await canAccessMedia(req.user, bucketType, filename, 'delete'))) {
+      return res.status(404).json({ error: 'Media not found' });
+    }
+
     await mediaStorage.delete(bucketType, filename);
+    await forgetMediaOwner(bucketType, filename);
 
     res.json({ success: true, message: 'Media deleted successfully' });
   } catch (error) {
@@ -8283,7 +8314,15 @@ app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req
   }
 })();
 
+// A rejected promise nobody awaited (e.g. a write after the response was sent) must not take the
+// whole API down: Node 20 exits on unhandled rejections by default.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason?.stack || reason);
+});
+
 app.listen(PORT, () => {
+  verifyEmailTransport().catch(() => {});
+  ensureMediaOwnersTable().catch((err) => console.error('media_owners table check failed:', err.message));
   console.log('\n🚀 Fiction Writing Studio Server');
   console.log('================================');
   console.log(`✓ Server running on port ${PORT}`);

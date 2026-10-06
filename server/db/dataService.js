@@ -37,6 +37,12 @@ export class UserDataService {
     // Write to PostgreSQL if enabled
     if (features.shouldWriteToPostgres()) {
       const pgUserData = this.mapUserFieldsToPostgres(userData);
+      // The verification fields are only written at creation (UserRepository.create takes them).
+      // mapUserFieldsToPostgres is shared with updates and drops them, which stored every new
+      // account's token as NULL, so the link in the sign-up email could never verify.
+      for (const k of ['email_verified', 'email_verification_token', 'email_verification_token_expires']) {
+        if (userData[k] !== undefined) pgUserData[k] = userData[k];
+      }
       user = await UserRepository.create(pgUserData);
     }
 
