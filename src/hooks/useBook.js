@@ -242,7 +242,7 @@ export const useBook = (bookId) => {
 
   useEffect(() => {
     const beforeUnload = (e) => {
-      if (autosave.status === 'unsaved' || autosave.status === 'saving' || autosave.status === 'error') {
+      if (autosave.saveStatus === 'unsaved' || autosave.saveStatus === 'saving' || autosave.saveStatus === 'error') {
         e.preventDefault();
         e.returnValue = '';
         return '';
@@ -251,7 +251,7 @@ export const useBook = (bookId) => {
     };
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [autosave.status]);
+  }, [autosave.saveStatus]);
 
   return {
     data,
