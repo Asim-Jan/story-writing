@@ -4524,7 +4524,11 @@ app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, requireF
       bookId: req.params.bookId,
       type: req.body.type,
       target: req.body.target,
-      label: mediaJobLabel(req.body),
+      // the client's own label when it sends one (the UI keys some behaviour
+      // on it), else a generated one
+      label: typeof req.body.label === 'string' && req.body.label.trim()
+        ? req.body.label.trim().slice(0, 120)
+        : mediaJobLabel(req.body),
       run: mediaJobRunner(req),
       onNothingProduced: () => refundAIQuota(userId),
     });
