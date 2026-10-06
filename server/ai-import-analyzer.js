@@ -1,6 +1,7 @@
 import { getSAIClient, SAI_CHAT_FAST } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
 import dotenv from 'dotenv';
+import { saiTextOf } from './utils/saiText.js';
 
 dotenv.config();
 
@@ -115,7 +116,7 @@ Extract all relevant metadata from this chapter.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       return extractJSON(cleaned);
     } catch (error) {
@@ -183,7 +184,7 @@ Identify unique characters and consolidate the information.`;
         max_tokens: 6000,
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       return extractJSON(cleaned);
     } catch (error) {
@@ -241,7 +242,7 @@ Identify unique locations and consolidate the information.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       return extractJSON(cleaned);
     } catch (error) {
@@ -300,7 +301,7 @@ Identify and consolidate plot threads.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       return extractJSON(cleaned);
     } catch (error) {
@@ -350,7 +351,7 @@ Write a comprehensive book overview.`;
         max_tokens: 800,
       });
 
-      return completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || ''.trim();
+      return saiTextOf(completion.choices[0]);
     } catch (error) {
       console.error('Overview generation error:', error);
       return 'Overview generation failed.';
@@ -410,7 +411,7 @@ Extract all significant timeline events.`;
         max_tokens: 4000,
       });
 
-      const responseText = completion.choices[0].message.content || completion.choices[0].message.reasoning_content || completion.choices[0].message.reasoning || '';
+      const responseText = saiTextOf(completion.choices[0]);
       const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       return extractJSON(cleaned);
     } catch (error) {

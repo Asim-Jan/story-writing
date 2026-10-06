@@ -60,6 +60,29 @@ const RPGGameTab = ({ bookId, bookData }) => {
     }
   };
 
+  // Load the saved campaign if one exists — the tab only ever WROTE; on
+  // revisit it rendered the empty state and "Generate" was the only path,
+  // so every saved campaign was unreachable.
+  useEffect(() => {
+    if (!bookId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await axios.get(`/api/rpg/${bookId}`);
+        if (!cancelled && response.data?.rpgData) {
+          setRpgData(response.data.rpgData);
+        }
+      } catch (error) {
+        // 404/403 = no saved campaign or not permitted — the empty state is
+        // the right rendering; only log real errors.
+        if (error.response?.status !== 404) {
+          console.error('Error loading saved RPG campaign:', error);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [bookId]);
+
   const renderOverview = () => (
     <div className="space-y-6">
       {/* Hero Section */}

@@ -1,23 +1,7 @@
-import { createClient } from 'redis';
 import { saiSpeech, VOICE_MAP } from '../../saiClient.js';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
 import { setMediaBookMapping } from '../../utils/mediaMapping.js';
-
-let redisClient;
-
-async function initRedis() {
-  if (redisClient) return redisClient;
-
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
-    password: process.env.REDIS_PASSWORD || undefined,
-  });
-  // Without a listener, redis v4 re-throws connection errors and a Redis restart kills the worker.
-  redisClient.on('error', (err) => console.error('Redis client error:', err.message));
-  await redisClient.connect();
-  return redisClient;
-}
 
 function chunkText(text, maxChars = 4000) {
   const chunks = [];
@@ -59,8 +43,6 @@ export async function processAudioGeneration(job) {
   try {
     await updateJobStatus(job.id, { status: 'active', progress: 10 });
 
-    await initRedis();
-
     // Friendly voice names map onto the SAI bridge's vibevoice set.
     const selectedVoice = VOICE_MAP[voice] || voice;
 
@@ -91,8 +73,37 @@ export async function processAudioGeneration(job) {
 
     await updateJobStatus(job.id, { status: 'active', progress: 70, message: 'Combining audio chunks...' });
 
-    // Combine all audio buffers
-    const buffer = Buffer.concat(audioBuffers);
+    // Concatenate WAV chunks CORRECTLY. Buffer.concat glued whole WAV files
+    // together — every chunk after the first carried its own 44-byte header
+    // mid-stream, which players render as a click and some refuse entirely.
+    // Take the first chunk's header (same voice + bridge = same format) and
+    // append only the PCM data of the rest.
+    const wavDataStart = (buf) => {
+      // find the 'data' chunk: standard files have it at offset 36+8, but the
+      // bridge may include LIST chunks — scan instead of assuming 44
+      if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF') return 44;
+      let off = 12;
+      while (off + 8 <= buf.length) {
+        const id = buf.toString('ascii', off, off + 4);
+        const size = buf.readUInt32LE(off + 4);
+        if (id === 'data') return off + 8;
+        off += 8 + size + (size % 2); // chunks are word-aligned
+      }
+      return 44;
+    };
+    const first = audioBuffers[0];
+    const header = first.subarray(0, wavDataStart(first));
+    const pcmParts = [first.subarray(wavDataStart(first))];
+    for (let i = 1; i < audioBuffers.length; i++) {
+      const b = audioBuffers[i];
+      pcmParts.push(b.subarray(wavDataStart(b)));
+    }
+    const pcmLength = pcmParts.reduce((n, p) => n + p.length, 0);
+    // rewrite the header's data-chunk size + RIFF size to the real totals
+    header.writeUInt32LE(36 + pcmLength, 4);
+    const dataIdx = header.indexOf('data', 12, 'ascii');
+    if (dataIdx >= 0) header.writeUInt32LE(pcmLength, dataIdx + 4);
+    const buffer = Buffer.concat([header, ...pcmParts]);
 
     // Upload to MinIO with access control mapping (the bridge returns WAV)
     const filename = `chapter-${chapterId}-${Date.now()}.wav`;
@@ -105,15 +116,21 @@ export async function processAudioGeneration(job) {
 
     await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });
 
-    // Update book data
-    const bookData = await redisClient.get(`book:${bookId}`);
-    if (bookData) {
-      const book = JSON.parse(bookData);
-      const chapter = book.chapters?.find(c => c.id === chapterId);
-      if (chapter) {
-        chapter.audio = uploadResult;
+    // Record on the chapter through the data service (the Redis book:{id}
+    // store is empty under PostgreSQL-only mode; audioFiles were never
+    // written to Postgres at all).
+    try {
+      const book = await BookDataService.findById(bookId);
+      if (book) {
+        const chapters = book.chapters || [];
+        const chapter = chapters.find(c => c.id === chapterId);
+        if (chapter) {
+          chapter.audio = uploadResult;
+          await BookDataService.update(bookId, userId, { chapters }, book.version);
+        }
       }
-      await redisClient.set(`book:${bookId}`, JSON.stringify(book));
+    } catch (err) {
+      console.error('Audio generated but book update failed:', err.message);
     }
 
     await updateJobStatus(job.id, {

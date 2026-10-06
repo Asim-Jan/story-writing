@@ -1,21 +1,6 @@
-import { createClient } from 'redis';
 import { AIBookOrchestrator } from '../../ai-agent-orchestrator.js';
 import { updateJobStatus } from '../queue.js';
-
-let redisClient;
-
-async function initRedis() {
-  if (redisClient) return redisClient;
-
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
-    password: process.env.REDIS_PASSWORD || undefined,
-  });
-  // Without a listener, redis v4 re-throws connection errors and a Redis restart kills the worker.
-  redisClient.on('error', (err) => console.error('Redis client error:', err.message));
-  await redisClient.connect();
-  return redisClient;
-}
+import { BookDataService } from '../../db/dataService.js';
 
 export async function processContentGeneration(job) {
   const { userId, bookId, contentType, itemId, config } = job.data;
@@ -23,15 +8,12 @@ export async function processContentGeneration(job) {
   try {
     await updateJobStatus(job.id, { status: 'active', progress: 10 });
 
-    await initRedis();
-
-    // Get book data
-    const bookData = await redisClient.get(`book:${bookId}`);
-    if (!bookData) {
+    // Load through the data service — the Redis book:{id} store is EMPTY under
+    // PostgreSQL-only mode, so the old load threw 'Book not found' for every job.
+    const book = await BookDataService.findById(bookId);
+    if (!book) {
       throw new Error('Book not found');
     }
-
-    const book = JSON.parse(bookData);
     const orchestrator = new AIBookOrchestrator(book);
 
     let result;
@@ -49,24 +31,29 @@ export async function processContentGeneration(job) {
 
     // Generate content based on type
     switch (contentType) {
-      case 'chapter':
-        result = await orchestrator.generateChapter(itemId, onProgress);
+      // The orchestrator's REAL method names (the old ones don't exist — every
+      // content job crashed at dispatch).
+      case 'chapter': {
+        const outline = (itemId && (book.chapterOutlines || []).find(o => o.id === itemId))
+          || { title: config?.title || 'Chapter', summary: config?.summary || '', scenes: config?.scenes || [], characters: config?.characters || [] };
+        result = await orchestrator.generateChapterContent(outline, book, itemId || (book.chapters?.length || 0) + 1);
         break;
+      }
 
       case 'character':
-        result = await orchestrator.generateCharacter(config, onProgress);
+        result = await orchestrator.generateCharacters(book, config?.count || 1);
         break;
 
       case 'location':
-        result = await orchestrator.generateLocation(config, onProgress);
+        result = await orchestrator.generateLocations(book, book.characters || [], config?.count || 1);
         break;
 
       case 'plotline':
-        result = await orchestrator.generatePlotline(config, onProgress);
+        result = await orchestrator.generatePlotlines(book, book, config?.count || 1);
         break;
 
       case 'worldbuilding':
-        result = await orchestrator.generateWorldbuilding(config, onProgress);
+        result = await orchestrator.generateTimeline(book);
         break;
 
       default:
@@ -75,9 +62,27 @@ export async function processContentGeneration(job) {
 
     await updateJobStatus(job.id, { status: 'active', progress: 95, message: 'Saving to book...' });
 
-    // Update book data
-    const updatedBookData = await redisClient.get(`book:${bookId}`);
-    const updatedBook = JSON.parse(updatedBookData);
+    // Persist the generated content onto the book (the old code re-read the
+    // dead Redis store and saved NOTHING).
+    try {
+      const updates = {};
+      if (contentType === 'chapter' && result) {
+        const chapters = book.chapters || [];
+        const ch = chapters.find(c => c.id === itemId) || {};
+        Object.assign(ch, typeof result === 'object' ? result : { content: String(result) });
+        updates.chapters = chapters;
+      } else if (Array.isArray(result)) {
+        if (contentType === 'character') updates.characters = [...(book.characters || []), ...result];
+        else if (contentType === 'location') updates.locations = [...(book.locations || []), ...result];
+        else if (contentType === 'plotline') updates.plotlines = [...(book.plotlines || []), ...result];
+      }
+      if (Object.keys(updates).length) {
+        await BookDataService.update(bookId, job.data.userId, updates, book.version);
+      }
+    } catch (err) {
+      console.error('Content generated but book update failed:', err.message);
+      throw err; // don't report success for content that was never saved
+    }
 
     await updateJobStatus(job.id, {
       status: 'completed',
