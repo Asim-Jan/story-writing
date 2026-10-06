@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User, Lock } from 'lucide-react';
 import { useBook } from '../hooks/useBook';
+import { useMediaJobs } from '../hooks/useMediaJobs';
+import { MediaJobsProvider, MediaJobList } from '../contexts/MediaJobsContext';
 import { getMediaUrl } from '../utils/mediaUrl';
 import { useSubscription } from '../contexts/SubscriptionContext';
 import UpgradeModal from './UpgradeModal';
@@ -40,7 +42,11 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });
 
-  const { data, setData, loading, loadError, saving, error, saveBook, autosave } = useBook(bookId);
+  const { data, setData, loading, loadError, saving, error, saveBook, autosave, savedSnapshot } = useBook(bookId);
+  // Media jobs live for the whole book, not per tab: progress and results
+  // survive switching tab or character, and a reload.
+  const mediaJobs = useMediaJobs({ bookId, data, setData, ready: !loading && !loadError, savedSnapshot });
+  const [visualError, setVisualError] = useState(null);
   const { tier, hasFeature, loading: subLoading } = useSubscription();
 
   // Quota tracking state
@@ -525,51 +531,28 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     }
   };
 
+  // A visual is a book media job: it keeps running (and lands in the library)
+  // while the user works elsewhere. The label is the description typed.
   const generateVisual = async (description) => {
-    setGeneratingAI(true);
+    setVisualError(null);
     try {
-      const response = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt: description,
-          bookId,
-          context: {
-            bookTitle: data.bookTitle,
-            overview: data.overview,
-            characters: data.characters,
-            locations: data.locations,
-            plotlines: data.plotlines
-          }
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || 'Failed to generate image');
-      }
-
-      const { imageUrl, filename } = await response.json();
-
-      const newVisual = {
-        id: Date.now(),
-        description,
-        url: imageUrl,
-        filename,
-        createdAt: new Date().toISOString()
-      };
-
-      setData(prev => ({
-        ...prev,
-        visuals: [...prev.visuals, newVisual]
-      }));
+      await mediaJobs.startJob('image', { type: 'visual', id: null }, {
+        prompt: description,
+        context: {
+          bookTitle: data.bookTitle,
+          overview: data.overview,
+          characters: data.characters,
+          locations: data.locations,
+          plotlines: data.plotlines
+        }
+      }, description.slice(0, 200));
     } catch (error) {
-      console.error("Error generating visual:", error);
-      alert(`Failed to generate image: ${error.message}`);
-    } finally {
-      setGeneratingAI(false);
+      if (error.status === 403) {
+        setUpgradeModalProps({ featureName: 'Visuals', requiredTier: 'Basic', requiredFeature: 'media_generation' });
+        setShowUpgradeModal(true);
+        return;
+      }
+      setVisualError(`Failed to generate image: ${error.message}`);
     }
   };
 
@@ -614,6 +597,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   }
 
   return (
+    <MediaJobsProvider value={mediaJobs}>
     <div className="flex h-screen bg-[var(--bg)] overflow-hidden">
       {/* Mobile overlay */}
       {sidebarOpen && (
@@ -727,6 +711,12 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             <h1 className="text-lg sm:text-2xl font-bold text-gray-800 capitalize">{activeTab}</h1>
           </div>
           <div className="flex items-center gap-3">
+            {mediaJobs.runningCount > 0 && (
+              <span className="hidden sm:flex items-center gap-1 text-[var(--blue)] mono text-xs" role="status" data-testid="media-jobs-indicator">
+                <RefreshCw size={14} className="animate-spin" />
+                {mediaJobs.runningCount} generation{mediaJobs.runningCount === 1 ? '' : 's'} running
+              </span>
+            )}
             {/* Autosave Status Indicator */}
             <div className="hidden sm:flex items-center gap-2 text-sm">
               {autosave?.status === 'saving' && (
@@ -1126,13 +1116,16 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                         document.getElementById('visualDescription').value = '';
                       }
                     }}
-                    disabled={generatingAI}
                     className="px-6 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <Palette size={20} className={generatingAI ? 'animate-spin' : ''} />
-                    {generatingAI ? 'Generating Image...' : 'Generate'}
+                    <Palette size={20} className={mediaJobs.jobsFor('visual').some(j => j.status === 'running') ? 'animate-spin' : ''} />
+                    Generate
                   </button>
                 </div>
+                {visualError && (
+                  <div className="mt-3 border border-[var(--red)] text-[var(--red)] text-sm px-3 py-2" role="alert">{visualError}</div>
+                )}
+                <MediaJobList jobs={mediaJobs.jobsFor('visual')} className="mt-3" />
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1304,6 +1297,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         />
       )}
     </div>
+    </MediaJobsProvider>
   );
 };
 

@@ -1,13 +1,18 @@
 import React, { useState } from 'react';
 import { BookOpen, Image as ImageIcon, Upload, X, Users, Plus, Trash2, Mail, Key, Sparkles, Loader } from 'lucide-react';
 import ImagePreviewModal from './ImagePreviewModal';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 
 const BookMetadataTab = ({ data, setData, visuals }) => {
   const [selectedPreviewImage, setSelectedPreviewImage] = useState(null);
   const [newCollaboratorEmail, setNewCollaboratorEmail] = useState('');
   const [newCollaboratorRole, setNewCollaboratorRole] = useState('editor');
-  const [generatingCover, setGeneratingCover] = useState(false);
-  const [pendingCoverImage, setPendingCoverImage] = useState(null);
+  const [startingCover, setStartingCover] = useState(false);
+  const { jobsFor, startJob } = useMediaJobsContext();
+  // The cover is a book media job: it keeps running (and becomes the cover)
+  // while the user is on another tab.
+  const coverJobs = jobsFor('cover').filter(j => j.type === 'image');
+  const generatingCover = startingCover || coverJobs.some(j => j.status === 'running');
 
   const handleMetadataChange = (field, value) => {
     setData(prev => ({
@@ -19,54 +24,27 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
     }));
   };
 
+  // Applied by the book-level jobs hook as the old accept step did: the image
+  // becomes metadata.coverImage and joins the visuals library.
   const handleGenerateCover = async () => {
-    setGeneratingCover(true);
+    setStartingCover(true);
     try {
-      const token = localStorage.getItem('token');
       const prompt = `Book cover for "${data.bookTitle || 'Untitled'}"${metadata.genre ? `. Genre: ${metadata.genre}` : ''}. ${data.overview || ''}. Portrait orientation, professional book cover design, visually striking.`;
-      const response = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        credentials: 'include',
-        body: JSON.stringify({
-          prompt,
-          bookId: data.id,
-          size: '1024x1792',
-          context: {
-            bookTitle: data.bookTitle,
-            overview: data.overview,
-            characters: data.characters,
-            locations: data.locations,
-          },
-        }),
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.message || err.error || 'Failed to generate cover');
-      }
-      const { imageUrl, filename } = await response.json();
-      setPendingCoverImage({ imageUrl, filename });
+      await startJob('image', { type: 'cover', id: null }, {
+        prompt,
+        size: '1024x1792',
+        context: {
+          bookTitle: data.bookTitle,
+          overview: data.overview,
+          characters: data.characters,
+          locations: data.locations,
+        },
+      }, `Cover: ${data.bookTitle || 'Book'}`);
     } catch (error) {
       alert(`Failed to generate cover: ${error.message}`);
     } finally {
-      setGeneratingCover(false);
+      setStartingCover(false);
     }
-  };
-
-  const handleAcceptCover = () => {
-    if (!pendingCoverImage) return;
-    handleMetadataChange('coverImage', pendingCoverImage.imageUrl);
-    setData(prev => ({
-      ...prev,
-      visuals: [...(prev.visuals || []), {
-        id: Date.now(),
-        description: `Cover - ${data.bookTitle || 'Book'}`,
-        url: pendingCoverImage.imageUrl,
-        filename: pendingCoverImage.filename,
-        createdAt: new Date().toISOString(),
-      }],
-    }));
-    setPendingCoverImage(null);
   };
 
   const handleAddCollaborator = () => {
@@ -116,32 +94,8 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Cover Preview */}
           <div>
-            {pendingCoverImage ? (
-              <div>
-                <p className="text-sm font-semibold text-gray-700 mb-2">Generated cover — keep it?</p>
-                <div className="relative">
-                  <img
-                    src={pendingCoverImage.imageUrl}
-                    alt="Pending book cover"
-                    className="w-full rounded-lg shadow-md"
-                  />
-                </div>
-                <div className="flex gap-2 mt-3">
-                  <button
-                    onClick={handleAcceptCover}
-                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold text-sm"
-                  >
-                    Set as Cover
-                  </button>
-                  <button
-                    onClick={() => setPendingCoverImage(null)}
-                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm"
-                  >
-                    Discard
-                  </button>
-                </div>
-              </div>
-            ) : metadata.coverImage ? (
+            <MediaJobList jobs={coverJobs} className="mb-3" />
+            {metadata.coverImage ? (
               <div className="relative group">
                 <img
                   src={metadata.coverImage}
@@ -171,6 +125,7 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
                 <button
                   onClick={handleGenerateCover}
                   disabled={generatingCover}
+                  data-testid="cover-generate"
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 text-sm font-semibold disabled:opacity-60"
                 >
                   {generatingCover ? <Loader size={16} className="animate-spin" /> : <Sparkles size={16} />}

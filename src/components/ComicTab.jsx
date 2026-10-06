@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Book, Image as ImageIcon, Plus, Trash2, Wand2, Loader, Save, Eye, Download, Grid, Layout, Film, FileText } from 'lucide-react';
 import ComicExportModal from './ComicExportModal';
-import { runReferenceJob, addReferences, characterFields } from './CharacterReferences';
+import { characterFields } from './CharacterReferences';
+import { COMIC_REFERENCE_LABEL } from '../hooks/useMediaJobs';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { ComicRenderer } from '../utils/comicRenderer';
 import { CBZExporter } from '../utils/cbzExporter';
 import { ComicPDFExporter } from '../utils/comicPdfExporter';
@@ -11,7 +13,10 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [selectedTranscript, setSelectedTranscript] = useState('');
   const [characterRefs, setCharacterRefs] = useState(data?.characterRefs || {});
-  const [generatingRef, setGeneratingRef] = useState(null);
+  const [startingRef, setStartingRef] = useState(null); // character id while the job is being created
+  const { jobsFor, startJob } = useMediaJobsContext();
+  const comicRefJobs = (characterId) => jobsFor('character', characterId)
+    .filter(j => j.type === 'reference' && String(j.label || '').startsWith(COMIC_REFERENCE_LABEL));
   const [generatingPanel, setGeneratingPanel] = useState(null);
   const [parsingTranscript, setParsingTranscript] = useState(false);
   const [currentPage, setCurrentPage] = useState(null);
@@ -41,38 +46,22 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
     return character?.imageUrl || null;
   };
 
+  // A comic reference is a book media job (a turnaround sheet takes minutes).
+  // The book-level jobs hook applies it when done, even if this tab is closed:
+  // the sheet joins the character's references and, because of its label,
+  // becomes the comic reference (characterRefs); the autosave writes it.
   const generateCharacterReference = async (character) => {
-    setGeneratingRef(character.id);
+    setStartingRef(character.id);
     try {
-      const result = await runReferenceJob({
-        bookId: data?.id,
+      await startJob('reference', { type: 'character', id: character.id }, {
         kind: 'turnaround',
         character: characterFields(character),
         style: 'professional comic book art style'
-      });
-      const refUrl = result?.reference?.imageUrl;
-      if (!refUrl) throw new Error('The server returned no image');
-
-      setCharacterRefs(prev => ({ ...prev, [character.id]: refUrl }));
-
-      // Persist through autosave. A sheet takes minutes, so saveBook() here
-      // (even with overrides) would spread the book as it was at click time
-      // over anything saved meanwhile; the functional update merges into the
-      // current book instead, and the autosave writes it.
-      if (setData) {
-        setData(prev => ({
-          ...prev,
-          characterRefs: { ...(prev.characterRefs || {}), [character.id]: refUrl },
-          characters: (prev.characters || []).map(c => (c.id === character.id ? addReferences(c, result) : c))
-        }));
-      }
-
-      alert(`Character reference generated for ${character.name}!`);
+      }, `${COMIC_REFERENCE_LABEL}${character.name || 'character'}`);
     } catch (error) {
-      console.error('Error generating character reference:', error);
       alert('Failed to generate character reference: ' + error.message);
     } finally {
-      setGeneratingRef(null);
+      setStartingRef(null);
     }
   };
 
@@ -529,7 +518,8 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
             const refImage = getCharacterRefImage(character.id);
             const hasProfileImage = character.imageUrl;
             const hasComicRef = characterRefs[character.id];
-            const isGenerating = generatingRef === character.id;
+            const refJobs = comicRefJobs(character.id);
+            const isGenerating = startingRef === character.id || refJobs.some(j => j.status === 'running');
 
             return (
               <div key={character.id} className="border-2 border-gray-200 rounded-lg p-3">
@@ -560,9 +550,11 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
                     ✓ Using profile image
                   </p>
                 )}
+                <MediaJobList jobs={refJobs} compact className="mb-2 text-xs" />
                 <button
                   onClick={() => generateCharacterReference(character)}
                   disabled={isGenerating}
+                  data-testid="comic-ref-generate"
                   className="w-full px-3 py-2 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                 >
                   {isGenerating ? (

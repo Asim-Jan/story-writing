@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { MapPin, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
@@ -6,6 +6,7 @@ import BatchAISuggestionBox from './BatchAISuggestionBox';
 import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 
 const LocationsTab = ({
   data,
@@ -34,8 +35,21 @@ const LocationsTab = ({
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [showForm, setShowForm] = useState(false); // mobile: without this the New Location click did nothing visible on phones
   const [viewMode, setViewMode] = useState('list');
-  const [generatingImage, setGeneratingImage] = useState(null);
-  const [pendingImage, setPendingImage] = useState(null);
+  const [generatingImage, setGeneratingImage] = useState(null); // an upload in flight
+  const [pendingImage, setPendingImage] = useState(null); // an uploaded image awaiting approval
+  const { jobsFor, startJob } = useMediaJobsContext();
+  // Location images are book media jobs: they keep running (and land on the
+  // location) while the user is elsewhere.
+  const imageJobs = (locationId) => jobsFor('location', locationId).filter(j => j.type === 'image');
+  const imageRunning = (locationId) => imageJobs(locationId).some(j => j.status === 'running');
+
+  // The detail view renders a snapshot; keep it in step with the book so a
+  // finished image shows without re-selecting.
+  useEffect(() => {
+    if (!selectedLocation) return;
+    const live = data.locations.find(l => l.id === selectedLocation.id);
+    if (live && live !== selectedLocation) setSelectedLocation(live);
+  }, [data.locations]);
   const [selectedImage, setSelectedImage] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef(null);
@@ -74,46 +88,24 @@ const LocationsTab = ({
     setShowForm(true); // mobile: make the form pane visible
   };
 
+  // Applied by the book-level jobs hook as the old accept step did: the image
+  // goes on the location and joins the visuals library.
   const handleGenerateImage = async (location) => {
     setGeneratingImage(location.id);
     try {
       // Build context-aware prompt
       const prompt = `Create an image for this location: ${location.name}${location.type ? ` (${location.type})` : ''}. ${location.description || ''}`;
-
-      const response = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          bookId: data.id,
-          context: {
-            bookTitle: data.bookTitle,
-            overview: data.overview,
-            characters: data.characters,
-            locations: data.locations,
-            location: location
-          }
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate image');
-      }
-
-      const { imageUrl, filename } = await response.json();
-
-      // Show pending image for approval
-      setPendingImage({
-        locationId: location.id,
-        imageUrl,
-        filename,
-        description: location.name
-      });
+      await startJob('image', { type: 'location', id: location.id }, {
+        prompt,
+        context: {
+          bookTitle: data.bookTitle,
+          overview: data.overview,
+          characters: data.characters,
+          locations: data.locations,
+          location: location
+        }
+      }, `Location: ${location.name || 'location'}`);
     } catch (error) {
-      console.error('Error generating image:', error);
       alert(`Failed to generate image: ${error.message}`);
     } finally {
       setGeneratingImage(null);
@@ -329,11 +321,12 @@ const LocationsTab = ({
               <div className="flex flex-wrap gap-2 flex-shrink-0">
                 <button
                   onClick={() => handleGenerateImage(selectedLocation)}
-                  disabled={generatingImage === selectedLocation.id}
+                  disabled={generatingImage === selectedLocation.id || imageRunning(selectedLocation.id)}
+                  data-testid="location-generate"
                   className="px-3 sm:px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Image size={16} className={`flex-shrink-0 ${generatingImage === selectedLocation.id ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">{generatingImage === selectedLocation.id ? 'Generating...' : 'Generate'}</span>
+                  <Image size={16} className={`flex-shrink-0 ${generatingImage === selectedLocation.id || imageRunning(selectedLocation.id) ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">{generatingImage === selectedLocation.id || imageRunning(selectedLocation.id) ? 'Generating...' : 'Generate'}</span>
                 </button>
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -368,6 +361,8 @@ const LocationsTab = ({
                 </button>
               </div>
             </div>
+
+            <MediaJobList jobs={imageJobs(selectedLocation.id)} className="mb-4" />
 
             {/* Location Image */}
             {selectedLocation.imageUrl && (

@@ -64,6 +64,11 @@ export const useBook = (bookId) => {
   const [autosaveEnabled, setAutosaveEnabled] = useState(true);
   const hydratedRef = useRef(false); // has the real book arrived?
   const dataRef = useRef(data);      // latest data for same-tick saves
+  // The book as the server last confirmed it: the loaded copy, then the payload
+  // of every successful save, with the time that save read its data. The media
+  // jobs hook acknowledges a finished job only once its result is in here (an
+  // ack before the save would lose the result if the tab died in between).
+  const [savedSnapshot, setSavedSnapshot] = useState(null); // { book, startedAt }
 
   // Load book data
   useEffect(() => {
@@ -93,7 +98,9 @@ export const useBook = (bookId) => {
         if (response.ok) {
           const bookData = await response.json();
           if (cancelled) return;
-          setData(ensureBookShape(bookData));
+          const shaped = ensureBookShape(bookData);
+          setData(shaped);
+          setSavedSnapshot({ book: shaped, startedAt: 0 });
           hydratedRef.current = true;
         } else if (response.status === 401) {
           // Session expired mid-session: the auth context listens for this
@@ -145,6 +152,7 @@ export const useBook = (bookId) => {
 
       const method = bookId ? 'PUT' : 'POST';
 
+      const startedAt = Date.now();
       const effective = overrides ? { ...data, ...overrides } : dataRef.current;
 
       // version = the optimistic-lock ticket. The server refuses a write whose
@@ -179,6 +187,7 @@ export const useBook = (bookId) => {
       }
 
       const savedBook = await response.json();
+      setSavedSnapshot({ book: effective, startedAt });
 
       // Merge ONLY the server-owned fields. The old code spread the whole
       // server response over local state — which clobbered edits made while
@@ -276,6 +285,7 @@ export const useBook = (bookId) => {
     saving: saving || autosave.isSaving,
     error,
     saveBook,
+    savedSnapshot,
     autosave: {
       status: autosave.saveStatus,
       lastSaved: autosave.lastSaved,

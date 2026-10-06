@@ -7,6 +7,7 @@ import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
 import CharacterReferences from './CharacterReferences';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
 
 // Characters carry their looks in separate fields (there is no `description`),
@@ -59,8 +60,13 @@ const CharactersTab = ({
   const [selectedCharacter, setSelectedCharacter] = useState(null);
   const [showForm, setShowForm] = useState(false); // mobile: the add form lives in the detail pane; without this the New Character click did nothing visible on phones
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
-  const [generatingImage, setGeneratingImage] = useState(null);
-  const [pendingImage, setPendingImage] = useState(null);
+  const [generatingImage, setGeneratingImage] = useState(null); // an upload in flight
+  const [pendingImage, setPendingImage] = useState(null); // an uploaded image awaiting approval
+  const { jobsFor, startJob } = useMediaJobsContext();
+  // Portrait generations are book media jobs: they keep running (and land on
+  // the character) while the user looks at another character or tab.
+  const portraitJobs = (characterId) => jobsFor('character', characterId).filter(j => j.type === 'image');
+  const portraitRunning = (characterId) => portraitJobs(characterId).some(j => j.status === 'running');
   const [selectedImage, setSelectedImage] = useState(null);
   const [showRelationshipGraph, setShowRelationshipGraph] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -92,51 +98,28 @@ const CharactersTab = ({
     );
   });
 
+  // The result is applied by the book-level jobs hook as the old accept step
+  // did: the image becomes the portrait and joins the visuals library.
   const handleGenerateImage = async (character) => {
     setGeneratingImage(character.id);
     try {
-      const prompt = buildPortraitPrompt(character);
-
-      const response = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          bookId: data.id,
-          context: {
-            bookTitle: data.bookTitle,
-            overview: data.overview,
-            characters: data.characters,
-            locations: data.locations,
-            character: {
-              name: character.name,
-              role: character.role,
-              appearance: describeAppearance(character),
-              personality: character.personality,
-              background: character.background
-            }
+      await startJob('image', { type: 'character', id: character.id }, {
+        prompt: buildPortraitPrompt(character),
+        context: {
+          bookTitle: data.bookTitle,
+          overview: data.overview,
+          characters: data.characters,
+          locations: data.locations,
+          character: {
+            name: character.name,
+            role: character.role,
+            appearance: describeAppearance(character),
+            personality: character.personality,
+            background: character.background
           }
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate image');
-      }
-
-      const { imageUrl, filename } = await response.json();
-
-      // Show pending image for approval
-      setPendingImage({
-        characterId: character.id,
-        imageUrl,
-        filename,
-        description: character.name
-      });
+        }
+      }, `Portrait: ${character.name || 'character'}`);
     } catch (error) {
-      console.error('Error generating image:', error);
       alert(`Failed to generate image: ${error.message}`);
     } finally {
       setGeneratingImage(null);
@@ -378,11 +361,12 @@ const CharactersTab = ({
                 <div className="grid grid-cols-2 lg:flex gap-2">
                   <button
                     onClick={() => handleGenerateImage(selectedCharacter)}
-                    disabled={generatingImage === selectedCharacter.id}
+                    disabled={generatingImage === selectedCharacter.id || portraitRunning(selectedCharacter.id)}
+                    data-testid="portrait-generate"
                     className="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base font-medium"
                   >
-                    <Image size={18} className={`flex-shrink-0 ${generatingImage === selectedCharacter.id ? 'animate-spin' : ''}`} />
-                    <span>{generatingImage === selectedCharacter.id ? 'Generating...' : 'Generate Image'}</span>
+                    <Image size={18} className={`flex-shrink-0 ${generatingImage === selectedCharacter.id || portraitRunning(selectedCharacter.id) ? 'animate-spin' : ''}`} />
+                    <span>{generatingImage === selectedCharacter.id || portraitRunning(selectedCharacter.id) ? 'Generating...' : 'Generate Image'}</span>
                   </button>
                   <button
                     onClick={() => fileInputRef.current?.click()}
@@ -421,6 +405,7 @@ const CharactersTab = ({
                     <span>Delete</span>
                   </button>
                 </div>
+                <MediaJobList jobs={portraitJobs(selectedCharacter.id)} className="mt-3" />
               </div>
 
               {/* Character Image */}

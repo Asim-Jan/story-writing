@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { Image as ImageIcon, Loader, Trash2, UserCheck, Copy, Check, Wand2, FileText } from 'lucide-react';
 
 // Character reference sheets: portrait, turnarounds, expressions, Qwen sheet.
-// API contract: POST /api/characters/reference and /api/characters/reference-prompt.
-// The references live on the character (character.referenceImages, newest
-// first) and are saved by the normal book save, never by the server routes.
+// A reference is a book media job (type "reference", see useMediaJobs): the
+// server makes it, the book-level hook folds the result into the character
+// (character.referenceImages, newest first) and the normal book save keeps it.
+// The prompt preview still uses POST /api/characters/reference-prompt.
 
 export const REFERENCE_KINDS = [
   { id: 'portrait', label: 'Portrait', needsPortrait: false },
@@ -33,44 +35,10 @@ export const postJson = async (url, body) => {
   return result;
 };
 
-// Make a reference. The server answers 202 with a job id at once (a sheet can
-// take minutes, longer than Cloudflare lets a silent request live), so poll
-// until it's done. A failure after the base portrait was made still returns
-// the portrait on the error (err.partial), so the caller can keep it.
-export const runReferenceJob = async (body) => {
-  const { jobId } = await postJson('/api/characters/reference', body);
-  const token = localStorage.getItem('token');
-  for (;;) {
-    await new Promise(resolve => setTimeout(resolve, 4000));
-    const response = await fetch(`/api/characters/reference/jobs/${jobId}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-      credentials: 'include',
-    });
-    if (response.status === 202) continue;
-    const job = await response.json().catch(() => null);
-    if (!response.ok || !job) throw new Error(job?.error || `Request failed (${response.status})`);
-    if (job.status === 'done') return job;
-    const err = new Error(job.detail ? `${job.error}: ${job.detail}` : (job.error || 'Image generation failed'));
-    if (job.portrait) err.partial = { reference: null, portrait: job.portrait };
-    throw err;
-  }
-};
-
 // The character as the server needs it: the reference history is client-side
 // bookkeeping and only bloats the request.
 // eslint-disable-next-line no-unused-vars
 export const characterFields = ({ referenceImages, ...fields }) => fields;
-
-// Fold a /api/characters/reference result into a character: the new images go
-// to the front (the sheet was made after the portrait, so it is newest), and a
-// portrait becomes the main image when the character had none.
-export const addReferences = (character, result) => {
-  const fresh = [result.reference, result.portrait].filter(Boolean);
-  const next = { ...character, referenceImages: [...fresh, ...(character.referenceImages || [])] };
-  const portrait = result.portrait || (result.reference?.kind === 'portrait' ? result.reference : null);
-  if (!character.imageUrl && portrait) next.imageUrl = portrait.imageUrl;
-  return next;
-};
 
 const copyText = async (text) => {
   try {
@@ -91,23 +59,20 @@ const copyText = async (text) => {
   }
 };
 
-const formatElapsed = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-
-const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
+const CharacterReferences = ({ character, setData, onOpenImage }) => {
+  const { jobsFor, startJob } = useMediaJobsContext();
   const [kind, setKind] = useState('turnaround');
   const [style, setStyle] = useState('cinematic illustration');
-  const [running, setRunning] = useState(null); // { kind, startedAt }
-  const [elapsed, setElapsed] = useState(0);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState(null);
   const [promptInfo, setPromptInfo] = useState(null);
   const [promptBusy, setPromptBusy] = useState(null); // kind being fetched
   const [copyState, setCopyState] = useState(null); // 'copied' | 'failed'
 
-  useEffect(() => {
-    if (!running) return undefined;
-    const timer = setInterval(() => setElapsed(Math.round((Date.now() - running.startedAt) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
+  // Reference jobs for this character come from the book-level jobs, so a
+  // sheet started here is still shown after switching character and back.
+  const referenceJobs = jobsFor('character', character.id).filter(j => j.type === 'reference');
+  const running = referenceJobs.some(j => j.status === 'running') || starting;
 
   const references = character.referenceImages || [];
   const selectedKind = REFERENCE_KINDS.find(k => k.id === kind);
@@ -122,17 +87,15 @@ const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
 
   const generate = async () => {
     setError(null);
-    setElapsed(0);
-    setRunning({ kind, startedAt: Date.now() });
+    setStarting(true);
     try {
-      const result = await runReferenceJob({ bookId, kind, character: characterFields(character), style });
-      if (!result?.reference?.imageUrl) throw new Error('The server returned no image');
-      updateCharacter(c => addReferences(c, result));
+      await startJob('reference', { type: 'character', id: character.id },
+        { kind, character: characterFields(character), style },
+        `${kindLabel(kind)}: ${character.name || 'character'}`);
     } catch (err) {
-      if (err.partial) updateCharacter(c => addReferences(c, err.partial));
-      setError(err.partial ? `${err.message} (the base portrait was kept)` : err.message);
+      setError(err.message);
     } finally {
-      setRunning(null);
+      setStarting(false);
     }
   };
 
@@ -167,7 +130,7 @@ const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <label className="block">
             <span className="lbl block mb-1">Kind</span>
-            <select value={kind} onChange={(e) => setKind(e.target.value)} disabled={!!running} className="w-full">
+            <select value={kind} onChange={(e) => setKind(e.target.value)} disabled={running} className="w-full">
               {REFERENCE_KINDS.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
             </select>
           </label>
@@ -178,7 +141,7 @@ const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
               value={style}
               onChange={(e) => setStyle(e.target.value)}
               placeholder="cinematic illustration"
-              disabled={!!running}
+              disabled={running}
               className="w-full"
             />
           </label>
@@ -189,7 +152,7 @@ const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
         )}
 
         <div className="flex flex-wrap gap-2">
-          <button onClick={generate} disabled={!!running} className="btn pri sm">
+          <button onClick={generate} disabled={running} className="btn pri sm" data-testid="reference-generate">
             {running ? <Loader size={14} className="animate-spin" /> : <Wand2 size={14} />}
             {running ? 'Generating...' : 'Generate'}
           </button>
@@ -203,12 +166,11 @@ const CharacterReferences = ({ character, bookId, setData, onOpenImage }) => {
           </button>
         </div>
 
-        {running && (
-          <p className="text-sm text-[var(--dim)] mt-3 mono" role="status">
-            Generating {kindLabel(running.kind).toLowerCase()}: {formatElapsed(elapsed)} elapsed.
-            Sheets take 30 s to 3 min; a first portrait plus a sheet can take longer.
-          </p>
-        )}
+        <MediaJobList
+          jobs={referenceJobs}
+          className="mt-3"
+          hint="Sheets take 30 s to 3 min; a first portrait plus a sheet can take longer. You can leave this page; it carries on."
+        />
 
         {error && (
           <div className="mt-3 border border-[var(--red)] text-[var(--red)] text-sm px-3 py-2" role="alert">
