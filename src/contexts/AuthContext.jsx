@@ -59,6 +59,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = (userData, authToken) => {
     setUser(userData);
+    window.dispatchEvent(new CustomEvent('auth:changed'));
     setToken(authToken);
     localStorage.setItem('token', authToken);
     localStorage.setItem('user', JSON.stringify(userData));
@@ -81,6 +82,7 @@ export const AuthProvider = ({ children }) => {
       setToken(null);
       localStorage.removeItem('token');
       localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('auth:changed'));
     }
   };
 
