@@ -5,6 +5,7 @@ export const SubscriptionContext = createContext(null);
 export const SubscriptionProvider = ({ children }) => {
   const [subscription, setSubscription] = useState(null);
   const [tier, setTier] = useState('free');
+  const [unlockedFeatures, setUnlockedFeatures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -26,6 +27,7 @@ export const SubscriptionProvider = ({ children }) => {
         const data = await response.json();
         setSubscription(data.subscription);
         setTier(data.subscription?.tier || 'free');
+        setUnlockedFeatures(Array.isArray(data.unlocked_features) ? data.unlocked_features : []);
       } else {
         setTier('free');
       }
@@ -51,7 +53,7 @@ export const SubscriptionProvider = ({ children }) => {
       premium: ['media_generation', 'export_pdf', 'export_cbz', 'export_rpg', 'continuity_check', 'version_history', 'collaboration', 'priority_processing']
     };
 
-    return tierFeatures[tier]?.includes(featureName) || false;
+    return unlockedFeatures.includes(featureName) || tierFeatures[tier]?.includes(featureName) || false;
   };
 
   return (

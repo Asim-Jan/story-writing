@@ -83,8 +83,23 @@ export function getTierQuotas(tier) {
  * @returns {boolean} True if feature is available
  */
 export function hasFeature(tier, feature) {
+  if (unlockedFeatures().includes(feature)) return true;
   const quotas = getTierQuotas(tier);
   return quotas.features[feature] === true;
+}
+
+/**
+ * Features every user gets regardless of plan, while the paywall is off.
+ * FEATURE_UNLOCK_TIER=basic unlocks the basic plan's features for everyone;
+ * quotas (books, words, AI requests per day) still follow the user's real tier.
+ * Unset (the default) means no unlock.
+ * @returns {string[]} Unlocked feature names
+ */
+export function unlockedFeatures() {
+  const unlockTier = (process.env.FEATURE_UNLOCK_TIER || '').trim().toLowerCase();
+  if (!Object.hasOwn(TIER_QUOTAS, unlockTier)) return [];
+  return Object.keys(TIER_QUOTAS[unlockTier].features)
+    .filter((feature) => TIER_QUOTAS[unlockTier].features[feature] === true);
 }
 
 /**

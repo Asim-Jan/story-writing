@@ -46,7 +46,7 @@ import {
   incrementAICounter,
   updateQuotaUsage
 } from './middleware/quotaEnforcement.js';
-import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
+import { getTierQuotas, getTierLimitsDisplay, unlockedFeatures } from './config/tierQuotas.js';
 import { validatePassword } from './utils/passwordValidation.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail, sendPasswordChangedEmail, verifyEmailTransport, isEmailConfigured } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
@@ -1367,7 +1367,8 @@ app.get('/api/subscriptions/my',
       if (result.rows.length === 0) {
         return res.json({
           has_subscription: false,
-          subscription: null
+          subscription: null,
+          unlocked_features: unlockedFeatures()
         });
       }
 
@@ -1382,7 +1383,8 @@ app.get('/api/subscriptions/my',
           current_period_end: subscription.current_period_end,
           cancel_at_period_end: subscription.cancel_at_period_end,
           canceled_at: subscription.canceled_at
-        }
+        },
+        unlocked_features: unlockedFeatures()
       });
     } catch (error) {
       console.error('Get subscription error:', error);
