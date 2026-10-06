@@ -32,7 +32,7 @@ RUN npm install --production
 RUN cd server && npm install --production
 
 COPY server ./server
-COPY .env* ./
+# No .env* copy: config comes from the ConfigMap/Secrets, and this image is pushed to a registry.
 
 # The built frontend rides in the SAME image — the backend serves it and
 # there is no nginx deployment (SAI-Cloud shape: one server for app + API)

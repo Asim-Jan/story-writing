@@ -31,18 +31,20 @@ export const AuthProvider = ({ children }) => {
         },
         credentials: 'include'
       })
-        .then(res => {
-          if (!res.ok) throw new Error('Token invalid');
-          return res.json();
-        })
-        .then(data => {
+        .then(async res => {
+          if (res.status === 401 || res.status === 403) {
+            // Expired or revoked: sign out. (This used to leave the app on "Loading..." forever,
+            // because logout() never cleared the loading flag.)
+            await logout();
+            return;
+          }
+          if (!res.ok) return; // server restarting etc.: keep the stored session and carry on
+          const data = await res.json();
           setUser(data.user);
-          setLoading(false);
+          localStorage.setItem('user', JSON.stringify(data.user));
         })
-        .catch(() => {
-          // Token invalid, clear auth
-          logout();
-        });
+        .catch(() => { /* network error: keep the stored session */ })
+        .finally(() => setLoading(false));
     } else {
       setLoading(false);
     }

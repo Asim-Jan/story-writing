@@ -70,8 +70,10 @@ export class UserRepository {
    */
   static async findByEmail(email) {
     const result = await query(
-      'SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL',
-      [email]
+      // Case-insensitive: sign-up never normalised emails, so "A@x.com" and "a@x.com" were
+      // different accounts and a login typed in the other case failed. Oldest wins if both exist.
+      'SELECT * FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1',
+      [String(email || '').trim()]
     );
     return result.rows[0] || null;
   }

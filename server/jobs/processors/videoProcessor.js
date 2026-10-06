@@ -12,6 +12,8 @@ async function initRedis() {
   redisClient = createClient({
     url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
   });
+  // Without a listener, redis v4 re-throws connection errors and a Redis restart kills the worker.
+  redisClient.on('error', (err) => console.error('Redis client error:', err.message));
   await redisClient.connect();
   return redisClient;
 }

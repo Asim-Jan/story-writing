@@ -11,6 +11,21 @@ dotenv.config();
  * Media Storage Service - Supports both AWS S3 and MinIO
  * Provides centralized, cross-device media storage
  */
+/* Object metadata travels as HTTP headers (x-amz-meta-*), which must be ASCII with no newlines.
+   Callers pass user prompts and model-written titles, so a newline, an em-dash or an undefined
+   value threw ERR_INVALID_CHAR / ERR_HTTP_INVALID_HEADER_VALUE after a paid generation had already
+   run. Keep plain keys, drop empties, percent-encode values, cap the length. */
+function safeMetadata(metadata = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(metadata || {})) {
+    if (v === undefined || v === null || typeof v === 'object') continue;
+    const key = String(k).replace(/[^A-Za-z0-9-]/g, '');
+    if (!key || /^content-type$/i.test(key)) continue;
+    out[key] = encodeURIComponent(String(v)).slice(0, 512);
+  }
+  return out;
+}
+
 export class MediaStorage {
   constructor() {
     // Determine storage backend based on environment variables
@@ -167,8 +182,8 @@ export class MediaStorage {
       } else {
         // MinIO Upload
         await this.client.putObject(bucket, filename, buffer, buffer.length, {
+          ...safeMetadata(metadata),
           'Content-Type': contentType,
-          ...metadata,
         });
 
         const storageKey = `${bucketType}/${filename}`;

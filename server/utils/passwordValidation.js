@@ -45,7 +45,7 @@ function validatePassword(password) {
   }
 
   if (PASSWORD_REQUIREMENTS.requireSpecialChar) {
-    const specialCharRegex = new RegExp(`[${SPECIAL_CHARS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}]`);
+    const specialCharRegex = new RegExp(`[${SPECIAL_CHARS.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}]`);
     if (!specialCharRegex.test(password)) {
       failed.push('one special character (!@#$%^&*...)');
     }

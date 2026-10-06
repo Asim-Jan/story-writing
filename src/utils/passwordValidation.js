@@ -38,7 +38,7 @@ export function validatePassword(password) {
     hasUppercase: /[A-Z]/.test(password),
     hasLowercase: /[a-z]/.test(password),
     hasNumber: /[0-9]/.test(password),
-    hasSpecialChar: new RegExp(`[${SPECIAL_CHARS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}]`).test(password)
+    hasSpecialChar: new RegExp(`[${SPECIAL_CHARS.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}]`).test(password)
   };
 
   const isValid = Object.values(requirements).every(Boolean);
