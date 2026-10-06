@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Film, Play, Download, Trash2, Edit3, Loader, CheckCircle2, AlertCircle, Video, Zap, Clock } from 'lucide-react';
+import { Film, Play, Download, Trash2, Edit3, Loader, CheckCircle2, AlertCircle, Video, Zap, Clock, Users, UserPlus, Palette } from 'lucide-react';
 import { getMediaUrl } from '../utils/mediaUrl';
 import { useMediaJobsContext, MediaJobList, MediaJobStatus } from '../contexts/MediaJobsContext';
+import { characterFields } from './CharacterReferences';
+import { FILM_STYLES, DEFAULT_FILM_STYLE, filmStyle, buildCast } from '../utils/filmCast';
 
 // Rendering a film is a book media job (type "animation", target the
 // transcript): it runs on the server whether or not this tab is open, its
@@ -26,9 +28,159 @@ const isSceneJob = (job) => /^Scene \d+: /.test(String(job.label || ''));
 
 const SCENE_STATUS = {
   pending: { label: 'Waiting', cls: 'text-[var(--dim)]' },
+  keyframe: { label: 'Drawing keyframe', cls: 'text-[var(--blue)]' },
   rendering: { label: 'Rendering', cls: 'text-[var(--blue)]' },
   completed: { label: 'Done', cls: 'text-[var(--ok)]' },
   failed: { label: 'Failed', cls: 'text-[var(--red)]' },
+};
+
+// A small keyframe picture (16:9), opening full size in a new tab.
+const KeyframeThumb = ({ url, sceneNumber, className = '' }) => (url ? (
+  <a href={url} target="_blank" rel="noreferrer" title={`Scene ${sceneNumber} keyframe`} className={`block flex-shrink-0 ${className}`}>
+    <img src={url} alt={`Scene ${sceneNumber} keyframe`} data-testid="keyframe-thumb" className="w-16 h-9 object-cover rounded border border-gray-200 bg-gray-100" />
+  </a>
+) : null);
+
+// One locked style per film; persisted on the draft and sent as options.style.
+const FilmStylePicker = ({ value, onChange }) => (
+  <div className="mb-4" data-testid="film-style-picker">
+    <p className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
+      <Palette className="w-4 h-4" />
+      Film style
+      <span className="font-normal text-gray-500">(every scene is drawn in this one style)</span>
+    </p>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2" role="radiogroup" aria-label="Film style">
+      {FILM_STYLES.map(style => {
+        const selected = style.id === value;
+        return (
+          <button
+            key={style.id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            data-testid={`film-style-${style.id}`}
+            onClick={() => onChange(style.id)}
+            className={`text-left p-3 rounded-lg border-2 transition-colors ${selected ? 'border-purple-500 bg-purple-50' : 'border-gray-200 hover:border-purple-300'}`}
+          >
+            <span className="block font-semibold text-gray-900 text-sm">{style.label}</span>
+            <span className="block text-xs text-gray-600 mt-0.5">{style.description}</span>
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
+// Who appears in the parsed scenes, matched to the book's characters the way
+// the server matches them. A character with no portrait is drawn from text
+// only and drifts between scenes, so offer to make one (a reference job).
+const FilmCastPanel = ({ scenes, characters, styleId }) => {
+  const { jobsFor, startJob } = useMediaJobsContext();
+  const [starting, setStarting] = useState(() => new Set());
+  const [error, setError] = useState(null);
+  const { matched, unmatched } = buildCast(scenes, characters);
+
+  const portraitJobs = (id) => jobsFor('character', id).filter(j => j.type === 'reference');
+  const busy = (id) => starting.has(id) || portraitJobs(id).some(j => j.status === 'running');
+  const missing = matched.filter(row => !row.referenceUrl);
+
+  const makePortrait = async (character) => {
+    setStarting(prev => new Set(prev).add(character.id));
+    try {
+      await startJob('reference', { type: 'character', id: character.id }, {
+        kind: 'portrait',
+        character: characterFields(character),
+        style: filmStyle(styleId).portraitStyle,
+      }, `Portrait: ${character.name || 'character'}`);
+    } catch (err) {
+      setError(`Could not start a portrait for ${character.name}: ${err.message}`);
+    } finally {
+      setStarting(prev => { const next = new Set(prev); next.delete(character.id); return next; });
+    }
+  };
+
+  const makeAllMissing = async () => {
+    setError(null);
+    for (const row of missing) {
+      if (!busy(row.character.id)) await makePortrait(row.character);
+    }
+  };
+
+  if (!matched.length && !unmatched.length) return null;
+  const missingIdle = missing.filter(row => !busy(row.character.id));
+
+  return (
+    <div className="border-2 border-gray-200 rounded-lg p-4 mb-4" data-testid="film-cast">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <p className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          <Users className="w-4 h-4" />
+          Cast ({matched.length})
+          <span className="font-normal text-gray-500">portraits keep each character the same in every scene</span>
+        </p>
+        {missing.length > 0 && (
+          <button
+            type="button"
+            onClick={makeAllMissing}
+            disabled={!missingIdle.length}
+            data-testid="make-all-portraits"
+            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs rounded transition-colors flex items-center gap-1 flex-shrink-0"
+          >
+            <UserPlus className="w-3 h-3" />
+            Make all missing portraits ({missing.length})
+          </button>
+        )}
+      </div>
+
+      {error && <div className="border border-[var(--red)] text-[var(--red)] text-sm px-3 py-2 mb-3" role="alert">{error}</div>}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {matched.map(({ character, scenes: inScenes, referenceUrl }) => (
+          <div
+            key={character.id}
+            data-testid="cast-member"
+            data-character={character.name}
+            data-has-portrait={referenceUrl ? 'yes' : 'no'}
+            className={`flex items-start gap-3 p-2 rounded border ${referenceUrl ? 'border-gray-200' : 'border-amber-300 bg-amber-50'}`}
+          >
+            {referenceUrl ? (
+              <img src={referenceUrl} alt={character.name} className="w-12 h-12 object-cover rounded flex-shrink-0 bg-gray-100" />
+            ) : (
+              <div className="w-12 h-12 rounded flex-shrink-0 bg-gray-100 border border-dashed border-gray-300 flex items-center justify-center">
+                <Users className="w-5 h-5 text-gray-400" />
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-900 truncate">{character.name}</p>
+              <p className="text-xs text-gray-500">Scene{inScenes.length === 1 ? '' : 's'} {inScenes.join(', ')}</p>
+              {!referenceUrl && (
+                <>
+                  <p className="text-xs text-amber-800 mt-1">No portrait: this character will be drawn from text only and may change between scenes.</p>
+                  <button
+                    type="button"
+                    onClick={() => { setError(null); makePortrait(character); }}
+                    disabled={busy(character.id)}
+                    data-testid="make-portrait"
+                    className="mt-1 px-2 py-1 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs rounded transition-colors flex items-center gap-1"
+                  >
+                    {busy(character.id) ? <Loader className="w-3 h-3 animate-spin" /> : <UserPlus className="w-3 h-3" />}
+                    {busy(character.id) ? 'Making portrait...' : 'Make portrait'}
+                  </button>
+                </>
+              )}
+              <MediaJobList jobs={portraitJobs(character.id)} compact className="mt-1 text-xs" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {unmatched.length > 0 && (
+        <div className="mt-3" data-testid="cast-unmatched">
+          <p className="text-xs font-semibold text-gray-700">Not in your cast</p>
+          <p className="text-xs text-gray-600">{unmatched.join(', ')}. Drawn from the scene text only; add them on the Characters tab to keep them consistent.</p>
+        </div>
+      )}
+    </div>
+  );
 };
 
 const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
@@ -73,6 +225,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const transcriptTitle = (id) => transcripts.find(t => String(t.id) === String(id))?.title || 'Untitled transcript';
   const draft = selectedTranscript ? drafts[selectedTranscript] : null;
   const parsedScenes = draft?.scenes?.length ? draft.scenes : null;
+  const styleId = FILM_STYLES.some(st => st.id === draft?.style) ? draft.style : DEFAULT_FILM_STYLE;
 
   const jobsHere = animationJobs.filter(j => String(j.target?.id) === String(selectedTranscript));
   const filmJob = jobsHere.find(j => j.status === 'running' && !isSceneJob(j));
@@ -127,7 +280,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
 
       // Saved in the book (autosave persists it), so the scenes survive
       // leaving the tab or reloading.
-      writeDraft(transcriptId, () => ({ scenes: result.scenes, parsedAt: new Date().toISOString() }));
+      writeDraft(transcriptId, (old) => ({ ...(old?.style ? { style: old.style } : {}), scenes: result.scenes, parsedAt: new Date().toISOString() }));
       choose(transcriptId, 'scenes');
     } catch (error) {
       setActionError('Failed to parse transcript: ' + error.message);
@@ -143,11 +296,13 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
     }));
   };
 
+  const setFilmStyle = (style) => writeDraft(selectedTranscript, (d) => d && ({ ...d, style }));
+
   const startRender = async (scenes, label, startingKey) => {
     setStarting(startingKey);
     setActionError(null);
     try {
-      await startJob('animation', { type: 'animation', id: selectedTranscript }, { scenes, options: RENDER_OPTIONS }, label);
+      await startJob('animation', { type: 'animation', id: selectedTranscript }, { scenes, options: { ...RENDER_OPTIONS, style: styleId } }, label);
     } catch (error) {
       setActionError(`Video generation failed: ${error.message}`);
     } finally {
@@ -309,6 +464,8 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
 
           <MediaJobList jobs={[...sceneJobs, ...failedHere]} className="mb-4" />
 
+          <FilmCastPanel scenes={parsedScenes} characters={data.characters || []} styleId={styleId} />
+
           <div className="space-y-4 max-h-96 overflow-y-auto mb-6">
             {parsedScenes.map((scene, idx) => (
               <div key={idx} className="border-2 border-gray-200 rounded-lg p-4 hover:border-blue-300 transition-colors">
@@ -383,6 +540,8 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
             ))}
           </div>
 
+          <FilmStylePicker value={styleId} onChange={setFilmStyle} />
+
           <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 mb-4">
             <p className="text-blue-900 font-medium text-sm flex items-center gap-1">
               <Zap className="w-4 h-4" />
@@ -403,7 +562,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
             className="w-full px-6 py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-bold text-lg flex items-center justify-center gap-3"
           >
             {starting === 'film' ? <Loader className="w-6 h-6 animate-spin" /> : <Video className="w-6 h-6" />}
-            Generate Animation Film ({parsedScenes.length} scenes)
+            Generate {filmStyle(styleId).label} Film ({parsedScenes.length} scenes)
           </button>
         </div>
       )}
@@ -436,18 +595,19 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                   className={`p-3 rounded-lg border-l-4 flex items-center gap-3 ${
                     scene.status === 'failed' ? 'bg-red-50 border-red-500' :
                     scene.status === 'completed' ? 'bg-green-50 border-green-500' :
-                    scene.status === 'rendering' ? 'bg-blue-50 border-blue-500' :
+                    scene.status === 'rendering' || scene.status === 'keyframe' ? 'bg-blue-50 border-blue-500' :
                     'bg-gray-50 border-gray-400'
                   }`}
                 >
                   {scene.status === 'completed' ? <CheckCircle2 className="w-4 h-4 text-green-600" />
                     : scene.status === 'failed' ? <AlertCircle className="w-4 h-4 text-red-600" />
-                    : scene.status === 'rendering' ? <Loader className="w-4 h-4 animate-spin text-blue-600" />
+                    : scene.status === 'rendering' || scene.status === 'keyframe' ? <Loader className="w-4 h-4 animate-spin text-blue-600" />
                     : <Clock className="w-4 h-4 text-gray-500" />}
                   <p className="text-sm font-medium text-gray-900 flex-1">
                     Scene {scene.sceneNumber}{sceneTitle(scene.sceneNumber) ? `: ${sceneTitle(scene.sceneNumber)}` : ''}
                     {scene.error && <span className="block text-xs text-red-700 font-normal">{scene.error}</span>}
                   </p>
+                  <KeyframeThumb url={scene.keyframeUrl} sceneNumber={scene.sceneNumber} />
                   <span className={`text-xs mono ${state.cls}`}>{state.label}</span>
                 </div>
               );
@@ -470,6 +630,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                     <h4 className="font-bold text-gray-900 text-lg">{project.title}</h4>
                     <div className="flex gap-4 text-sm text-gray-600 mt-1">
                       <span>{project.scenes?.length || 0} scenes</span>
+                      {project.style && <span data-testid="project-style">{filmStyle(project.style).label}</span>}
                       {(project.finalVideo?.duration || videoDurations[project.id]) > 0 && (
                         <span>{formatDuration(project.finalVideo?.duration || videoDurations[project.id])}</span>
                       )}
@@ -529,10 +690,14 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                   </summary>
                   <div className="mt-2 space-y-2">
                     {project.scenes?.map((scene, idx) => (
-                      <div key={idx} className="bg-gray-50 rounded p-2 text-xs">
-                        <span className="font-bold">Scene {scene.sceneNumber}:</span> {scene.title}
-                        {scene.status === 'completed' && <span className="ml-2 text-green-600">Done</span>}
-                        {scene.status === 'failed' && <span className="ml-2 text-red-600">Failed</span>}
+                      <div key={idx} className="bg-gray-50 rounded p-2 text-xs flex items-center gap-3" data-testid="project-scene">
+                        <KeyframeThumb url={scene.keyframeUrl} sceneNumber={scene.sceneNumber} />
+                        <div className="flex-1 min-w-0">
+                          <span className="font-bold">Scene {scene.sceneNumber}:</span> {scene.title}
+                          {scene.status === 'completed' && <span className="ml-2 text-green-600">Done</span>}
+                          {scene.status === 'failed' && <span className="ml-2 text-red-600">Failed</span>}
+                          {scene.cast?.length > 0 && <span className="block text-gray-500">Cast: {scene.cast.join(', ')}</span>}
+                        </div>
                       </div>
                     ))}
                   </div>
