@@ -287,9 +287,9 @@ export default function StatisticsDashboard({ bookId }) {
                 <YAxis stroke="var(--dim2)" style={{ fontSize: '12px' }} />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#1f2937',
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
+                    backgroundColor: 'var(--bg2)',
+                    border: '1px solid var(--line2)',
+                    borderRadius: '3px',
                     color: 'var(--ink)',
                   }}
                 />
