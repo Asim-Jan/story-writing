@@ -197,6 +197,7 @@ export class BookRepository {
       'characters', 'locations', 'plotlines', 'world_building',
       'settings', 'notes', 'timelines', 'visuals',
       'audio_files', 'comic_pages', 'character_refs', 'animation_projects', 'metadata',
+      'transcripts',
       'status', 'word_count', 'chapter_count'
     ];
 
@@ -204,7 +205,7 @@ export class BookRepository {
       if (allowedFields.includes(key)) {
         // JSON fields need to be stringified
         if (['characters', 'locations', 'plotlines', 'world_building', 'settings',
-             'notes', 'timelines', 'visuals',
+             'notes', 'timelines', 'visuals', 'transcripts',
              'audio_files', 'comic_pages', 'character_refs', 'animation_projects', 'metadata'].includes(key)) {
           fields.push(`${key} = $${paramCount}`);
           values.push(JSON.stringify(updates[key]));
@@ -222,9 +223,22 @@ export class BookRepository {
 
     values.push(bookId, userId, expectedVersion);
 
+    // Owner OR an editor+ collaborator may save. (Viewers were already refused by
+    // the route's role check; the WHERE keeps that authority check in the row-level
+    // test so a stale client can't slip past a role change mid-edit.)
     const result = await query(
       `UPDATE books SET ${fields.join(', ')}
-       WHERE id = $${paramCount} AND owner_id = $${paramCount + 1} AND version = $${paramCount + 2} AND deleted_at IS NULL
+       WHERE id = $${paramCount}
+         AND version = $${paramCount + 2}
+         AND deleted_at IS NULL
+         AND (
+           owner_id = $${paramCount + 1}
+           OR EXISTS (
+             SELECT 1 FROM collaborators c
+             WHERE c.book_id = books.id AND c.user_id = $${paramCount + 1}
+               AND c.status = 'active' AND c.role IN ('editor', 'admin')
+           )
+         )
        RETURNING *`,
       values
     );

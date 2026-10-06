@@ -13,7 +13,13 @@ ADD COLUMN IF NOT EXISTS total_tokens INTEGER DEFAULT 0,
 ADD COLUMN IF NOT EXISTS estimated_cost_usd DECIMAL(10, 6) DEFAULT 0;
 
 -- Update column comment
-COMMENT ON COLUMN ai_generations.tokens_used IS 'DEPRECATED: Use total_tokens instead';
+DO $migrate$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'ai_generations' AND column_name = 'tokens_used') THEN
+    EXECUTE 'COMMENT ON COLUMN ai_generations.tokens_used IS ''DEPRECATED: Use total_tokens instead''';
+  END IF;
+END
+$migrate$;
 COMMENT ON COLUMN ai_generations.prompt_tokens IS 'Number of tokens in the prompt (input)';
 COMMENT ON COLUMN ai_generations.completion_tokens IS 'Number of tokens in the completion (output)';
 COMMENT ON COLUMN ai_generations.total_tokens IS 'Total tokens used (prompt + completion)';
@@ -113,7 +119,7 @@ ON CONFLICT (model_name) DO NOTHING;
 INSERT INTO ai_pricing (model_name, unit_price, unit_type, input_price_per_1m, output_price_per_1m) VALUES
 ('flux2-klein-9b', 0.025, 'image', 0, 0),   -- $0.025 per image (gateway image.*)
 ('character-sheet', 0.025, 'image', 0, 0),  -- $0.025 per sheet
-('tts-1', 15.00, '1M_chars', 0, 0),         -- $0.015/1k chars = $15.00 per 1M
+('tts-1', 15.00, '1M_chars', 0, 0)          -- $0.015/1k chars = $15.00 per 1M
 ON CONFLICT (model_name) DO NOTHING;
 
 -- GPT models (token-based pricing) — historical

@@ -31,6 +31,8 @@ import { VideoAssembler } from './services/videoAssembler.js';
 import rateLimit from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { runMigrations } from './db/migrate.js';
+import { readFileSync } from 'fs';
 import { initializeAuthorization } from './middleware/authorization.js';
 import { ApiResponse } from './utils/responses.js';
 import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
@@ -3326,7 +3328,8 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         character_refs: req.body.characterRefs,
         animation_projects: req.body.animationProjects,
         metadata: req.body.metadata,
-        chapters: req.body.chapters,  // Add chapters to be synced
+        transcripts: req.body.transcripts,  // was silently dropped — TranscriptsTab lost everything on save
+        chapters: req.body.chapters,  // synced in the same transaction as the book row
         status: req.body.status,
         word_count: req.body.wordCount || req.body.word_count,
         chapter_count: req.body.chapterCount || req.body.chapter_count,
@@ -3340,12 +3343,34 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
         }
       });
 
-      // Always use the current database version for optimistic locking
-      const expectedVersion = existing.version;
+      // Optimistic locking on the CLIENT's version: the browser sends the book
+      // version it loaded/last-merged; if the server has moved on (another tab,
+      // a collaborator, an AI write), the save is refused with 409 and the
+      // client can reload — instead of the old behaviour (always expect the
+      // server's own version = never conflicts = silent last-write-wins over
+      // in-flight edits).
+      const expectedVersion = Number.isInteger(req.body.version)
+        ? req.body.version
+        : existing.version;
+      const clientHadVersion = Number.isInteger(req.body.version);
 
-      const book = await updateBook(id, req.user.userId, updates, expectedVersion);
+      try {
+        var book = await updateBook(id, req.user.userId, updates, expectedVersion);
+      } catch (saveError) {
+        if (saveError.message.includes('CONFLICT')) {
+          const current = await getBook(id);
+          return res.status(409).json({
+            error: 'This book changed on the server while you were editing.',
+            serverVersion: current?.version,
+            serverUpdatedAt: current?.updated_at || current?.updatedAt
+          });
+        }
+        throw saveError;
+      }
 
-      // Track words written for writing goals
+      // A client that sent no version is a legacy client: accept the write but
+      // tell it what the current version now is so the NEXT save conflicts
+      // correctly. (book.version carries it; the mapper includes it.)
       if (updates.chapters && existing.chapters) {
         // Calculate word count difference
         const oldWordCount = existing.chapters.reduce((sum, ch) => sum + (ch.word_count || ch.wordCount || 0), 0);
@@ -8319,6 +8344,23 @@ app.post('/api/admin/run-migration', authenticateToken, requireAdmin, async (req
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason?.stack || reason);
 });
+
+// Schema + migrations at boot: schema.sql is all IF NOT EXISTS (idempotent), and
+// the migration runner applies each migrations/*.sql file once (schema_migrations).
+// A fresh install self-heals; a live one only runs what's new.
+(async () => {
+  try {
+    const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      await getPool().query(readFileSync(schemaPath, 'utf8'));
+      console.log('✓ schema.sql applied');
+    }
+    await runMigrations();
+  } catch (err) {
+    console.error('Migration failure — refusing to start on a half-migrated schema:', err.message);
+    process.exit(1);
+  }
+})();
 
 app.listen(PORT, () => {
   verifyEmailTransport().catch(() => {});

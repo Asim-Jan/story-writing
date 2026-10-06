@@ -40,7 +40,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });
 
-  const { data, setData, loading, saving, error, saveBook, autosave } = useBook(bookId);
+  const { data, setData, loading, loadError, saving, error, saveBook, autosave } = useBook(bookId);
   const { tier, hasFeature, loading: subLoading } = useSubscription();
 
   // Quota tracking state
@@ -578,6 +578,20 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
 
   if (showProfile) {
     return <ProfilePage onBack={() => setShowProfile(false)} />;
+  }
+
+  // A failed load is a hard stop — the old code rendered the EMPTY book on top
+  // of the failed GET, and one Save click overwrote the real book with blanks.
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center">
+        <div className="card p-8 max-w-md text-center">
+          <h2 className="text-lg font-bold text-[var(--ink)] mb-2">{loadError}</h2>
+          <p className="text-sm text-[var(--dim)] mb-5">The book could not be loaded, so editing is disabled to protect your data.</p>
+          <button onClick={onBack} className="btn pri">Back to Books</button>
+        </div>
+      </div>
+    );
   }
 
   return (
