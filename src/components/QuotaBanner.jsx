@@ -113,7 +113,7 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
           className="w-full flex items-center justify-between text-sm font-medium"
         >
           <span className={getQuotaColor(usage.current_books, limits.max_books)}>
-            Usage: {usage.current_books}/{limits.max_books} books
+            Usage: {usage.current_books}/{limits.max_books >= 999999 ? '∞' : limits.max_books} books
           </span>
           <ChevronDown size={16} />
         </button>
@@ -156,7 +156,7 @@ const QuotaBanner = ({ onNavigateToProfile }) => {
             <div className="flex items-center justify-between mb-2">
               <span className="lbl">Books</span>
               <span className={`text-sm font-bold num ${getQuotaColor(usage.current_books, limits.max_books)}`}>
-                {usage.current_books}/{formatNumber(limits.max_books)}
+                {usage.current_books}/{limits.max_books >= 999999 ? '∞' : formatNumber(limits.max_books)}
               </span>
             </div>
             <div className="w-full bg-[var(--glass2)] h-1.5">
