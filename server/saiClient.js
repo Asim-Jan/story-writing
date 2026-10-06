@@ -119,14 +119,18 @@ export async function saiChat({ model = SAI_CHAT, messages, max_tokens = 4096, t
  * The bridge returns {data:[{url}]} pointing at a public output URL.
  * @returns {Promise<{buffer: Buffer, url: string, model: string}>}
  */
-export async function saiImage({ prompt, model = 'flux2-klein-9b', size = '1024x1024', image = undefined, negative = undefined, seed = undefined }) {
+export async function saiImage({ prompt, model = 'flux2-klein-9b', size = '1024x1024', image = undefined, images = undefined, negative = undefined, seed = undefined, canvas = undefined }) {
   const openai = getSAIClient();
   // `image` (a data: URL) turns any recipe into an EDIT of that picture; the
   // character-sheet recipes require it. Send `size` explicitly: without it
   // the bridge resizes edits to the input's aspect.
   const body = { model, prompt, size, n: 1 };
   if (image) body.image = image;
+  // several references at once (qwen-image-2.1 only): characters + the previous shot
+  if (Array.isArray(images) && images.length) body.images = images;
   if (negative) body.negative = negative;
+  // canvas:'size' — a Qwen edit draws at `size` instead of the reference's shape
+  if (canvas) body.canvas = canvas;
   if (seed !== undefined) body.seed = seed;
 
   // Sheets and Qwen edits take 30 s warm and up to ~3 min cold. No SDK

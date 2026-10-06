@@ -48,10 +48,10 @@ Return ONLY valid JSON array:
   {
     "sceneNumber": 1,
     "title": "Brief scene title",
-    "visualPrompt": "Detailed visual description optimized for Veo 3 video generation, including camera angle, character actions, setting details, lighting, and atmosphere",
+    "visualPrompt": "What the camera sees: the characters by name and what they do, the setting, lighting and atmosphere. Do NOT name an art style (no photorealistic, cartoon, anime, 3D): the film's style is set separately and must stay the same in every scene",
     "cameraDirection": "wide shot | close-up | medium shot | pan left | zoom in | tracking shot",
     "duration": 8,
-    "characters": ["Character names from this scene"],
+    "characters": ["Names of the characters in this scene, EXACTLY as written in the Characters list"],
     "location": "Location name",
     "dialogue": "Any spoken dialogue in this scene",
     "audioPrompt": "Background sounds, music cues, sound effects",
@@ -60,7 +60,12 @@ Return ONLY valid JSON array:
   }
 ]
 
-Aim for 10-15 scenes per minute of story content.`;
+Aim for 10-15 scenes per minute of story content.
+
+CONSISTENCY: every scene is drawn from the characters' reference portraits, so
+always list who is on screen in "characters" using the exact names from the
+Characters list, and keep each character's look as described there. Keep
+"location" names identical between scenes that happen in the same place.`;
 
     const contextInfo = this.buildContextString(context);
 
