@@ -28,6 +28,16 @@ const emptyBook = () => ({
 // the content fields belong to the tab that just saved them.
 const SERVER_OWNED_FIELDS = ['id', 'version', 'updatedAt', 'createdAt', 'wordCount', 'chapterCount'];
 
+// Autosave's notion of "changed": the book minus everything the server owns,
+// including each chapter's id (a new chapter's client id becomes the server's
+// UUID after its first save), version and timestamp.
+const autosaveFingerprint = (book) => {
+  const copy = { ...book };
+  for (const field of SERVER_OWNED_FIELDS) delete copy[field];
+  copy.chapters = (book?.chapters || []).map(({ id, version, updatedAt, ...rest }) => rest);
+  return JSON.stringify(copy);
+};
+
 const ensureBookShape = (raw) => ({
   ...emptyBook(),
   ...raw,
@@ -229,9 +239,14 @@ export const useBook = (bookId) => {
     },
     onSaveError: (err) => {
       setSaving(false);
-      setError('Autosave failed — your changes are still here; press Save Now to retry.');
+      // saveBook already set the specific message for a conflict or an expired
+      // session; only a generic failure gets the retry hint.
+      if (err?.message !== 'Save conflict' && err?.message !== 'Session expired') {
+        setError('Autosave failed — your changes are still here; press Save Now to retry.');
+      }
       console.error('Autosave error:', err);
     },
+    fingerprint: autosaveFingerprint,
   });
 
   // Guard against leaving with unsaved work. (Autosave is on, but a save in

@@ -15,7 +15,7 @@ import { ListNode, ListItemNode } from '@lexical/list';
 import { LinkNode, AutoLinkNode } from '@lexical/link';
 import { CodeNode, CodeHighlightNode } from '@lexical/code';
 import { TableNode, TableCellNode, TableRowNode } from '@lexical/table';
-import { $convertToMarkdownString, $convertFromMarkdownString, TRANSFORMERS } from '@lexical/markdown';
+import { TRANSFORMERS } from '@lexical/markdown';
 import {
   $getRoot,
   $insertNodes,
@@ -248,30 +248,21 @@ function LoadContentPlugin({ initialContent }) {
       const root = $getRoot();
       // Skip the reload if the editor already holds exactly this content
       // (self-echo from our own onChange).
-      let current = '';
-      try {
-        current = $convertToMarkdownString(TRANSFORMERS);
-      } catch (e) {
-        current = root.getTextContent();
-      }
+      const current = root.getTextContent();
       lastLoadedRef.current = initialContent;
       if (current === initialContent) return;
 
       root.clear();
-      try {
-        $convertFromMarkdownString(initialContent, TRANSFORMERS);
-      } catch (err) {
-        // markdown parse failed — fall back to plain paragraphs so content
-        // is never LOST over a parse error
-        const paragraphs = initialContent.split(/\n\n+/);
-        const nodes = paragraphs.map(paraText => {
-          const paragraph = $createParagraphNode();
-          const textNode = $createTextNode(paraText);
-          paragraph.append(textNode);
-          return paragraph;
-        });
-        root.append(...nodes);
-      }
+      // plain-text load: paragraphs from blank-line splits (markdown parsing
+      // dropped — see the note in handleChange)
+      const paragraphs = initialContent.split(/\n\n+/);
+      const nodes = paragraphs.map(paraText => {
+        const paragraph = $createParagraphNode();
+        const textNode = $createTextNode(paraText);
+        paragraph.append(textNode);
+        return paragraph;
+      });
+      root.append(...nodes);
     });
   }, [editor, initialContent]);
 
@@ -372,10 +363,15 @@ export default function RichTextEditor({
       // bold/italic run into plain text and the SAVE dropped all formatting.
       // Markdown keeps it as data and the MarkdownShortcutPlugin already
       // accepts markdown input, so load and save use the same representation.
-      const md = $convertToMarkdownString(TRANSFORMERS);
+      // PLAIN TEXT stays the storage format: Lexical 0.37's markdown
+      // serializer escapes prose ('2*3' -> '2\*3'), so round-tripping through
+      // markdown rewrote stored chapters with backslashes, and the exporters
+      // printed raw ** and #. The editor's markdown SHORTCUTS still work
+      // while typing (the plugin parses them into real formatting); the
+      // storage stays plain.
       const text = root.getTextContent();
       setCurrentText(text);
-      onChange(md);
+      onChange(text);
     });
   };
 

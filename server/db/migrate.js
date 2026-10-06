@@ -10,7 +10,10 @@ import { query, getPool } from './postgres.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
-export async function runMigrations() {
+// `preexistingSchema`: did the books table exist BEFORE this boot ran schema.sql?
+// The caller must check that first. Asking here, after schema.sql has created
+// the tables, made a fresh install look like an old one and skipped 01-13.
+export async function runMigrations({ preexistingSchema = false } = {}) {
   let pool;
   try {
     pool = getPool();
@@ -25,9 +28,10 @@ export async function runMigrations() {
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
 
+  // numeric-aware order, so z100_* runs after z99_* (plain sort put it first)
   const files = fs.readdirSync(MIGRATIONS_DIR)
     .filter(f => f.endsWith('.sql'))
-    .sort();
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
 
   const { rows } = await query('SELECT name FROM schema_migrations');
   const applied = new Set(rows.map(r => r.name));
@@ -39,16 +43,12 @@ export async function runMigrations() {
   // process.exit(1) = an outage loop). If the schema is already populated,
   // record 01–13 as applied; only the genuinely new files (z98, z99, and
   // everything added after) actually run.
-  if (applied.size === 0) {
-    const booksTable = await query(`SELECT COUNT(*) AS n FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = 'books'`);
-    if (booksTable.rows[0].n > 0) {
-      const preRunner = files.filter(f => !f.startsWith('z'));
-      for (const f of preRunner) {
-        await query('INSERT INTO schema_migrations (name) VALUES ($1)', [f]);
-      }
-      console.log(`[migrate] baseline: marked ${preRunner.length} pre-runner migration(s) as applied on the existing schema`);
+  if (applied.size === 0 && preexistingSchema) {
+    const preRunner = files.filter(f => !f.startsWith('z'));
+    for (const f of preRunner) {
+      await query('INSERT INTO schema_migrations (name) VALUES ($1)', [f]);
     }
+    console.log(`[migrate] baseline: marked ${preRunner.length} pre-runner migration(s) as applied on the existing schema`);
   }
 
   const { rows: rows2 } = await query('SELECT name FROM schema_migrations');

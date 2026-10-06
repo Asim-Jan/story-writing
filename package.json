@@ -10,7 +10,8 @@
     "build": "eslint src server --quiet && vite build",
     "preview": "vite preview",
     "docker:up": "docker-compose up -d",
-    "docker:down": "docker-compose down"
+    "docker:down": "docker-compose down",
+    "test:regress": "node server/tests/regress.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.970.0",

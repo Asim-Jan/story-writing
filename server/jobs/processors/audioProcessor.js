@@ -42,7 +42,7 @@ export async function processAudioGeneration(job) {
   const { userId, bookId, chapterId, text, voice = 'alloy' } = job.data;
 
   try {
-    await updateJobStatus(job.id, { status: 'active', progress: 10 });
+    await updateJobStatus(job, { status: 'active', progress: 10 });
 
     // Friendly voice names map onto the SAI bridge's vibevoice set.
     const selectedVoice = VOICE_MAP[voice] || voice;
@@ -50,7 +50,7 @@ export async function processAudioGeneration(job) {
     // Check if text needs chunking
     const chunks = text.length > 4000 ? chunkText(text) : [text];
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'active',
       progress: 20,
       message: `Generating audio in ${chunks.length} chunk(s)...`
@@ -59,7 +59,7 @@ export async function processAudioGeneration(job) {
     // Generate audio for each chunk
     const audioBuffers = [];
     for (let i = 0; i < chunks.length; i++) {
-      await updateJobStatus(job.id, {
+      await updateJobStatus(job, {
         status: 'active',
         progress: 20 + (i / chunks.length) * 50,
         message: `Generating chunk ${i + 1}/${chunks.length}...`
@@ -72,7 +72,7 @@ export async function processAudioGeneration(job) {
       audioBuffers.push(buffer);
     }
 
-    await updateJobStatus(job.id, { status: 'active', progress: 70, message: 'Combining audio chunks...' });
+    await updateJobStatus(job, { status: 'active', progress: 70, message: 'Combining audio chunks...' });
 
     // Concatenate WAV chunks CORRECTLY. Buffer.concat glued whole WAV files
     // together — every chunk after the first carried its own 44-byte header
@@ -117,27 +117,22 @@ export async function processAudioGeneration(job) {
       'x-amz-meta-voice': selectedVoice,
     }, setMediaBookMapping);
 
-    await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });
+    await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });
 
     // Record on the chapter through the data service (the Redis book:{id}
     // store is empty under PostgreSQL-only mode; audioFiles were never
     // written to Postgres at all).
     try {
-      const book = await BookDataService.findById(bookId);
-      if (book) {
-        // AudiobookTab reads data.audioFiles[chapterId] — writing only
-        // chapter.audio meant the generated audio never appeared in the UI.
-        const audioFiles = { ...(book.audioFiles || {}), [chapterId]: uploadResult };
-        const chapters = book.chapters || [];
-        const chapter = chapters.find(c => c.id === chapterId);
-        if (chapter) chapter.audio = uploadResult;
-        await BookDataService.update(bookId, userId, { audio_files: audioFiles, chapters }, book.version);
-      }
+      // AudiobookTab reads data.audioFiles[chapterId]. Applied to a fresh read
+      // of the book, so edits made while the audio rendered are kept.
+      await BookDataService.applyServerWrite(bookId, userId, (book) => ({
+        audio_files: { ...(book.audioFiles || {}), [chapterId]: uploadResult },
+      }));
     } catch (err) {
       console.error('Audio generated but book update failed:', err.message);
     }
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'completed',
       progress: 100,
       message: 'Audio generated successfully',
@@ -147,7 +142,7 @@ export async function processAudioGeneration(job) {
     return uploadResult;
   } catch (error) {
     console.error('Audio generation job failed:', error);
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'failed',
       error: error.message,
       message: `Failed: ${error.message}`,

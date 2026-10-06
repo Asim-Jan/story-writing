@@ -9,7 +9,7 @@ export async function processImageGeneration(job) {
   const { userId, bookId, imageType, itemId, prompt, context } = job.data;
 
   try {
-    await updateJobStatus(job.id, { status: 'active', progress: 10 });
+    await updateJobStatus(job, { status: 'active', progress: 10 });
 
     // Build enhanced prompt based on image type
     let enhancedPrompt = prompt;
@@ -25,7 +25,7 @@ export async function processImageGeneration(job) {
       }
     }
 
-    await updateJobStatus(job.id, { status: 'active', progress: 30, message: 'Generating image with AI...' });
+    await updateJobStatus(job, { status: 'active', progress: 30, message: 'Generating image with AI...' });
 
     // Generate image via the SAI media bridge
     const { buffer: imageBuffer } = await saiImage({
@@ -34,7 +34,7 @@ export async function processImageGeneration(job) {
       size: '1024x1024',
     });
 
-    await updateJobStatus(job.id, { status: 'active', progress: 70, message: 'Uploading image...' });
+    await updateJobStatus(job, { status: 'active', progress: 70, message: 'Uploading image...' });
 
     // Upload to MinIO with access control mapping
     const filename = `${imageType}-${itemId || Date.now()}.png`;
@@ -46,14 +46,14 @@ export async function processImageGeneration(job) {
       itemId,
     }, setMediaBookMapping);
 
-    await updateJobStatus(job.id, { status: 'active', progress: 90, message: 'Updating book data...' });
+    await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });
 
     // Persist through the data service. The old code wrote book:{id} in Redis —
     // a store that has been EMPTY since DUAL_WRITE=false, so every generated
     // image's book update was silently discarded.
     try {
-      const book = await BookDataService.findById(bookId);
-      if (book) {
+      // Applied to a fresh read of the book (see applyServerWrite).
+      await BookDataService.applyServerWrite(bookId, userId, (book) => {
         const updates = {};
         if (imageType === 'cover') {
           // the book's own cover (this branch was lost in an earlier rewrite —
@@ -79,21 +79,19 @@ export async function processImageGeneration(job) {
             updates.chapters = chapters;
           }
         }
-        if (Object.keys(updates).length) {
-          await BookDataService.update(bookId, userId, updates, book.version);
-        }
-      }
+        return updates;
+      });
     } catch (err) {
       // The image itself is safe in MinIO; the book-reference update failing
       // must not fail the job — but it must be LOUD.
       console.error('Image generated but book update failed:', err.message);
-      await updateJobStatus(job.id, {
+      await updateJobStatus(job, {
         status: 'active', progress: 95,
         message: 'Image generated; book update failed — attach it manually',
       });
     }
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'completed',
       progress: 100,
       message: 'Image generated successfully',
@@ -103,7 +101,7 @@ export async function processImageGeneration(job) {
     return uploadResult;
   } catch (error) {
     console.error('Image generation job failed:', error);
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'failed',
       error: error.message,
       message: `Failed: ${error.message}`,

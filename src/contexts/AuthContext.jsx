@@ -59,7 +59,6 @@ export const AuthProvider = ({ children }) => {
 
   const login = (userData, authToken) => {
     setUser(userData);
-    window.dispatchEvent(new CustomEvent('auth:changed'));
     setToken(authToken);
     localStorage.setItem('token', authToken);
     localStorage.setItem('user', JSON.stringify(userData));

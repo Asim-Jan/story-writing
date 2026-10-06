@@ -12,6 +12,10 @@ export const useAutosave = (data, saveFunction, options = {}) => {
     onSaveStart,
     onSaveSuccess,
     onSaveError,
+    // What counts as a change. useBook passes one that ignores server-owned
+    // fields (version, timestamps, chapter ids), so merging a save response
+    // into state is not mistaken for an edit and re-saved every cycle.
+    fingerprint = (value) => JSON.stringify(value),
   } = options;
 
   const [saveStatus, setSaveStatus] = useState('saved'); // 'saving', 'saved', 'error', 'unsaved'
@@ -19,6 +23,8 @@ export const useAutosave = (data, saveFunction, options = {}) => {
   const timeoutRef = useRef(null);
   const previousDataRef = useRef(null);
   const isMountedRef = useRef(true);
+  const latestDataRef = useRef(data);
+  latestDataRef.current = data;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -30,7 +36,7 @@ export const useAutosave = (data, saveFunction, options = {}) => {
   useEffect(() => {
     if (!enabled) return;
 
-    const dataString = JSON.stringify(data);
+    const dataString = fingerprint(data);
 
     // First observation after (re)enable: adopt the current state as the
     // baseline WITHOUT scheduling. The old code's baseline adoption rode on
@@ -47,16 +53,10 @@ export const useAutosave = (data, saveFunction, options = {}) => {
       return;
     }
 
-    // While a save is in flight, just record the latest state — the in-flight
-    // save's completion compares against this and the next change schedules a
-    // follow-up. This replaces the old 'saved' branch that absorbed every edit
-    // into the baseline (the never-schedules bug) while keeping its intent:
-    // server responses merging into state must not mark the book unsaved.
+    // While a save is in flight, wait: when it completes, saveStatus changes,
+    // this effect runs again and compares the latest state against what was
+    // actually saved, so edits made mid-save are scheduled, not absorbed.
     if (saveStatus === 'saving') {
-      previousDataRef.current = dataString;
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      // NOTE: no re-schedule here — the in-flight save's completion handler
-      // compares JSON.stringify(data) against previousDataRef and re-marks.
       return;
     }
 
@@ -76,19 +76,14 @@ export const useAutosave = (data, saveFunction, options = {}) => {
       if (onSaveStart) onSaveStart();
 
       try {
+        const saving = fingerprint(latestDataRef.current);
         await saveFunction();
 
         if (isMountedRef.current) {
+          previousDataRef.current = saving; // the baseline is what was saved
           setSaveStatus('saved');
           setLastSaved(new Date());
-          // onSaveSuccess may re-baseline (the save merged server-owned fields
-          // into state); run it BEFORE the stale-closure baseline write, or
-          // its markBaseline is overwritten and autosave loops.
-          if (onSaveSuccess) {
-            onSaveSuccess(); // may call markBaseline with the merged state
-          } else {
-            previousDataRef.current = JSON.stringify(data);
-          }
+          if (onSaveSuccess) onSaveSuccess();
         }
       } catch (error) {
         if (isMountedRef.current) {
@@ -104,7 +99,7 @@ export const useAutosave = (data, saveFunction, options = {}) => {
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [data, delay, enabled, saveFunction, onSaveStart, onSaveSuccess, onSaveError, saveStatus]);
+  }, [data, delay, enabled, saveFunction, onSaveStart, onSaveSuccess, onSaveError, saveStatus, fingerprint]);
 
   // Manual save function
   const saveNow = async () => {
@@ -116,14 +111,12 @@ export const useAutosave = (data, saveFunction, options = {}) => {
     if (onSaveStart) onSaveStart();
 
     try {
+      const saving = fingerprint(latestDataRef.current);
       await saveFunction();
+      previousDataRef.current = saving;
       setSaveStatus('saved');
       setLastSaved(new Date());
-      if (onSaveSuccess) {
-        onSaveSuccess(); // may call markBaseline with the merged state
-      } else {
-        previousDataRef.current = JSON.stringify(data);
-      }
+      if (onSaveSuccess) onSaveSuccess();
     } catch (error) {
       setSaveStatus('error');
       if (onSaveError) onSaveError(error);
@@ -131,24 +124,10 @@ export const useAutosave = (data, saveFunction, options = {}) => {
     }
   };
 
-  // The save flow MERGES server-owned fields into the book state (version
-  // bumps) — that merge must not itself look like an edit. useBook calls
-  // markBaseline(postMergeState) in its onSaveSuccess; without it autosave
-  // re-saves the merged version every cycle.
-
-  // The save flow MERGES server-owned fields into the book state (version
-  // bumps) — that merge must not look like an edit. useBook calls
-  // markBaseline(postMergeState) in onSaveSuccess; without it autosave
-  // re-saves the merged version every cycle.
-  const markBaseline = (obj) => {
-    previousDataRef.current = JSON.stringify(obj);
-  };
-
   return {
     saveStatus,
     lastSaved,
     saveNow,
-    markBaseline,
     isUnsaved: saveStatus === 'unsaved',
     isSaving: saveStatus === 'saving',
   };

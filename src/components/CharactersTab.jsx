@@ -309,7 +309,7 @@ const CharactersTab = ({
       {/* Right panel - Character details or form */}
       {viewMode === 'list' && (
         <div className={`${isMobile && showingDetail ? 'fixed inset-0 z-50 bg-white' : isMobile ? 'hidden' : 'flex-1'} overflow-y-auto p-4 sm:p-6`}>
-          {(selectedCharacter || showForm) ? (
+          {selectedCharacter ? (
           // View existing character
           <div className="max-w-4xl mx-auto">
             <div className="bg-white lg:rounded-lg lg:shadow-sm lg:border lg:border-gray-200 p-3 sm:p-6 lg:p-8">

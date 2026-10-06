@@ -247,15 +247,30 @@ export class BookRepository {
       : await query(sql, values);
 
     if (result.rowCount === 0) {
-      // Check if book exists
-      const book = await this.findById(bookId);
-      if (!book) {
-        throw new Error('Book not found');
+      // Tell the three causes apart, using the same authority rule as the WHERE:
+      // missing book (404), no edit right (403), or a stale version (409). An
+      // editor with a stale version used to get 'Not authorized' (a 500).
+      const runner = existingClient ? (sql2, v) => existingClient.query(sql2, v) : query;
+      const found = await runner(
+        `SELECT b.version,
+                (b.owner_id = $2 OR EXISTS (
+                   SELECT 1 FROM collaborators c
+                   WHERE c.book_id = b.id AND c.user_id = $2
+                     AND c.status = 'active' AND c.role IN ('editor', 'admin'))) AS can_edit
+           FROM books b WHERE b.id = $1 AND b.deleted_at IS NULL`,
+        [bookId, userId]
+      );
+      const row = found.rows[0];
+      if (!row) {
+        throw Object.assign(new Error('Book not found'), { code: 'NOT_FOUND' });
       }
-      if (book.owner_id !== userId) {
-        throw new Error('Not authorized to update this book');
+      if (!row.can_edit) {
+        throw Object.assign(new Error('Not authorized to update this book'), { code: 'FORBIDDEN' });
       }
-      throw new Error('CONFLICT: Book was modified by another user. Please refresh and try again.');
+      throw Object.assign(
+        new Error('CONFLICT: Book was modified by another user. Please refresh and try again.'),
+        { code: 'CONFLICT' }
+      );
     }
 
     return result.rows[0];

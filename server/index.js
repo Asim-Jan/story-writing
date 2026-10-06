@@ -49,7 +49,7 @@ import {
   incrementAICounter,
   updateQuotaUsage
 } from './middleware/quotaEnforcement.js';
-import { getTierQuotas, getTierLimitsDisplay } from './config/tierQuotas.js';
+import { getTierQuotas, getTierLimitsDisplay, unlockedFeatures } from './config/tierQuotas.js';
 import { validatePassword } from './utils/passwordValidation.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail, sendPasswordChangedEmail, verifyEmailTransport, isEmailConfigured } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
@@ -57,6 +57,7 @@ import UserRepository from './db/repositories/UserRepository.js';
 import BookRepository from './db/repositories/BookRepository.js';
 import ChapterRepository from './db/repositories/ChapterRepository.js';
 import { getPool, query } from './db/postgres.js';
+import { BookDataService } from './db/dataService.js';
 import * as stripeService from './services/stripeService.js';
 import * as revenueAnalytics from './services/revenueAnalytics.js';
 import * as engagementAnalytics from './services/engagementAnalytics.js';
@@ -1427,7 +1428,8 @@ app.get('/api/subscriptions/my',
       if (result.rows.length === 0) {
         return res.json({
           has_subscription: false,
-          subscription: null
+          subscription: null,
+          unlocked_features: unlockedFeatures()
         });
       }
 
@@ -1442,7 +1444,8 @@ app.get('/api/subscriptions/my',
           current_period_end: subscription.current_period_end,
           cancel_at_period_end: subscription.cancel_at_period_end,
           canceled_at: subscription.canceled_at
-        }
+        },
+        unlocked_features: unlockedFeatures()
       });
     } catch (error) {
       console.error('Get subscription error:', error);
@@ -3346,14 +3349,10 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
     } else {
       // Update existing book
 
-      // Check if user owns the book or is a collaborator
-      const ownerId = existing.owner_id || existing.ownerId;
-      const isOwner = ownerId === req.user.userId || ownerId === req.user.id;
-      if (!isOwner) {
-        const collaborator = existing.collaborators?.find(c => c.email === req.user.email);
-        if (!collaborator || collaborator.role === 'viewer') {
-          return res.status(403).json({ error: 'You do not have permission to edit this book' });
-        }
+      // Owner or editor only. Viewers and commenters can read, not save.
+      const access = await checkBookAccess(id, req.user.userId);
+      if (!canEditBook(access)) {
+        return res.status(403).json({ error: 'You do not have permission to edit this book' });
       }
 
       // Map frontend fields to PostgreSQL fields
@@ -3404,7 +3403,13 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
       try {
         var book = await updateBook(id, req.user.userId, updates, expectedVersion);
       } catch (saveError) {
-        if (saveError.message.includes('CONFLICT')) {
+        if (saveError.code === 'FORBIDDEN') {
+          return res.status(403).json({ error: 'You do not have permission to edit this book' });
+        }
+        if (saveError.code === 'NOT_FOUND') {
+          return res.status(404).json({ error: 'Book not found' });
+        }
+        if (saveError.code === 'CONFLICT' || saveError.message.includes('CONFLICT')) {
           const current = await getBook(id);
           return res.status(409).json({
             error: 'This book changed on the server while you were editing.',
@@ -3933,6 +3938,12 @@ app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) =
 // ==================== BACKGROUND JOB GENERATION ENDPOINTS ====================
 
 // Queue image generation job
+// Writes to a book (its data, its jobs, its RPG campaign) need owner or editor.
+// Viewers and commenters can read but not change anything.
+function canEditBook(access) {
+  return Boolean(access?.has_access) && (access.access_role === 'owner' || access.access_role === 'editor');
+}
+
 app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, requireFeature('media_generation'), async (req, res) => {
   try {
     const { bookId, imageType, itemId, prompt, context } = req.body;
@@ -3940,7 +3951,7 @@ app.post('/api/jobs/queue/image', authenticateToken, aiLimiter, checkJobQuota, r
     // The queue routes previously accepted ANY bookId — a job for someone
     // else's book would run and write its output onto that book.
     const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'You do not have access to this book' });
     }
 
@@ -3980,7 +3991,7 @@ app.post('/api/jobs/queue/audio', authenticateToken, aiLimiter, checkJobQuota, r
     // The queue routes previously accepted ANY bookId — a job for someone
     // else's book would run and write its output onto that book.
     const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'You do not have access to this book' });
     }
 
@@ -4019,7 +4030,7 @@ app.post('/api/jobs/queue/content', authenticateToken, aiLimiter, checkJobQuota,
     // the queue routes previously accepted ANY bookId — a job for someone
     // else's book would run and read/write it
     const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'You do not have access to this book' });
     }
 
@@ -4050,7 +4061,7 @@ app.post('/api/jobs/queue/import', authenticateToken, aiLimiter, async (req, res
     // the queue routes previously accepted ANY bookId — a job for someone
     // else's book would run and read/write it
     const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'You do not have access to this book' });
     }
 
@@ -4080,7 +4091,7 @@ app.post('/api/jobs/queue/video', authenticateToken, aiLimiter, checkJobQuota, r
     // The queue routes previously accepted ANY bookId — a job for someone
     // else's book would run and write its output onto that book.
     const access = await checkBookAccess(bookId, req.user.userId || req.user.id);
-    if (!access?.has_access || access.access_role === 'viewer') {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'You do not have access to this book' });
     }
 
@@ -4170,7 +4181,9 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
         max_tokens: 500,
       });
 
-      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0])).trim();
+      // A reply that is all thinking leaves no text: fall back to the user's prompt
+      // (an empty prompt still generated, and still cost a request).
+      enhancedPrompt = (saiTextOf(promptEnhancement.choices[0]) || '').trim() || prompt;
       console.log('Enhanced prompt:', enhancedPrompt);
     }
 
@@ -4311,7 +4324,7 @@ Aim for 6-12 panels per page worth of content.`;
 });
 
 // Generate character reference image for consistent comic panels
-app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { characterId, character, style = 'comic book art' } = req.body;
 
@@ -4371,7 +4384,7 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
 });
 
 // Generate comic panel/scene image with character references
-app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, consumeAIQuota, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
 
@@ -5492,10 +5505,16 @@ app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res
         ...(isFullyAnalyzed && { completedAt: new Date().toISOString() }),
       };
 
-      book.updatedAt = new Date().toISOString();
-
-      // Save updated book
-      await updateBook(bookId, req.user.id, book);
+      // Save only what the analysis produced, onto a fresh read of the book
+      // (writing the whole stale copy back could revert edits made meanwhile)
+      await BookDataService.applyServerWrite(bookId, req.user.userId, (fresh) => ({
+        characters: book.characters,
+        locations: book.locations,
+        plotlines: book.plotlines,
+        timelines: book.timelines,
+        importAnalysis: book.importAnalysis,
+        metadata: fresh.metadata || {},
+      }));
 
       // Send completion
       sendProgress('complete', 'Import analysis complete!', {
@@ -5640,10 +5659,9 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireF
         createdAt: new Date().toISOString(),
       };
 
-      book.animationProjects = [...(book.animationProjects || []), animationProject];
-      book.updatedAt = new Date().toISOString();
-
-      await updateBook(bookId, req.user.id, book);
+      await BookDataService.applyServerWrite(bookId, req.user.userId, (fresh) => ({
+        animation_projects: [...(fresh.animationProjects || []), animationProject],
+      }));
 
       sendProgress({
         stage: 'complete',
@@ -5890,13 +5908,13 @@ app.post('/api/jobs/:jobId/retry', authenticateToken, async (req, res) => {
     // enqueued {} and the new job did nothing.
     const originalData = job.jobData || job.data || {};
     const newJob = await queue.add(originalData);
-    await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type,
+    const newJobId = await storeJobMetadata(newJob.id.toString(), job.userId, job.bookId, job.type,
       { description: `Retry of ${jobId}` }, originalData);
 
     // Clean up old job
     await cleanupJob(jobId, req.user.userId);
 
-    res.json({ success: true, newJobId: newJob.id.toString() });
+    res.json({ success: true, newJobId });
   } catch (error) {
     console.error('Retry job error:', error);
     res.status(500).json({ error: 'Failed to retry job' });
@@ -6290,7 +6308,7 @@ app.post('/api/rpg/generate', authenticateToken, aiLimiter, consumeAIQuota, asyn
 
     // Verify access (owner or collaborator)
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6339,14 +6357,9 @@ app.get('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     // Get RPG data
     const rpgKey = `rpg:${bookId}`;
-    const rpgDataStr = await getRPGData(bookId);
-
-    if (!rpgDataStr) {
-      return res.json({ rpgData: null });
-    }
-
-    const rpgData = JSON.parse(rpgDataStr);
-    res.json({ rpgData });
+    // getRPGData returns the parsed object (parsing it again threw on every load)
+    const rpgData = await getRPGData(bookId);
+    res.json({ rpgData: rpgData || null });
   } catch (error) {
     console.error('Get RPG data error:', error);
     res.status(500).json({ error: 'Failed to get RPG data' });
@@ -6370,7 +6383,7 @@ app.put('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -6402,7 +6415,7 @@ app.delete('/api/rpg/:bookId', authenticateToken, async (req, res) => {
 
     
     const access = await checkBookAccess(bookId, userId);
-    if (!access?.has_access) {
+    if (!canEditBook(access)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -7323,6 +7336,11 @@ app.delete('/api/users/api-keys/:key', authenticateToken, async (req, res) => {
 });
 
 // External API: Get book chapters
+// API keys are PARKED (Asim 2026-10-06; the scorecard's cut-or-park list):
+// the UI is gone and keys could not be used anyway (the routes compared a
+// book.userId that is never set). Answer 404 before any auth runs.
+app.use('/api/external', (req, res) => res.status(404).json({ error: 'Not found' }));
+
 app.get('/api/external/books/:bookId/chapters', authenticateApiKey, async (req, res) => {
   try {
     const { bookId } = req.params;
@@ -8474,19 +8492,28 @@ process.on('unhandledRejection', (reason) => {
 // Schema + migrations at boot: schema.sql is all IF NOT EXISTS (idempotent), and
 // the migration runner applies each migrations/*.sql file once (schema_migrations).
 // A fresh install self-heals; a live one only runs what's new.
-(async () => {
+// The server only starts listening once the schema is migrated: before, it
+// served requests (and passed health checks) against the old schema while the
+// migrations were still running, and on a failure it exited after serving.
+async function prepareDatabase() {
+  if (!process.env.DATABASE_URL && !process.env.POSTGRES_HOST) return;
   try {
+    // Decide "existing database" BEFORE schema.sql creates the tables.
+    const pre = await getPool().query("SELECT to_regclass('public.books') IS NOT NULL AS existed");
+    const preexistingSchema = pre.rows[0].existed;
     const schemaPath = path.join(__dirname, 'db', 'schema.sql');
     if (fs.existsSync(schemaPath)) {
       await getPool().query(readFileSync(schemaPath, 'utf8'));
       console.log('✓ schema.sql applied');
     }
-    await runMigrations();
+    await runMigrations({ preexistingSchema });
   } catch (err) {
     console.error('Migration failure — refusing to start on a half-migrated schema:', err.message);
     process.exit(1);
   }
-})();
+}
+
+await prepareDatabase();
 
 app.listen(PORT, () => {
   verifyEmailTransport().catch(() => {});

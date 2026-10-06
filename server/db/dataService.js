@@ -570,6 +570,30 @@ export class BookDataService {
   /**
    * Update book
    */
+  /**
+   * Server-side write (job processors). A job runs for seconds to minutes; the
+   * copy of the book it loaded at the start is stale by the time it saves, and
+   * writing that copy back silently reverted whatever the user saved meanwhile.
+   * This re-reads the book, lets `mutate` apply the job's ONE change to the
+   * fresh copy, and writes against the fresh version. A save landing between
+   * the read and the write is a CONFLICT: re-read and re-apply, a few times.
+   * @param {(book: object) => object|null} mutate - returns the updates, or null for nothing to write
+   */
+  static async applyServerWrite(bookId, userId, mutate, attempts = 4) {
+    for (let i = 1; ; i++) {
+      const book = await this.findById(bookId);
+      if (!book) throw Object.assign(new Error('Book not found'), { code: 'NOT_FOUND' });
+      const updates = mutate(book);
+      if (!updates || Object.keys(updates).length === 0) return book;
+      try {
+        return await this.update(bookId, userId, updates, book.version);
+      } catch (err) {
+        const conflict = err.code === 'CONFLICT' || String(err.message).includes('CONFLICT');
+        if (!conflict || i >= attempts) throw err;
+      }
+    }
+  }
+
   static async update(bookId, userId, updates, expectedVersion = null) {
     let book = null;
 
@@ -647,6 +671,11 @@ export class BookDataService {
               err.code = 'FORBIDDEN';
               throw err;
             }
+          }
+          if (row.version !== expectedVersion) {
+            const err = new Error('CONFLICT: Book was modified by another user. Please refresh and try again.');
+            err.code = 'CONFLICT';
+            throw err;
           }
           updated = this.mapBookFieldsFromPostgres(row);
           await client.query('UPDATE books SET updated_at = NOW() WHERE id = $1', [bookId]);

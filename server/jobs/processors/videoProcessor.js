@@ -8,7 +8,7 @@ export async function processVideoGeneration(job) {
   const { userId, bookId, transcriptId, config } = job.data;
 
   try {
-    await updateJobStatus(job.id, { status: 'active', progress: 5 });
+    await updateJobStatus(job, { status: 'active', progress: 5 });
 
     // Load through the data service (Redis book:{id} is empty in PG-only mode)
     const book = await BookDataService.findById(bookId);
@@ -23,13 +23,13 @@ export async function processVideoGeneration(job) {
     }
 
     // Parse transcript into scenes
-    await updateJobStatus(job.id, { status: 'active', progress: 10, message: 'Parsing transcript into scenes...' });
+    await updateJobStatus(job, { status: 'active', progress: 10, message: 'Parsing transcript into scenes...' });
 
     const parser = new VideoSceneParser();
     // the real method name (parseTranscript doesn't exist — the job crashed here)
     const scenes = await parser.parseTranscriptToScenes(transcript.content, config);
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'active',
       progress: 20,
       message: `Parsed ${scenes.length} scenes, generating videos...`,
@@ -43,7 +43,7 @@ export async function processVideoGeneration(job) {
       const scene = scenes[i];
       const sceneProgress = 20 + (i / scenes.length) * 60; // 20% to 80%
 
-      await updateJobStatus(job.id, {
+      await updateJobStatus(job, {
         status: 'active',
         progress: sceneProgress,
         message: `Generating scene ${i + 1} of ${scenes.length}...`,
@@ -61,7 +61,7 @@ export async function processVideoGeneration(job) {
     }
 
     // Assemble final video
-    await updateJobStatus(job.id, { status: 'active', progress: 85, message: 'Assembling final video...' });
+    await updateJobStatus(job, { status: 'active', progress: 85, message: 'Assembling final video...' });
 
     const assembler = new VideoAssembler(bookId);
     const finalVideo = await assembler.assembleFilm(sceneVideos, {
@@ -70,22 +70,22 @@ export async function processVideoGeneration(job) {
       userId,
     });
 
-    await updateJobStatus(job.id, { status: 'active', progress: 95, message: 'Updating book data...' });
+    await updateJobStatus(job, { status: 'active', progress: 95, message: 'Updating book data...' });
 
     // Persist through the data service (the Redis write was landing in an
     // empty store — animation projects never survived a reload)
-    const updatedBook = await BookDataService.findById(bookId);
-    const projects = updatedBook.animationProjects || [];
-    projects.push({
+    const project = {
       id: `anim-${Date.now()}`,
       transcriptId,
       video: finalVideo,
       scenes: sceneVideos,
       createdAt: new Date().toISOString(),
-    });
-    await BookDataService.update(bookId, job.data.userId, { animation_projects: projects }, updatedBook.version);
+    };
+    await BookDataService.applyServerWrite(bookId, job.data.userId, (fresh) => ({
+      animation_projects: [...(fresh.animationProjects || []), project],
+    }));
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'completed',
       progress: 100,
       message: 'Video generated successfully',
@@ -95,7 +95,7 @@ export async function processVideoGeneration(job) {
     return finalVideo;
   } catch (error) {
     console.error('Video generation job failed:', error);
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'failed',
       error: error.message,
       message: `Failed: ${error.message}`,

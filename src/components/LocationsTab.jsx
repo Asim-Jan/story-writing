@@ -301,7 +301,7 @@ const LocationsTab = ({
       {/* Right panel - Details or form */}
       {viewMode === 'list' && (
         <div className={`${isMobile && showingDetail ? 'fixed inset-0 z-50 bg-white' : isMobile ? 'hidden' : 'flex-1'} overflow-y-auto p-4 sm:p-6`}>
-          {(selectedLocation || showForm) ? (
+          {selectedLocation ? (
             // Detailed view
           <div className="max-w-4xl">
             <div className="flex items-start justify-between mb-4 sm:mb-6">

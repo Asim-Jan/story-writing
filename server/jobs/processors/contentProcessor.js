@@ -6,7 +6,7 @@ export async function processContentGeneration(job) {
   const { userId, bookId, contentType, itemId, config } = job.data;
 
   try {
-    await updateJobStatus(job.id, { status: 'active', progress: 10 });
+    await updateJobStatus(job, { status: 'active', progress: 10 });
 
     // Load through the data service — the Redis book:{id} store is EMPTY under
     // PostgreSQL-only mode, so the old load threw 'Book not found' for every job.
@@ -20,14 +20,14 @@ export async function processContentGeneration(job) {
 
     // Progress callback
     const onProgress = async (progress, message) => {
-      await updateJobStatus(job.id, {
+      await updateJobStatus(job, {
         status: 'active',
         progress: Math.min(90, 10 + progress * 0.8),
         message,
       });
     };
 
-    await updateJobStatus(job.id, { status: 'active', progress: 20, message: `Generating ${contentType}...` });
+    await updateJobStatus(job, { status: 'active', progress: 20, message: `Generating ${contentType}...` });
 
     // Generate content based on type
     switch (contentType) {
@@ -60,31 +60,41 @@ export async function processContentGeneration(job) {
         throw new Error(`Unknown content type: ${contentType}`);
     }
 
-    await updateJobStatus(job.id, { status: 'active', progress: 95, message: 'Saving to book...' });
+    await updateJobStatus(job, { status: 'active', progress: 95, message: 'Saving to book...' });
 
     // Persist the generated content onto the book (the old code re-read the
     // dead Redis store and saved NOTHING).
     try {
-      const updates = {};
-      if (contentType === 'chapter' && result) {
-        const chapters = book.chapters || [];
-        const ch = chapters.find(c => c.id === itemId) || {};
-        Object.assign(ch, typeof result === 'object' ? result : { content: String(result) });
-        updates.chapters = chapters;
-      } else if (Array.isArray(result)) {
-        if (contentType === 'character') updates.characters = [...(book.characters || []), ...result];
-        else if (contentType === 'location') updates.locations = [...(book.locations || []), ...result];
-        else if (contentType === 'plotline') updates.plotlines = [...(book.plotlines || []), ...result];
-      }
-      if (Object.keys(updates).length) {
-        await BookDataService.update(bookId, job.data.userId, updates, book.version);
-      }
+      // Applied to a FRESH read of the book: the copy loaded at the start of
+      // the job is stale, and writing it back reverted the user's edits.
+      await BookDataService.applyServerWrite(bookId, job.data.userId, (fresh) => {
+        if (contentType === 'chapter' && result) {
+          const generated = typeof result === 'object' ? result : { content: String(result) };
+          const chapters = (fresh.chapters || []).map(c => ({ ...c }));
+          const existing = itemId ? chapters.find(c => c.id === itemId) : null;
+          if (existing) {
+            Object.assign(existing, generated);
+          } else {
+            // no target chapter: add it as the next one (this used to report
+            // success and save nothing)
+            const next = chapters.reduce((m, c) => Math.max(m, Number(c.number || c.chapterNumber || c.chapter_number || 0)), 0) + 1;
+            chapters.push({ ...generated, number: next });
+          }
+          return { chapters };
+        }
+        if (Array.isArray(result)) {
+          if (contentType === 'character') return { characters: [...(fresh.characters || []), ...result] };
+          if (contentType === 'location') return { locations: [...(fresh.locations || []), ...result] };
+          if (contentType === 'plotline') return { plotlines: [...(fresh.plotlines || []), ...result] };
+        }
+        return null;
+      });
     } catch (err) {
       console.error('Content generated but book update failed:', err.message);
       throw err; // don't report success for content that was never saved
     }
 
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'completed',
       progress: 100,
       message: `${contentType} generated successfully`,
@@ -94,7 +104,7 @@ export async function processContentGeneration(job) {
     return result;
   } catch (error) {
     console.error('Content generation job failed:', error);
-    await updateJobStatus(job.id, {
+    await updateJobStatus(job, {
       status: 'failed',
       error: error.message,
       message: `Failed: ${error.message}`,

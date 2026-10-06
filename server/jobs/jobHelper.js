@@ -31,13 +31,11 @@ export async function queueImageGeneration(userId, bookId, imageType, itemId, pr
   };
 
   const job = await imageQueue.add(jobData);
-  await storeJobMetadata(job.id.toString(), userId, bookId, 'image', {
+  return storeJobMetadata(job.id.toString(), userId, bookId, 'image', {
     imageType,
     itemId,
     description: `Generating ${imageType} image`,
   }, jobData);
-
-  return job.id.toString();
 }
 
 /**
@@ -58,12 +56,10 @@ export async function queueAudioGeneration(userId, bookId, chapterId, text, voic
   };
 
   const job = await audioQueue.add(jobData);
-  await storeJobMetadata(job.id.toString(), userId, bookId, 'audio', {
+  return storeJobMetadata(job.id.toString(), userId, bookId, 'audio', {
     chapterId,
     description: `Generating audio for chapter`,
   }, jobData);
-
-  return job.id.toString();
 }
 
 /**
@@ -84,13 +80,11 @@ export async function queueContentGeneration(userId, bookId, contentType, itemId
   };
 
   const job = await contentQueue.add(jobData);
-  await storeJobMetadata(job.id.toString(), userId, bookId, 'content', {
+  return storeJobMetadata(job.id.toString(), userId, bookId, 'content', {
     contentType,
     itemId,
     description: `Generating ${contentType}`,
   }, jobData);
-
-  return job.id.toString();
 }
 
 /**
@@ -110,12 +104,10 @@ export async function queueImportAnalysis(userId, bookId, chapterIndex, chapter)
   };
 
   const job = await importQueue.add(jobData);
-  await storeJobMetadata(job.id.toString(), userId, bookId, 'import', {
+  return storeJobMetadata(job.id.toString(), userId, bookId, 'import', {
     chapterIndex,
     description: `Analyzing chapter ${chapterIndex + 1}`,
   }, jobData);
-
-  return job.id.toString();
 }
 
 /**
@@ -135,12 +127,10 @@ export async function queueVideoGeneration(userId, bookId, transcriptId, config)
   };
 
   const job = await videoQueue.add(jobData);
-  await storeJobMetadata(job.id.toString(), userId, bookId, 'video', {
+  return storeJobMetadata(job.id.toString(), userId, bookId, 'video', {
     transcriptId,
     description: `Generating animation from transcript`,
   }, jobData);
-
-  return job.id.toString();
 }
 
 /**
