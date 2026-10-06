@@ -87,6 +87,7 @@ const ChaptersTabView = ({
         },
         body: JSON.stringify({
           prompt,
+          bookId: data.id,
           context: {
             bookTitle: data.bookTitle,
             overview: data.overview,

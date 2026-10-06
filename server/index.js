@@ -4,6 +4,8 @@ import { createClient } from 'redis';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import axios from 'axios';
+import { speakLongText } from './utils/speech.js';
+import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
 import fs from 'fs';
@@ -3540,13 +3542,30 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
 // AI Generation endpoint
 app.post('/api/generate', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
-    const { type, prompt, context, enableWebSearch } = req.body;
+    const { type, prompt, enableWebSearch } = req.body;
 
     if (!type || !prompt) {
       return res.status(400).json({ error: 'Type and prompt are required' });
     }
 
-    // Build context string from book data
+    // Build context string from book data. A bare { bookId } (the AI Tools
+    // batch) is expanded from the saved book, after an access check.
+    let context = req.body.context;
+    if (context?.bookId && !context.bookTitle) {
+      const access = await checkBookAccess(context.bookId, req.user.userId);
+      const book = access?.has_access ? await getBook(context.bookId) : null;
+      if (book) {
+        context = {
+          bookTitle: book.title,
+          overview: book.description,
+          characters: book.characters,
+          locations: book.locations,
+          plotlines: book.plotlines,
+          chapters: book.chapters,
+          ...context,
+        };
+      }
+    }
     let contextString = '';
     if (context) {
       if (context.bookTitle) {
@@ -3563,6 +3582,15 @@ app.post('/api/generate', authenticateToken, aiLimiter, consumeAIQuota, async (r
       }
       if (context.plotlines && context.plotlines.length > 0) {
         contextString += `\n\nExisting Plotlines: ${context.plotlines.map(p => p.title).join(', ')}`;
+      }
+      // Chapters (the timeline and continuity tools need them; they were
+      // sent and dropped): title + the start of the summary or text
+      if (Array.isArray(context.chapters) && context.chapters.length > 0) {
+        const lines = context.chapters.slice(0, 40).map((c, i) => {
+          const gist = String(c.summary || c.content || '').replace(/\s+/g, ' ').slice(0, 240);
+          return `${c.number || i + 1}. ${c.title || 'Untitled'}${gist ? ` - ${gist}` : ''}`;
+        });
+        contextString += `\n\nChapters:\n${lines.join('\n')}`;
       }
     }
 
@@ -3903,7 +3931,11 @@ app.post('/api/generate-batch', authenticateToken, aiLimiter, async (req, res) =
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${req.headers.authorization?.split(' ')[1]}`
+            // the caller's own credentials: bearer and/or the session cookie
+            // (a cookie-only session sent 'Bearer undefined' and every
+            // variation failed silently)
+            ...(req.headers.authorization ? { 'Authorization': req.headers.authorization } : {}),
+            ...(req.headers.cookie ? { 'Cookie': req.headers.cookie } : {}),
           },
           body: JSON.stringify({
             type,
@@ -4129,15 +4161,32 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // Image Generation endpoint using OpenAI DALL-E
 app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
-    const { prompt, context, size } = req.body;
+    const { prompt, context, size, model, sourceImageUrl } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    // Size is now free-form (the bridge snaps to the model's supported grid);
-    // legacy DALL-E sizes still map through.
-    const imageSize = ['1024x1024', '1792x1024', '1024x1792'].includes(size) ? size : '1024x1024';
+    // The bridge renders up to 1536 px a side. The old DALL-E sizes (1792 px)
+    // map to the nearest 16:9 / 9:16 it supports; any other WxH from 256 to
+    // 1536 (multiples of 16) is used as given.
+    const LEGACY_SIZES = { '1792x1024': '1536x864', '1024x1792': '864x1536' };
+    const sizeMatch = /^(\d{3,4})x(\d{3,4})$/.exec(LEGACY_SIZES[size] || size || '');
+    const imageSize = sizeMatch && [sizeMatch[1], sizeMatch[2]].every(n => n >= 256 && n <= 1536 && n % 16 === 0)
+      ? `${sizeMatch[1]}x${sizeMatch[2]}`
+      : '1024x1024';
+    // flux2-klein-9b (fast, the default) or qwen-image-2.1 (best at text in
+    // the image and at faithful edits)
+    const imageModel = model === 'qwen-image-2.1' ? 'qwen-image-2.1' : 'flux2-klein-9b';
+    // Optional: edit one of the app's own images instead of drawing from scratch
+    let sourceImage;
+    if (sourceImageUrl) {
+      try {
+        sourceImage = await mediaUrlToDataUrl(req.user, sourceImageUrl);
+      } catch (err) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+    }
 
     // Get the pooled SAI client (validates the gateway key exists)
     const userOpenai = await getUserOpenAI(req.user.userId);
@@ -4156,6 +4205,11 @@ app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('me
       }
       if (context.locations && context.locations.length > 0) {
         contextString += `Locations: ${context.locations.map(l => l.name).join(', ')}\n`;
+      }
+      // The subject of THIS image, in full (the lists above are names only)
+      if (context.character) contextString += `Subject character: ${describeCharacter(context.character)}\n`;
+      if (context.location) {
+        contextString += `Subject location: ${[context.location.name, context.location.type, context.location.description].filter(Boolean).join(', ').slice(0, 600)}\n`;
       }
 
       const promptEnhancement = await userOpenai.chat.completions.create({
@@ -4192,8 +4246,9 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
 
     const imageResult = await saiImage({
       prompt: enhancedPrompt,
-      model: 'flux2-klein-9b',
+      model: imageModel,
       size: imageSize,
+      image: sourceImage,
     });
     const buffer = imageResult.buffer;
 
@@ -4249,7 +4304,7 @@ app.use('/comics', express.static(comicDir));
 // ============ COMIC GENERATION ROUTES ============
 
 // Parse transcript into comic panels
-app.post('/api/parse-transcript-to-comic', authenticateToken, async (req, res) => {
+app.post('/api/parse-transcript-to-comic', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { transcript, chapterTitle } = req.body;
 
@@ -4324,66 +4379,130 @@ Aim for 6-12 panels per page worth of content.`;
 });
 
 // Generate character reference image for consistent comic panels
-app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
+// ==================== CHARACTER REFERENCES ====================
+// Portrait, turnaround sheets (TripleView / QuadView LoRA on FLUX.2 Klein),
+// an expression sheet and a Qwen Image sheet. The server only generates and
+// stores the image; the client keeps the reference in
+// character.referenceImages and saves it with the book.
+
+function referenceError(res, error) {
+  if (error.status) return res.status(error.status).json({ error: error.message });
+  if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
+    return res.status(503).json({ error: 'AI unavailable', message: 'Image generation is unavailable right now. Please try again later.' });
+  }
+  console.error('Character reference generation error:', error.message);
+  return res.status(502).json({ error: 'Image generation failed', detail: error.message });
+}
+
+async function checkReferenceRequest(req, res) {
+  const { bookId, character } = req.body || {};
+  if (!character || !character.name) {
+    res.status(400).json({ error: 'Character data is required' });
+    return false;
+  }
+  if (bookId) {
+    const access = await checkBookAccess(bookId, req.user.userId);
+    if (!canEditBook(access)) {
+      res.status(403).json({ error: 'You do not have permission to edit this book' });
+      return false;
+    }
+  }
+  return true;
+}
+
+// A reference can take minutes (a cold portrait, then a sheet), and the site
+// sits behind Cloudflare, which drops any request that sends nothing for
+// 100 s. So the POST starts a job and returns 202 at once; the client polls
+// GET /api/characters/reference/jobs/:jobId. The job state lives in Redis for
+// a day. One quota slot per job, refunded only if nothing was produced.
+app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
-    const { characterId, character, style = 'comic book art' } = req.body;
-
-    if (!character || !character.name) {
-      return res.status(400).json({ error: 'Character data is required' });
+    const { bookId, kind, character, sourceImageUrl, style, prompt } = req.body || {};
+    if (!REFERENCE_KINDS.includes(kind)) {
+      return res.status(400).json({ error: `kind must be one of: ${REFERENCE_KINDS.join(', ')}` });
     }
+    if (!(await checkReferenceRequest(req, res))) return;
 
-    // Get the pooled SAI client (validates the gateway key exists)
-    try {
-      await getUserOpenAI(req.user.userId);
-    } catch (error) {
-      if (error.message === 'SAI_API_KEY_NOT_CONFIGURED') {
-        return res.status(503).json({
-          error: 'AI unavailable',
-          message: 'AI is unavailable right now (generate character references pending service config). Please try again later.'
-        });
+    const userId = req.user.userId;
+    const jobId = uuidv4();
+    const key = `charref:${jobId}`;
+    const redis = await getRedisClient();
+    await redis.set(key, JSON.stringify({ userId, kind, status: 'running', startedAt: new Date().toISOString() }), { EX: 86400 });
+    res.status(202).json({ jobId, status: 'running' });
+
+    (async () => {
+      let state;
+      try {
+        state = { status: 'done', ...(await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, prompt })) };
+      } catch (error) {
+        console.error('Character reference job failed:', error.message);
+        state = {
+          status: 'failed',
+          error: error.status ? error.message : 'Image generation failed',
+          detail: error.status ? undefined : error.message,
+          portrait: error.portrait || null,
+        };
+        if (!error.portrait) await refundAIQuota(userId).catch(err => console.error('AI quota refund failed:', err.message));
       }
-      throw error;
-    }
-
-    console.log(`Generating reference image for character: ${character.name}`);
-
-    // Build detailed character description
-    const characterPrompt = `${style}, character reference sheet, multiple angles, full body portrait of ${character.name}, ${character.age} years old, ${character.gender}, ${character.skinColor} skin, ${character.hairColor} hair, ${character.eyeColor} eyes, ${character.height}, ${character.build} build, ${character.personality}. Character design reference, turnaround, consistent character design, professional comic book style`;
-
-    const imageResult = await saiImage({
-      prompt: characterPrompt,
-      model: 'character-sheet',
-      size: '1536x1024',
-    });
-    const buffer = imageResult.buffer;
-
-    {
-      const filename = `character-ref-${characterId || Date.now()}-${uuidv4().slice(0, 8)}.png`;
-      const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
-        'x-amz-meta-type': 'character-reference',
-        'x-amz-meta-character-id': String(characterId || ''),
-      });
-      await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
-
-      console.log('Character reference saved to MinIO:', uploadResult.storageKey);
-
-      res.json({
-        imageUrl: `/api/media/comics/${filename}`,
-        filename,
-        characterId,
-        storageKey: uploadResult.storageKey,
-        bucket: uploadResult.bucket,
-      });
-      return;
-    }
-
+      await redis.set(key, JSON.stringify({ userId, kind, ...state, finishedAt: new Date().toISOString() }), { EX: 86400 });
+    })().catch(err => console.error('Character reference job bookkeeping failed:', err.message));
   } catch (error) {
-    console.error('Character reference generation error:', error);
-    res.status(500).json({ error: 'Failed to generate character reference', details: error.message });
+    referenceError(res, error);
   }
 });
 
-// Generate comic panel/scene image with character references
+app.get('/api/characters/reference/jobs/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const redis = await getRedisClient();
+    const raw = await redis.get(`charref:${req.params.jobId}`);
+    const job = raw ? JSON.parse(raw) : null;
+    if (!job || job.userId !== req.user.userId) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    const { userId, ...state } = job;
+    res.status(job.status === 'running' ? 202 : 200).json(state);
+  } catch (error) {
+    console.error('Character reference job lookup failed:', error.message);
+    res.status(500).json({ error: 'Failed to read the job' });
+  }
+});
+
+// The ready-made prompt for a kind, with no AI call: shown in the UI and
+// copyable (e.g. to make a sheet with Qwen Image elsewhere).
+app.post('/api/characters/reference-prompt', authenticateToken, (req, res) => {
+  const { kind, character, style } = req.body || {};
+  if (!REFERENCE_KINDS.includes(kind)) {
+    return res.status(400).json({ error: `kind must be one of: ${REFERENCE_KINDS.join(', ')}` });
+  }
+  if (!character || !character.name) {
+    return res.status(400).json({ error: 'Character data is required' });
+  }
+  res.json(buildReferencePrompt(kind, character, style, Boolean(character.imageUrl)));
+});
+
+// The Comic tab's original route: a turnaround sheet. It used to call the
+// character-sheet recipe with no picture, which the bridge refuses (500 on
+// every call).
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
+  try {
+    const { bookId, characterId, character, style } = req.body || {};
+    if (!(await checkReferenceRequest(req, res))) return;
+    const { reference, portrait } = await generateReference({ user: req.user, bookId, kind: 'turnaround', character, style });
+    res.json({
+      imageUrl: reference.imageUrl,
+      filename: reference.imageUrl.split('/').pop(),
+      characterId,
+      reference,
+      portrait,
+    });
+  } catch (error) {
+    if (error.portrait) {
+      return res.status(502).json({ error: 'Image generation failed', detail: error.message, portrait: error.portrait });
+    }
+    referenceError(res, error);
+  }
+});
+
 app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
@@ -4428,11 +4547,31 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
 
     console.log('Comic panel prompt:', fullPrompt.substring(0, 200) + '...');
 
-    const imageResult = await saiImage({
-      prompt: fullPrompt,
-      model: 'flux2-klein-9b',
-      size: '1024x1024',
-    });
+    // Consistency: a panel with ONE character who has a portrait is drawn as a
+    // Qwen Image edit of that portrait, so the face, hair and outfit carry
+    // over. Several characters (the bridge takes one input image) or no
+    // portrait: text only, as before.
+    let reference;
+    const lone = Array.isArray(characters) && characters.length === 1 ? characters[0] : null;
+    if (lone?.imageUrl) {
+      try {
+        reference = await mediaUrlToDataUrl(req.user, lone.imageUrl);
+      } catch (err) {
+        console.warn('Comic panel: portrait not usable, drawing from text:', err.message);
+      }
+    }
+    const imageResult = reference
+      ? await saiImage({
+          model: 'qwen-image-2.1',
+          image: reference,
+          size: '1024x1024',
+          prompt: `Draw the character from the image in a new comic panel. Keep their face, hairstyle, skin tone and outfit exactly as in the image. ${fullPrompt}`.slice(0, 2000),
+        })
+      : await saiImage({
+          prompt: fullPrompt,
+          model: 'flux2-klein-9b',
+          size: '1024x1024',
+        });
     const buffer = imageResult.buffer;
 
     {
@@ -4462,25 +4601,6 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
 // ============ TTS/AUDIOBOOK ROUTES ============
 
 // Helper function to chunk text for TTS (OpenAI TTS has 4096 char limit)
-function chunkText(text, maxLength = 4000) {
-  const chunks = [];
-  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-
-  let currentChunk = '';
-
-  for (const sentence of sentences) {
-    if ((currentChunk + sentence).length <= maxLength) {
-      currentChunk += sentence;
-    } else {
-      if (currentChunk) chunks.push(currentChunk.trim());
-      currentChunk = sentence;
-    }
-  }
-
-  if (currentChunk) chunks.push(currentChunk.trim());
-
-  return chunks;
-}
 
 // Generate TTS audio for a chapter
 app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
@@ -4500,32 +4620,8 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
     // Get the pooled SAI client (validates the gateway key exists)
     await getUserOpenAI(req.user.userId);
 
-    // Check if text needs chunking
-    const chunks = text.length > 4000 ? chunkText(text) : [text];
-    console.log(`Processing ${chunks.length} chunk(s)`);
-
-    const audioBuffers = [];
-
-    for (let i = 0; i < chunks.length; i++) {
-      console.log(`Generating chunk ${i + 1}/${chunks.length}`);
-
-      try {
-        const buffer = await saiSpeech({
-          text: chunks[i],
-          voice: selectedVoice,
-          speed: speed, // 0.25 to 4.0
-        });
-        audioBuffers.push(buffer);
-      } catch (chunkError) {
-        console.error(`Error generating chunk ${i + 1}:`, chunkError);
-        throw new Error(`Failed to generate audio chunk ${i + 1}: ${chunkError.message}`);
-      }
-    }
-
-    // Combine audio buffers if multiple chunks
-    const finalBuffer = audioBuffers.length > 1
-      ? Buffer.concat(audioBuffers)
-      : audioBuffers[0];
+    // Long text is spoken in pieces and merged into one valid WAV
+    const { buffer: finalBuffer } = await speakLongText(text, { voice: selectedVoice, speed });
 
     // Upload to MinIO (the bridge returns WAV)
     const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}-${uuidv4().slice(0, 8)}.wav`;
@@ -4547,6 +4643,7 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
       bucket: uploadResult.bucket,
     });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error('TTS generation error:', error);
     console.error('Error stack:', error.stack);
 
@@ -4606,10 +4703,10 @@ app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature
 
       console.log(`Generating audio for chapter ${i + 1}/${chapters.length}`);
 
-      const buffer = await saiSpeech({
-        text: `Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`,
+      // a whole chapter is far past one TTS request: speak it in pieces
+      const { buffer } = await speakLongText(`Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`, {
         voice: VOICE_MAP[voice] || voice,
-        speed: speed,
+        speed,
       });
 
       const usedVoice = VOICE_MAP[voice] || voice;
@@ -5231,7 +5328,7 @@ app.get('/api/books/import/:importId/status', authenticateToken, async (req, res
 });
 
 // Analyze imported book chapters with AI (streaming progress)
-app.post('/api/books/:bookId/analyze-import', authenticateToken, async (req, res) => {
+app.post('/api/books/:bookId/analyze-import', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { bookId } = req.params;
     const { chapterIndexes } = req.body; // Optional: specific chapters to analyze
@@ -5593,14 +5690,11 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireF
       return res.status(400).json({ error: 'Scenes array is required' });
     }
 
-    // Verify book ownership
     const book = await getBook(bookId);
     if (!book) {
       return res.status(404).json({ error: 'Book not found' });
     }
-
-    
-    if (book.ownerId !== req.user.id) {
+    if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -5608,10 +5702,15 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireF
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
 
     const sendProgress = (data) => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
+    // A render polls the bridge for minutes with nothing to say; a comment
+    // line every 15 s keeps Traefik and the browser from closing the stream.
+    const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
+    res.on('close', () => clearInterval(keepalive));
 
     try {
       sendProgress({ stage: 'starting', message: `Generating ${scenes.length} video scenes...` });
@@ -5644,6 +5743,7 @@ app.post('/api/video/generate-animation', authenticateToken, aiLimiter, requireF
         title: book.transcripts?.find(t => t.id.toString() === transcriptId)?.title || 'Animation',
         ...options,
       });
+      finalVideo.duration = results.filter(r => r.status === 'completed').reduce((n, r) => n + (r.duration || 0), 0);
 
       // Create animation project in book
       const animationProject = {
@@ -7075,7 +7175,7 @@ Respond to the player's action naturally and engagingly.`;
 });
 
 // Generate procedural quest
-app.post('/api/rpg/ai-dm/generate-quest', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/ai-dm/generate-quest', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { rpgData, gameState, partyLevel } = req.body;
 
@@ -7144,7 +7244,7 @@ Format as JSON with: title, description, objectives (array of strings), rewards 
 });
 
 // Generate balanced encounter
-app.post('/api/rpg/ai-dm/generate-balanced-encounter', authenticateToken, aiLimiter, async (req, res) => {
+app.post('/api/rpg/ai-dm/generate-balanced-encounter', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { party, location, difficulty, ruleSystem } = req.body;
 
@@ -7213,7 +7313,7 @@ Return as JSON: { description, enemies: [{name, hp, maxHp, ac, attackBonus, dama
 });
 
 // AI DM Narration (TTS)
-app.post('/api/rpg/ai-dm/narrate', authenticateToken, async (req, res) => {
+app.post('/api/rpg/ai-dm/narrate', authenticateToken, aiLimiter, consumeAIQuota, async (req, res) => {
   try {
     const { text } = req.body;
 

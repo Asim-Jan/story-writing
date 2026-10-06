@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Book, Image as ImageIcon, Plus, Trash2, Wand2, Loader, Save, Eye, Download, Grid, Layout, Film, FileText } from 'lucide-react';
 import ComicExportModal from './ComicExportModal';
+import { runReferenceJob, addReferences, characterFields } from './CharacterReferences';
 import { ComicRenderer } from '../utils/comicRenderer';
 import { CBZExporter } from '../utils/cbzExporter';
 import { ComicPDFExporter } from '../utils/comicPdfExporter';
@@ -43,32 +44,27 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
   const generateCharacterReference = async (character) => {
     setGeneratingRef(character.id);
     try {
-      const response = await fetch('/api/generate-character-reference', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          characterId: character.id,
-          character: character,
-          style: 'professional comic book art style'
-        }),
+      const result = await runReferenceJob({
+        bookId: data?.id,
+        kind: 'turnaround',
+        character: characterFields(character),
+        style: 'professional comic book art style'
       });
+      const refUrl = result?.reference?.imageUrl;
+      if (!refUrl) throw new Error('The server returned no image');
 
-      const result = await response.json();
+      setCharacterRefs(prev => ({ ...prev, [character.id]: refUrl }));
 
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to generate character reference');
-      }
-
-      const newRefs = {
-        ...characterRefs,
-        [character.id]: result.imageUrl
-      };
-      setCharacterRefs(newRefs);
-
-      // Save to book data
-      if (setData && saveBook) {
-        setData(prev => ({ ...prev, characterRefs: newRefs }));
-        await saveBook();
+      // Persist through autosave. A sheet takes minutes, so saveBook() here
+      // (even with overrides) would spread the book as it was at click time
+      // over anything saved meanwhile; the functional update merges into the
+      // current book instead, and the autosave writes it.
+      if (setData) {
+        setData(prev => ({
+          ...prev,
+          characterRefs: { ...(prev.characterRefs || {}), [character.id]: refUrl },
+          characters: (prev.characters || []).map(c => (c.id === character.id ? addReferences(c, result) : c))
+        }));
       }
 
       alert(`Character reference generated for ${character.name}!`);
@@ -229,6 +225,7 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          bookId: data?.id,
           sceneDescription: panel.sceneDescription,
           characters: panelCharacters,
           location: panelLocation,

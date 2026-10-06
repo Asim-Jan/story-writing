@@ -1,7 +1,8 @@
 import { saiImage } from '../../saiClient.js';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
-import { setMediaBookMapping } from '../../utils/mediaMapping.js';
+import { v4 as uuidv4 } from 'uuid';
+import { setMediaBookMapping, recordMediaOwner } from '../../utils/mediaMapping.js';
 import { BookDataService } from '../../db/dataService.js';
 
 // Redis client for book data
@@ -37,7 +38,9 @@ export async function processImageGeneration(job) {
     await updateJobStatus(job, { status: 'active', progress: 70, message: 'Uploading image...' });
 
     // Upload to MinIO with access control mapping
-    const filename = `${imageType}-${itemId || Date.now()}.png`;
+    // unguessable, and never overwrites an earlier image of the same item
+    const filename = `${imageType}-${uuidv4()}.png`;
+    const imageUrl = `/api/media/images/${filename}`;
 
     const uploadResult = await mediaStorage.upload('images', imageBuffer, filename, {
       bookId,
@@ -45,6 +48,7 @@ export async function processImageGeneration(job) {
       imageType,
       itemId,
     }, setMediaBookMapping);
+    await recordMediaOwner('images', filename, { ownerId: userId, bookId });
 
     await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });
 
@@ -58,24 +62,24 @@ export async function processImageGeneration(job) {
         if (imageType === 'cover') {
           // the book's own cover (this branch was lost in an earlier rewrite —
           // covers were generated, uploaded, then never attached)
-          updates.metadata = { ...(book.metadata || {}), coverImage: uploadResult };
+          updates.metadata = { ...(book.metadata || {}), coverImage: imageUrl };
         } else if (imageType === 'character' && itemId) {
           const character = (book.characters || []).find(c => c.id === itemId);
           if (character) {
-            character.visual = uploadResult;
+            character.imageUrl = imageUrl;
             updates.characters = book.characters;
           }
         } else if (imageType === 'location' && itemId) {
           const location = (book.locations || []).find(l => l.id === itemId);
           if (location) {
-            location.visual = uploadResult;
+            location.imageUrl = imageUrl;
             updates.locations = book.locations;
           }
         } else if (imageType === 'chapter' && itemId) {
           const chapters = book.chapters || [];
           const chapter = chapters.find(c => c.id === itemId);
           if (chapter) {
-            chapter.coverImage = uploadResult;
+            chapter.coverImage = imageUrl;
             updates.chapters = chapters;
           }
         }

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Plus, Users, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Network, Search } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
@@ -6,7 +6,30 @@ import BatchAISuggestionBox from './BatchAISuggestionBox';
 import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
+import CharacterReferences from './CharacterReferences';
 import { useIsMobile } from '../hooks/useMediaQuery';
+
+// Characters carry their looks in separate fields (there is no `description`),
+// so the portrait prompt is assembled from whichever of them are filled in.
+const APPEARANCE_FIELDS = [
+  ['gender', ''], ['age', 'age '], ['skinColor', 'skin: '], ['hairColor', 'hair: '],
+  ['eyeColor', 'eyes: '], ['height', 'height: '], ['build', 'build: '],
+  ['clothing', 'wearing '], ['distinguishingFeatures', ''], ['appearance', ''],
+];
+
+const describeAppearance = (character) => APPEARANCE_FIELDS
+  .filter(([field]) => String(character[field] ?? '').trim())
+  .map(([field, prefix]) => `${prefix}${String(character[field]).trim()}`)
+  .join(', ');
+
+const buildPortraitPrompt = (character) => {
+  const looks = describeAppearance(character);
+  return [
+    `Character portrait of ${character.name}${character.role ? `, ${character.role}` : ''}.`,
+    looks && `Appearance: ${looks}.`,
+    'Consistent, clearly readable face and outfit, neutral background.',
+  ].filter(Boolean).join(' ');
+};
 
 const CharactersTab = ({
   data,
@@ -43,6 +66,14 @@ const CharactersTab = ({
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef(null);
 
+  // The detail view renders a snapshot of the character; keep it in step with
+  // the book so a new portrait or reference shows without re-selecting.
+  useEffect(() => {
+    if (!selectedCharacter) return;
+    const live = data.characters.find(c => c.id === selectedCharacter.id);
+    if (live && live !== selectedCharacter) setSelectedCharacter(live);
+  }, [data.characters]);
+
   // Filter characters based on search query
   const filteredCharacters = data.characters.filter(char => {
     if (!searchQuery.trim()) return true;
@@ -64,8 +95,7 @@ const CharactersTab = ({
   const handleGenerateImage = async (character) => {
     setGeneratingImage(character.id);
     try {
-      // Build context-aware prompt
-      const prompt = `Create a character portrait for ${character.name}${character.role ? ` (${character.role})` : ''}. ${character.description || ''}`;
+      const prompt = buildPortraitPrompt(character);
 
       const response = await fetch('/api/generate-image', {
         method: 'POST',
@@ -74,6 +104,7 @@ const CharactersTab = ({
         },
         body: JSON.stringify({
           prompt,
+          bookId: data.id,
           context: {
             bookTitle: data.bookTitle,
             overview: data.overview,
@@ -82,7 +113,7 @@ const CharactersTab = ({
             character: {
               name: character.name,
               role: character.role,
-              description: character.description,
+              appearance: describeAppearance(character),
               personality: character.personality,
               background: character.background
             }
@@ -460,6 +491,14 @@ const CharactersTab = ({
                     </div>
                   </div>
                 )}
+
+                <CharacterReferences
+                  key={selectedCharacter.id}
+                  character={selectedCharacter}
+                  bookId={data.id}
+                  setData={setData}
+                  onOpenImage={setSelectedImage}
+                />
 
                 {selectedCharacter.background && (
                   <div className="pb-6 sm:pb-8 border-b border-gray-200">

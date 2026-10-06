@@ -2,6 +2,51 @@ import React, { useState } from 'react';
 import { Film, Play, Download, Trash2, Edit3, Loader, CheckCircle2, AlertCircle, Video } from 'lucide-react';
 import { getMediaUrl } from '../utils/mediaUrl';
 
+const videoError = (message) => `Video generation failed: ${message || 'unknown error'}`;
+
+// The server's own message for a failed request, when it sent one.
+const responseError = async (response) => {
+  const body = await response.json().catch(() => null);
+  return new Error(body?.error || body?.message || `request failed (${response.status})`);
+};
+
+// Read a server-sent event stream. Events end at a blank line and can arrive
+// split across reads, so the tail is buffered; lines starting with ':' are
+// comments (the server's keepalive) and only `data:` lines carry the event.
+const readEventStream = async (response, onEvent) => {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const dispatch = (block) => {
+    const payload = block
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).replace(/^ /, ''))
+      .join('\n');
+    if (!payload) return;
+    try {
+      onEvent(JSON.parse(payload));
+    } catch (e) {
+      console.error('Error parsing SSE:', e);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = done ? '' : blocks.pop();
+    blocks.forEach(dispatch);
+    if (done) return;
+  }
+};
+
+const formatDuration = (seconds) => {
+  const total = Math.round(seconds);
+  return `${Math.floor(total / 60)}m ${total % 60}s`;
+};
+
 const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const [selectedTranscript, setSelectedTranscript] = useState('');
   const [parsedScenes, setParsedScenes] = useState(null);
@@ -10,6 +55,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const [progress, setProgress] = useState([]);
   const [editingScene, setEditingScene] = useState(null);
   const [generatingScenes, setGeneratingScenes] = useState(new Set());
+  const [videoDurations, setVideoDurations] = useState({}); // project id -> seconds, from the video element
 
   const transcripts = data.transcripts || [];
   const animationProjects = data.animationProjects || [];
@@ -76,61 +122,24 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start generation');
+        throw await responseError(response);
       }
 
-      // Read SSE stream
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      await readEventStream(response, (event) => {
+        setProgress(prev => [...prev, event]);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
+        if (event.stage === 'complete') {
+          // Reload book data to get new animation project
+          window.location.reload();
+        } else if (event.stage === 'error') {
+          alert(videoError(event.message));
           setGenerating(false);
-          break;
         }
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.substring(6));
-              setProgress(prev => [...prev, data]);
-
-              if (data.stage === 'complete') {
-                // Reload book data to get new animation project
-                window.location.reload();
-              } else if (data.stage === 'error') {
-                // Show helpful error message
-                let errorMsg = data.message || 'Unknown error';
-                if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-                  errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
-                }
-                alert(errorMsg);
-                setGenerating(false);
-              }
-            } catch (e) {
-              console.error('Error parsing SSE:', e);
-            }
-          }
-        }
-      }
+      });
+      setGenerating(false);
     } catch (error) {
       console.error('Generation error:', error);
-
-      // Show helpful error message
-      let errorMsg = error.message || 'Unknown error';
-      if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-        errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
-      } else if (errorMsg.includes('network')) {
-        errorMsg = `Network error\n\nFailed to generate animation: ${errorMsg}\n\nPlease check your internet connection and API configuration.`;
-      } else {
-        errorMsg = 'Failed to generate animation: ' + errorMsg;
-      }
-
-      alert(errorMsg);
+      alert(videoError(error.message));
       setGenerating(false);
     }
   };
@@ -166,57 +175,22 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start generation');
+        throw await responseError(response);
       }
 
-      // Read SSE stream
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.substring(6));
-
-              if (data.stage === 'scene-complete' || data.stage === 'complete') {
-                // Mark scene as completed
-                updateScene(sceneNumber, { status: 'completed' });
-                alert(`Scene ${sceneNumber} generated successfully.`);
-              } else if (data.stage === 'error') {
-                updateScene(sceneNumber, { status: 'failed', error: data.message });
-
-                // Show helpful error message
-                let errorMsg = data.message || 'Unknown error';
-                if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-                  errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
-                }
-                alert(errorMsg);
-              }
-            } catch (e) {
-              console.error('Error parsing SSE:', e);
-            }
-          }
+      await readEventStream(response, (event) => {
+        if (event.stage === 'scene-complete' || event.stage === 'complete') {
+          // Mark scene as completed
+          updateScene(sceneNumber, { status: 'completed' });
+          alert(`Scene ${sceneNumber} generated successfully.`);
+        } else if (event.stage === 'error') {
+          updateScene(sceneNumber, { status: 'failed', error: event.message });
+          alert(videoError(event.message));
         }
-      }
+      });
     } catch (error) {
       console.error('Generation error:', error);
-
-      // Show helpful error message
-      let errorMsg = error.message || 'Unknown error';
-      if (errorMsg.includes('API is not enabled') || errorMsg.includes('PERMISSION_DENIED')) {
-        errorMsg = `⚠ Google API Not Enabled\n\n${errorMsg}\n\nPlease enable the Generative Language API in your Google Cloud Console, then try again.`;
-      } else if (errorMsg.includes('network')) {
-        errorMsg = `Network error\n\nFailed to generate scene: ${errorMsg}\n\nPlease check your internet connection and API configuration.`;
-      }
-
-      alert(errorMsg);
+      alert(videoError(error.message));
       updateScene(sceneNumber, { status: 'failed', error: error.message });
     } finally {
       setGeneratingScenes(prev => {
@@ -236,7 +210,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
           <h2 className="text-3xl font-bold">Animation Studio</h2>
         </div>
         <p className="text-purple-100">
-          Transform your transcripts into AI-generated animated films using Google Veo 3
+          Transform your transcripts into AI-generated animated films with SAI video
         </p>
       </div>
 
@@ -406,7 +380,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
               ⚡ Estimated Cost: ${(parsedScenes.length * 0.10).toFixed(2)} - ${(parsedScenes.length * 0.15).toFixed(2)}
             </p>
             <p className="text-blue-700 text-xs mt-1">
-              ~{parsedScenes.length} scenes × 8 seconds × $0.10-0.15 per scene using Veo 3
+              ~{parsedScenes.length} scenes of up to 10 seconds each, rendered by SAI video (a few minutes per scene)
             </p>
             <p className="text-blue-700 text-xs mt-1">
               Generation time: {Math.ceil(parsedScenes.length * 30 / 60)} - {Math.ceil(parsedScenes.length * 45 / 60)} minutes
@@ -469,7 +443,9 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                     <h4 className="font-bold text-gray-900 text-lg">{project.title}</h4>
                     <div className="flex gap-4 text-sm text-gray-600 mt-1">
                       <span>{project.scenes?.length || 0} scenes</span>
-                      <span>{Math.floor((project.finalVideo?.duration || 0) / 60)}m {(project.finalVideo?.duration || 0) % 60}s</span>
+                      {(project.finalVideo?.duration || videoDurations[project.id]) > 0 && (
+                        <span>{formatDuration(project.finalVideo?.duration || videoDurations[project.id])}</span>
+                      )}
                       <span>{(project.finalVideo?.size / 1024 / 1024).toFixed(1)} MB</span>
                       <span className="text-purple-600">✓ Completed</span>
                     </div>
@@ -506,6 +482,11 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                     <video
                       src={getMediaUrl(project.finalVideo, 'videos')}
                       controls
+                      preload="metadata"
+                      onLoadedMetadata={(e) => {
+                        const seconds = e.currentTarget.duration;
+                        if (Number.isFinite(seconds)) setVideoDurations(prev => ({ ...prev, [project.id]: seconds }));
+                      }}
                       className="w-full"
                       style={{ maxHeight: '400px' }}
                     >
@@ -539,9 +520,9 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-6">
         <h4 className="font-bold text-purple-900 mb-3">About Animation Studio</h4>
         <ul className="space-y-2 text-sm text-purple-800">
-          <li>• <strong>AI Video Generation:</strong> Uses Google Veo 3 to create cinematic 8-second video clips</li>
+          <li>• <strong>AI Video Generation:</strong> Each scene becomes a short cinematic clip (up to 10 seconds)</li>
           <li>• <strong>Scene Parsing:</strong> Automatically breaks transcripts into filmable scenes</li>
-          <li>• <strong>Native Audio:</strong> Veo 3 generates synchronized dialogue and sound effects</li>
+          <li>• <strong>Native Audio:</strong> clips come with generated sound</li>
           <li>• <strong>Professional Assembly:</strong> FFmpeg stitches scenes into complete films</li>
           <li>• <strong>High Quality:</strong> 1080p output with smooth transitions</li>
           <li>• <strong>Cloud Storage:</strong> All videos stored in MinIO, accessible from any device</li>

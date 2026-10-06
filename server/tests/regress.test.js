@@ -69,14 +69,47 @@ function freePort() {
   });
 }
 
-// A fake SAI gateway: chat completions get a small JSON reply; a prompt
-// containing GATEWAY_FAIL gets a 500 (to exercise the quota refund).
+// 1x1 PNG, and a small WAV whose header carries a LIST chunk (the bridge's do)
+const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+function makeWav(pcmBytes) {
+  const list = Buffer.concat([Buffer.from('LIST'), Buffer.from([4, 0, 0, 0]), Buffer.from('INFO')]);
+  const fmt = Buffer.alloc(24);
+  fmt.write('fmt ', 0); fmt.writeUInt32LE(16, 4); fmt.writeUInt16LE(1, 8); fmt.writeUInt16LE(1, 10);
+  fmt.writeUInt32LE(24000, 12); fmt.writeUInt32LE(48000, 16); fmt.writeUInt16LE(2, 20); fmt.writeUInt16LE(16, 22);
+  const dataHdr = Buffer.alloc(8); dataHdr.write('data', 0); dataHdr.writeUInt32LE(pcmBytes, 4);
+  const body = Buffer.concat([Buffer.from('WAVE'), fmt, list, dataHdr, Buffer.alloc(pcmBytes, 7)]);
+  const riff = Buffer.alloc(8); riff.write('RIFF', 0); riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+}
+
+// A fake SAI gateway. Chat gets a small JSON reply (a prompt containing
+// GATEWAY_FAIL gets a 500, to exercise the quota refund); images get a PNG;
+// speech gets a WAV. Every request body is recorded for the assertions.
 async function fakeGateway() {
   const port = await freePort();
+  const requests = [];
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => { body += d; });
     req.on('end', () => {
+      let parsed = null;
+      try { parsed = JSON.parse(body); } catch { /* not json */ }
+      requests.push({ path: req.url, body: parsed });
+      if (req.url.endsWith('/images/generations')) {
+        res.setHeader('Content-Type', 'application/json');
+        if (parsed?.model === 'character-sheet-quad' || body.includes('GATEWAY_FAIL')) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: 'render failed', type: 'media_bridge_error' } }));
+          return;
+        }
+        res.end(JSON.stringify({ created: 0, model: parsed?.model, data: [{ b64_json: PNG_B64 }] }));
+        return;
+      }
+      if (req.url.endsWith('/audio/speech')) {
+        res.setHeader('Content-Type', 'audio/wav');
+        res.end(makeWav(1000));
+        return;
+      }
       res.setHeader('Content-Type', 'application/json');
       if (body.includes('GATEWAY_FAIL')) {
         res.statusCode = 500;
@@ -92,7 +125,7 @@ async function fakeGateway() {
     });
   });
   await new Promise((r) => server.listen(port, r));
-  return { url: `http://127.0.0.1:${port}/v1`, close: () => server.close() };
+  return { url: `http://127.0.0.1:${port}/v1`, requests, close: () => server.close() };
 }
 
 // Boot the real server. Resolves when /api/health answers, or with the exit
@@ -114,7 +147,10 @@ async function bootServer(database, extraEnv = {}) {
     REDIS_PORT: String(REDIS.port),
     REDIS_PASSWORD: '',
     MINIO_ENDPOINT: '127.0.0.1',
-    MINIO_PORT: '1',
+    MINIO_PORT: process.env.REGRESS_MINIO_PORT || '1',
+    MINIO_ACCESS_KEY: process.env.REGRESS_MINIO_USER || 'unused',
+    MINIO_SECRET_KEY: process.env.REGRESS_MINIO_PASSWORD || 'unused',
+    MINIO_USE_SSL: 'false',
     ...extraEnv,
   };
   const child = spawn(process.execPath, ['index.js'], { cwd: SERVER_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -143,7 +179,7 @@ async function bootServer(database, extraEnv = {}) {
 }
 
 function api(base) {
-  return async (method, url, token, body) => {
+  const fn = async (method, url, token, body) => {
     const r = await fetch(base + url, {
       method,
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -153,6 +189,8 @@ function api(base) {
     try { json = await r.json(); } catch { /* not json */ }
     return { status: r.status, json };
   };
+  fn.base = base;
+  return fn;
 }
 
 async function makeUser(db, label) {
@@ -336,6 +374,16 @@ async function mainSuite(gateway) {
     check('delete removed only that job', (await queue.getJobStatus(refA)) === null && (await queue.getJobStatus(refB))?.userId === stranger.id);
     await redis.quit();
 
+    console.log('\n== chat wiring');
+    const chatCalls = gateway.requests.filter(q => q.path.endsWith('/chat/completions'));
+    check('every chat call turns thinking off', chatCalls.length > 0 && chatCalls.every(q => q.body?.chat_template_kwargs?.enable_thinking === false),
+      `${chatCalls.length} calls`);
+    r = await call('POST', '/api/rpg/ai-dm/generate-quest', owner.token, { bookId: book.id });
+    const qAfterQuest = await used();
+    check('RPG quest generation uses AI quota now', r.status === 404 || r.status === 400 || qAfterQuest > q1, `status ${r.status}`);
+
+    await mediaChecks({ call, db, gateway, owner, stranger, book });
+
     console.log('\n== server-side writes keep concurrent edits');
     Object.assign(process.env, {
       POSTGRES_DB: 'rg_main', POSTGRES_SSL: 'false', POSTGRES_HOST: PG.host, POSTGRES_PORT: String(PG.port),
@@ -354,6 +402,105 @@ async function mainSuite(gateway) {
   } finally {
     await srv.stop();
     await db.end();
+  }
+}
+
+// ─── media wiring: images, character references, speech ─────────────────
+async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
+  console.log('\n== media wiring');
+  if (!process.env.REGRESS_MINIO_PORT) {
+    console.log('  (skipped: set REGRESS_MINIO_PORT/USER/PASSWORD to a throwaway MinIO)');
+    return;
+  }
+  const imageCalls = () => gateway.requests.filter(q => q.path.endsWith('/images/generations'));
+  const usedQuota = async () => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [owner.id])).rows[0].ai_requests_today;
+  const character = { id: 'c1', name: 'Mira', gender: 'woman', age: 30, hairColor: 'copper', eyeColor: 'grey', build: 'wiry' };
+  // POST starts a job (202 + jobId); poll until it finishes
+  const refJob = async (token, body) => {
+    const start = await call('POST', '/api/characters/reference', token, body);
+    if (start.status !== 202) return start;
+    for (let i = 0; i < 100; i++) {
+      await new Promise(res => setTimeout(res, 100));
+      const r = await call('GET', `/api/characters/reference/jobs/${start.json.jobId}`, token);
+      if (r.status !== 202) return { ...r, jobId: start.json.jobId };
+    }
+    return { status: 0, json: { error: 'timed out' } };
+  };
+
+  let r = await call('POST', '/api/characters/reference-prompt', owner.token, { kind: 'qwen-sheet', character, style: 'ink' });
+  check('reference-prompt: Qwen sheet prompt carries the character', r.status === 200 && r.json.model === 'qwen-image-2.1' && /copper hair/.test(r.json.prompt) && r.json.size === '1536x1024',
+    JSON.stringify(r.json).slice(0, 200));
+  r = await call('POST', '/api/characters/reference-prompt', owner.token, { kind: 'turnaround', character });
+  check('reference-prompt: turnaround uses the character-sheet recipe', r.json?.model === 'character-sheet' && r.json?.needsSourceImage === true);
+  r = await call('POST', '/api/characters/reference-prompt', owner.token, { kind: 'nonsense', character });
+  check('reference-prompt: unknown kind = 400', r.status === 400);
+
+  // turnaround with no portrait: a portrait first, then the sheet as an EDIT of it
+  const before = imageCalls().length;
+  const q0 = await usedQuota();
+  r = await refJob(owner.token, { bookId: book.id, kind: 'turnaround', character });
+  const made = imageCalls().slice(before);
+  check('turnaround without a portrait: job done with reference + portrait', r.status === 200 && r.json?.status === 'done' && r.json?.reference?.kind === 'turnaround' && r.json?.portrait?.kind === 'portrait',
+    `status ${r.status} ${JSON.stringify(r.json).slice(0, 200)}`);
+  check('...the portrait is text-to-image (flux2-klein-9b, no input image)', made[0]?.body?.model === 'flux2-klein-9b' && !made[0]?.body?.image);
+  check('...the sheet is character-sheet WITH the portrait as a data URL, at 1536x1024',
+    made[1]?.body?.model === 'character-sheet' && /^data:image\/png;base64,/.test(made[1]?.body?.image || '') && made[1]?.body?.size === '1536x1024');
+  await new Promise(res => setTimeout(res, 300));
+  check('...one request = one quota slot', (await usedQuota()) === q0 + 1, `${q0} -> ${await usedQuota()}`);
+  const refUrl = r.json?.reference?.imageUrl;
+  let img = await fetch(`${call.base}${refUrl}`, { headers: { Authorization: `Bearer ${owner.token}` } });
+  check('...the sheet is readable by its owner', img.status === 200);
+  img = await fetch(`${call.base}${refUrl}`, { headers: { Authorization: `Bearer ${stranger.token}` } });
+  check('...and not by another user', img.status === 404);
+  const peek = await call('GET', `/api/characters/reference/jobs/${r.jobId}`, stranger.token);
+  check('...and the job itself is not readable by another user', peek.status === 404, `got ${peek.status}`);
+  const turnaroundJson = r.json;
+
+  // a sheet that fails after its portrait: the portrait comes back, slot kept
+  const qa = await usedQuota();
+  r = await refJob(owner.token, { bookId: book.id, kind: 'turnaround-quad', character });
+  await new Promise(res => setTimeout(res, 300));
+  check('a failed sheet still returns the portrait it made', r.json?.status === 'failed' && r.json?.portrait?.kind === 'portrait', JSON.stringify(r.json).slice(0, 200));
+  check('...and keeps the quota slot (a render was produced)', (await usedQuota()) === qa + 1, `${qa} -> ${await usedQuota()}`);
+  // nothing produced at all: refunded
+  const qb = await usedQuota();
+  r = await refJob(owner.token, { bookId: book.id, kind: 'portrait', character: { ...character, name: 'GATEWAY_FAIL' } });
+  await new Promise(res => setTimeout(res, 300));
+  check('a job that produced nothing fails and refunds the slot', r.json?.status === 'failed' && !r.json?.portrait && (await usedQuota()) === qb, `${qb} -> ${await usedQuota()} ${JSON.stringify(r.json).slice(0, 120)}`);
+
+  // using someone else's image as the source is refused
+  r = await refJob(stranger.token, { kind: 'turnaround', character: { ...character, imageUrl: refUrl } });
+  check('another user\'s image as the source fails (not found)', r.json?.status === 'failed' && /not found/i.test(r.json?.error || ''), JSON.stringify(r.json).slice(0, 160));
+
+  // the Comic tab's old route works again
+  r = await call('POST', '/api/generate-character-reference', owner.token, { bookId: book.id, characterId: 'c1', character: { ...character, imageUrl: turnaroundJson?.portrait?.imageUrl || refUrl } });
+  check('old /api/generate-character-reference = 200 with imageUrl', r.status === 200 && /^\/api\/media\/images\//.test(r.json?.imageUrl || ''), `got ${r.status} ${JSON.stringify(r.json).slice(0, 160)}`);
+
+  // a comic panel with one character who has a portrait is a Qwen edit of it
+  const portraitUrl = (await refJob(owner.token, { bookId: book.id, kind: 'portrait', character })).json?.reference?.imageUrl;
+  const b2 = imageCalls().length;
+  r = await call('POST', '/api/generate-comic-panel', owner.token, { bookId: book.id, sceneDescription: 'she opens the door', characters: [{ ...character, imageUrl: portraitUrl }] });
+  const panel = imageCalls()[b2];
+  check('comic panel with a lone portrait = qwen-image-2.1 edit of it', r.status === 200 && panel?.body?.model === 'qwen-image-2.1' && /^data:image/.test(panel?.body?.image || ''),
+    `status ${r.status} model ${panel?.body?.model}`);
+
+  // old DALL-E sizes map to sizes the bridge renders
+  const b3 = imageCalls().length;
+  r = await call('POST', '/api/generate-image', owner.token, { prompt: 'a lighthouse', size: '1792x1024', bookId: book.id });
+  check('generate-image maps 1792x1024 to 1536x864', r.status === 200 && imageCalls()[b3]?.body?.size === '1536x864', `size ${imageCalls()[b3]?.body?.size}`);
+
+  // long text to speech = one valid WAV
+  const longText = 'The tide came in slowly over the black sand. '.repeat(250); // ~11k chars, 3 chunks
+  r = await call('POST', '/api/generate-audio', owner.token, { text: longText, voice: 'nova', bookId: book.id });
+  const speechCalls = gateway.requests.filter(q => q.path.endsWith('/audio/speech'));
+  check('long text is spoken in several chunks', r.status === 200 && speechCalls.length >= 3, `status ${r.status}, ${speechCalls.length} calls`);
+  if (r.status === 200) {
+    const wav = Buffer.from(await (await fetch(`${call.base}${r.json.audioUrl}`, { headers: { Authorization: `Bearer ${owner.token}` } })).arrayBuffer());
+    const dataIdx = wav.indexOf('data', 12, 'ascii');
+    const dataLen = wav.readUInt32LE(dataIdx + 4);
+    check('...merged into ONE valid WAV (one data chunk, sizes add up)',
+      wav.readUInt32LE(4) === wav.length - 8 && dataLen === wav.length - dataIdx - 8 && wav.indexOf('RIFF', 4, 'ascii') === -1,
+      `riff ${wav.readUInt32LE(4)} len ${wav.length} data ${dataLen}`);
   }
 }
 

@@ -535,6 +535,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         },
         body: JSON.stringify({
           prompt: description,
+          bookId,
           context: {
             bookTitle: data.bookTitle,
             overview: data.overview,

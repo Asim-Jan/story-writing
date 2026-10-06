@@ -22,9 +22,10 @@ export class VideoGenerator {
    * @returns {Promise<Object>} Video result with storage info
    */
   async generateSceneVideo(scene, options = {}) {
-    const {
-      duration = 8, // seconds; the bridge clamps to the model's limits
-    } = options;
+    // The scene's own length when the parser gave one. The bridge renders 1-10 s
+    // (H3 is happiest around 4-6 s); it rejected nothing above 10, it just
+    // capped silently, so the stored duration was wrong.
+    const duration = Math.min(10, Math.max(1, Math.round(Number(scene.duration ?? options.duration ?? 5)) || 5));
 
     console.log(`Generating video for scene ${scene.sceneNumber}: ${scene.title}`);
 
@@ -38,7 +39,7 @@ export class VideoGenerator {
       const { jobId } = await saiVideoStart({
         prompt: videoPrompt,
         model: 'minimax-h3-fp8',
-        seconds: Math.min(15, Math.max(2, duration)),
+        seconds: duration,
       });
 
       // Poll until the job completes
