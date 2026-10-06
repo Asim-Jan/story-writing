@@ -136,7 +136,7 @@ export async function processImportAnalysis(job) {
 
     // Save through the data service (the Redis write landed in an empty store)
     await BookDataService.update(bookId, userId, {
-      importAnalysis: book.importAnalysis,
+      metadata: { ...(book.metadata || {}), importAnalysis: book.importAnalysis },
       characters: book.characters,
       locations: book.locations,
       plotlines: book.plotlines,

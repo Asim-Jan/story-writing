@@ -93,15 +93,18 @@ export async function processAudioGeneration(job) {
       return 44;
     };
     const first = audioBuffers[0];
-    const header = first.subarray(0, wavDataStart(first));
-    const pcmParts = [first.subarray(wavDataStart(first))];
+    const dataStart = wavDataStart(first);
+    const header = Buffer.from(first.subarray(0, dataStart)); // mutable copy
+    const pcmParts = [first.subarray(dataStart)];
     for (let i = 1; i < audioBuffers.length; i++) {
       const b = audioBuffers[i];
       pcmParts.push(b.subarray(wavDataStart(b)));
     }
     const pcmLength = pcmParts.reduce((n, p) => n + p.length, 0);
-    // rewrite the header's data-chunk size + RIFF size to the real totals
-    header.writeUInt32LE(36 + pcmLength, 4);
+    // The header may carry extra chunks (LIST etc.) — the fixed '36 + n'
+    // RIFF size only holds for a bare 44-byte header and came out SHORT.
+    // RIFF size = filesize - 8, whatever the chunk layout is.
+    header.writeUInt32LE(header.length - 8 + pcmLength, 4);
     const dataIdx = header.indexOf('data', 12, 'ascii');
     if (dataIdx >= 0) header.writeUInt32LE(pcmLength, dataIdx + 4);
     const buffer = Buffer.concat([header, ...pcmParts]);
@@ -127,7 +130,7 @@ export async function processAudioGeneration(job) {
         const chapter = chapters.find(c => c.id === chapterId);
         if (chapter) {
           chapter.audio = uploadResult;
-          await BookDataService.update(bookId, userId, { chapters }, book.version);
+          await BookDataService.update(bookId, userId, { audio_files: { ...(book.audioFiles || {}), [chapterId]: uploadResult }, chapters }, book.version);
         }
       }
     } catch (err) {
