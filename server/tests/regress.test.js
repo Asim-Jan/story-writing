@@ -490,6 +490,15 @@ async function mainSuite(gateway) {
 
     await mediaChecks({ call, db, gateway, owner, stranger, book });
 
+    console.log('\n== a database built from scratch has the same structure as prod (z104)');
+    const tpl = await db.query(`INSERT INTO books (owner_id, title, is_template) VALUES (NULL, 'Template', TRUE) RETURNING id`).catch(e => ({ error: e.message }));
+    check('a template book (no owner) can be stored', !tpl.error, tpl.error);
+    if (!tpl.error) await db.query('DELETE FROM books WHERE id = $1', [tpl.rows[0].id]);
+    const viewCols = async (v) => (await db.query(`SELECT column_name FROM information_schema.columns WHERE table_name = $1`, [v])).rows.map(r => r.column_name);
+    const [bookCols, activeCols] = [await viewCols('books'), await viewCols('active_books')];
+    const notInView = bookCols.filter(c => !activeCols.includes(c));
+    check('active_books carries every book column', notInView.length === 0, notInView.join(', '));
+
     console.log('\n== server-side writes keep concurrent edits');
     Object.assign(process.env, {
       POSTGRES_DB: 'rg_main', POSTGRES_SSL: 'false', POSTGRES_HOST: PG.host, POSTGRES_PORT: String(PG.port),
