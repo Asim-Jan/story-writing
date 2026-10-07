@@ -7,6 +7,7 @@ import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
 import CharacterReferences from './CharacterReferences';
+import ItemPictures from './ItemPictures';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
 import EnhanceAllBar from './EnhanceAllBar';
 import MissingFromBook from './MissingFromBook';
@@ -460,17 +461,8 @@ const CharactersTab = ({
                 onClose={() => setData(prev => closeEnhancement(prev, 'character', selectedCharacter.id))}
               />
 
-              {/* Character Image */}
-              {selectedCharacter.imageUrl && (
-                <div className="mb-6 sm:mb-8">
-                  <img
-                    src={selectedCharacter.imageUrl}
-                    alt={selectedCharacter.name}
-                    className="w-full max-h-64 sm:max-h-96 object-cover rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity"
-                    onClick={() => setSelectedImage({ imageUrl: selectedCharacter.imageUrl, description: selectedCharacter.name })}
-                  />
-                </div>
-              )}
+              {/* Character pictures: the main one, and every earlier one to use or delete */}
+              <ItemPictures kind="character" item={selectedCharacter} book={data} setData={setData} onOpenImage={setSelectedImage} />
 
               <div className="space-y-6 sm:space-y-8">
                 {(selectedCharacter.aliases || []).some(a => String(a).trim()) && (
