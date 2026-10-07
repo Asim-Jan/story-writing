@@ -1184,6 +1184,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                 setData={setData}
                 saveBook={saveBook}
                 bookId={bookId}
+                autosave={autosave}
               />
             </ErrorBoundary>
           )}
