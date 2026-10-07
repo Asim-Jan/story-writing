@@ -41,3 +41,10 @@ test('the public config exposes no secret', () => {
   const p = publicPortalConfig(loadPortalConfig({ ...good, SIGNUPS_CLOSED: '1' }));
   assert.deepEqual(p, { enabled: true, only: false, signupsClosed: true });
 });
+
+test('secrets from `--from-file` carry a trailing newline: it is trimmed', () => {
+  const c = loadPortalConfig({ ...good, PORTAL_CLIENT_SECRET: 'abc\n', PORTAL_SESSION_SECRET: 'x'.repeat(32) + '\n' });
+  assert.equal(c.clientSecret, 'abc');
+  assert.equal(c.cookieSecret, 'x'.repeat(32));
+  assert.equal(c.enabled, true);
+});

@@ -32,8 +32,9 @@ export function loadPortalConfig(env = process.env) {
     signupsClosed: flag(env.SIGNUPS_CLOSED),
     issuer: String(env.PORTAL_ISSUER || DEFAULT_ISSUER),
     clientId: String(env.PORTAL_CLIENT_ID || 'stories'),
-    clientSecret: String(env.PORTAL_CLIENT_SECRET || ''),
-    cookieSecret: String(env.PORTAL_SESSION_SECRET || ''),
+    // trimmed: a Secret made with --from-file keeps the file's trailing newline, which would break the Basic auth header
+    clientSecret: String(env.PORTAL_CLIENT_SECRET || '').trim(),
+    cookieSecret: String(env.PORTAL_SESSION_SECRET || '').trim(),
     redirectUri: String(env.PORTAL_REDIRECT_URI || (appUrl ? appUrl + '/auth/portal/callback' : '')),
     postLogoutRedirectUri: String(env.PORTAL_POST_LOGOUT_URI || (appUrl ? appUrl + '/' : '')),
     sessionTtlS: PORTAL_SESSION_TTL_S,
