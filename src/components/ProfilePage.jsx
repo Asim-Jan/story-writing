@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import UserAICosts from './UserAICosts';
 import WritingGoals from './WritingGoals';
 import StatisticsDashboard from './StatisticsDashboard';
+import { normalizeVoiceSpec, voiceKey, specFromKey, vibeVoiceLabel, languageOf } from '../utils/voices';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
@@ -23,9 +24,12 @@ const ProfilePage = ({ onBack }) => {
 
 
   // Preferences
+  // The AI model is not a per-user choice: Admin > AI Models & Costs sets the
+  // Writer and Assistant models for everyone. defaultVoice is a voice spec
+  // (see utils/voices); new audiobooks start with it.
+  const [voiceLists, setVoiceLists] = useState({ vibevoice: [], qwen: [], custom: [] });
   const [preferences, setPreferences] = useState({
-    defaultModel: 'sai-chat',
-    defaultVoice: 'alloy',
+    defaultVoice: null,
     autoSave: true,
     enableNotifications: true,
     theme: 'light'
@@ -92,6 +96,11 @@ const ProfilePage = ({ onBack }) => {
           setPreferences(prev => ({ ...prev, ...data.preferences }));
         }
       }
+      const voices = await fetch(`${API_URL}/api/audiobook/voices`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
+      }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+      if (voices) setVoiceLists({ vibevoice: voices.vibevoice || [], qwen: voices.qwen || [], custom: voices.custom || [] });
     } catch (error) {
       console.error('Error fetching settings:', error);
     } finally {
@@ -506,34 +515,39 @@ const ProfilePage = ({ onBack }) => {
                   <div className="space-y-6">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Default AI Model
+                        Default audiobook voice
                       </label>
                       <select
-                        value={preferences.defaultModel}
-                        onChange={(e) => setPreferences({ ...preferences, defaultModel: e.target.value })}
+                        value={voiceKey(preferences.defaultVoice)}
+                        onChange={(e) => setPreferences({ ...preferences, defaultVoice: specFromKey(e.target.value) })}
                         className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                        data-testid="default-voice-select"
                       >
-                        <option value="sai-chat">SAI Long-form (Best quality)</option>
-                        <option value="sai-chat-fast">SAI Fast (Quick & cost-effective)</option>
+                        {/* the saved voice, even before the lists load (or if it was deleted) */}
+                        {![...voiceLists.vibevoice.map(v => `vibevoice:${v.id}`), ...voiceLists.qwen.map(v => `qwen:${v.id}`), ...voiceLists.custom.map(v => `custom:${v.id}`)]
+                          .includes(voiceKey(preferences.defaultVoice)) && (
+                          <option value={voiceKey(preferences.defaultVoice)}>
+                            {normalizeVoiceSpec(preferences.defaultVoice).customVoiceId ? 'My voice' : vibeVoiceLabel(normalizeVoiceSpec(preferences.defaultVoice).voice)}
+                          </option>
+                        )}
+                        {[...new Set(voiceLists.vibevoice.map(v => languageOf(v.id, v.language)))].map(lang => (
+                          <optgroup key={lang} label={`VibeVoice: ${lang}`}>
+                            {voiceLists.vibevoice.filter(v => languageOf(v.id, v.language) === lang)
+                              .map(v => <option key={v.id} value={`vibevoice:${v.id}`}>{vibeVoiceLabel(v.id, v.language)}</option>)}
+                          </optgroup>
+                        ))}
+                        {voiceLists.qwen.length > 0 && (
+                          <optgroup label="Qwen voices">
+                            {voiceLists.qwen.map(v => <option key={v.id} value={`qwen:${v.id}`}>{v.name || v.id}{v.language ? ` (${v.language})` : ''}</option>)}
+                          </optgroup>
+                        )}
+                        {voiceLists.custom.length > 0 && (
+                          <optgroup label="My voices">
+                            {voiceLists.custom.map(v => <option key={v.id} value={`custom:${v.id}`}>{v.name}</option>)}
+                          </optgroup>
+                        )}
                       </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Default Voice for Audio
-                      </label>
-                      <select
-                        value={preferences.defaultVoice}
-                        onChange={(e) => setPreferences({ ...preferences, defaultVoice: e.target.value })}
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      >
-                        <option value="alloy">Alloy</option>
-                        <option value="echo">Echo</option>
-                        <option value="fable">Fable</option>
-                        <option value="onyx">Onyx</option>
-                        <option value="nova">Nova</option>
-                        <option value="shimmer">Shimmer</option>
-                      </select>
+                      <p className="text-xs text-gray-500 mt-1">New audiobooks start with this voice; each book can still pick its own.</p>
                     </div>
 
                     <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">

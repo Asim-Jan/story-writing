@@ -99,8 +99,6 @@ import {
   getUserByEmail,
   createUser,
   updateUser,
-  updateUserSettings,
-  getUserSettings,
   // Book operations
   getBook,
   getUserBooks,
@@ -8071,35 +8069,20 @@ app.get('/api/external/books', authenticateApiKey, async (req, res) => {
 
 // Get user settings (AI API keys and preferences)
 app.get('/api/users/settings', authenticateToken, async (req, res) => {
+  // Read user_settings directly. This used to go through the data adapter and
+  // answer the built-in defaults unless ai_config was set; ai_config held the
+  // per-user API keys that no longer exist, so saved preferences never came
+  // back (every Profile preference reset on the next load).
   try {
-    const userId = req.user.userId;
-
-    // Get user settings from PostgreSQL
-    const user = await getUserSettings(userId);
-
-    if (!user || !user.ai_config) {
-      return res.json({
-        openaiApiKey: null,
-        geminiApiKey: null,
-        preferences: {
-          defaultModel: 'sai-chat',
-          defaultVoice: 'alloy',
-          autoSave: true,
-          enableNotifications: true,
-          theme: 'light'
-        }
-      });
-    }
-
-    const preferences = (user && user.preferences) || {};
-
-    // BYO API keys were removed — all AI runs on the pooled SAI gateway key.
+    const { rows } = await query('SELECT preferences FROM user_settings WHERE user_id = $1', [req.user.userId]);
+    const preferences = rows[0]?.preferences || {};
     res.json({
       openaiApiKey: null,
       geminiApiKey: null,
       preferences: {
-        defaultModel: preferences.defaultModel || 'sai-chat',
-        defaultVoice: preferences.defaultVoice || 'alloy',
+        // a voice spec ({engine, voice} or {engine:'qwen', customVoiceId}); a
+        // legacy string (alloy, ...) still works, the client maps it
+        defaultVoice: preferences.defaultVoice || null,
         autoSave: preferences.autoSave !== undefined ? preferences.autoSave : true,
         enableNotifications: preferences.enableNotifications !== undefined ? preferences.enableNotifications : true,
         theme: preferences.theme || 'light'
@@ -8111,33 +8094,26 @@ app.get('/api/users/settings', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user settings (preferences only — API keys were removed with the SAI migration)
+// Update user settings (preferences only; the AI model is set for everyone in Admin > AI Models)
 app.put('/api/users/settings', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const { preferences } = req.body;
-
-    const settings = {
-      preferences: preferences || {
-        defaultModel: 'sai-chat',
-        defaultVoice: 'alloy',
-        autoSave: true,
-        enableNotifications: true,
-        theme: 'light'
-      }
+    const incoming = req.body?.preferences;
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return res.status(400).json({ error: 'Send { preferences: {...} }' });
+    }
+    const preferences = {
+      defaultVoice: incoming.defaultVoice && (typeof incoming.defaultVoice === 'string' || typeof incoming.defaultVoice === 'object') ? incoming.defaultVoice : null,
+      autoSave: incoming.autoSave !== false,
+      enableNotifications: incoming.enableNotifications !== false,
+      theme: typeof incoming.theme === 'string' ? incoming.theme.slice(0, 20) : 'light',
     };
-
-    // Use updateUserSettings from dataAdapter to handle both PostgreSQL and Redis
-    await updateUserSettings(userId, settings);
-
-    res.json({
-      message: 'Settings updated successfully',
-      settings: {
-        openaiApiKey: null,
-        geminiApiKey: null,
-        preferences: settings.preferences
-      }
-    });
+    // upsert: older accounts may have no user_settings row
+    await query(
+      `INSERT INTO user_settings (user_id, preferences) VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET preferences = EXCLUDED.preferences, updated_at = NOW()`,
+      [req.user.userId, JSON.stringify(preferences)]
+    );
+    res.json({ message: 'Settings updated successfully', settings: { openaiApiKey: null, geminiApiKey: null, preferences } });
   } catch (error) {
     console.error('Error updating user settings:', error);
     res.status(500).json({ error: 'Failed to update settings' });

@@ -7,11 +7,16 @@ import { wordCount } from './text.js';
 // the signals can't place; the chat model only to find chapters in unbroken text.
 
 const FRONT = /\b(cover|title-?page|titlepage|copyright|copyright-page|dedication|epigraph|toc|contents|table of contents|halftitle|half-title|frontmatter|front-matter|imprint|praise|also by)\b/i;
-const BACK = /\b(about the author|about-the-author|acknowledg(e)?ments?|backmatter|back-matter|afterword by|colophon|also available|other books|notes|appendix|index|glossary|bibliography)\b/i;
+const BACK = /\b(about the author|about-the-author|acknowledg(e)?ments?|backmatter|back-matter|afterword by|colophon|also available|other books|notes|appendix|index|glossary|bibliography|excerpt|sneak peek|preview of|teaser|bonus chapter from|author[’']?s note|a note from the author|reading group|discussion questions|book club|what[’']?s next|next on your reading list|newsletter)\b/i;
+// A title that names a story division: "Chapter One", "Chapter 3: ...", "Prologue", "Part Two".
+const STORY_TITLE = /^\s*(chapter|prologue|epilogue|interlude|part|book)\b/i;
 
+// kind + whether we are SURE (signals, chapter titles, real length). Unsure
+// kinds (sai-decide, fallbacks) never anchor where the story starts or ends.
 function signal(section) {
   const hay = `${section.title || ''} ${section.hints || ''}`;
   if (/\b(bodymatter|chapter|prologue|epilogue|part)\b/i.test(section.hints || '')) return 'chapter';
+  if (STORY_TITLE.test(section.title || '')) return 'chapter';
   if (FRONT.test(hay)) return 'front';
   if (BACK.test(hay)) return 'back';
   return null;
@@ -43,10 +48,14 @@ export async function classifySections(sections) {
   const unsure = [];
   sections.forEach((s, i) => {
     s.kind = signal(s);
-    // a long untitled-by-signal section is story; short unplaced ones get asked
+    // a long section no signal placed is story; short unplaced ones get asked
     if (!s.kind && wordCount(s.content) >= 400) s.kind = 'chapter';
+    s.sure = Boolean(s.kind);
     if (!s.kind) unsure.push(i);
   });
+  // where the story certainly starts and ends (sure chapters only)
+  const sureFirst = sections.findIndex(s => s.sure && s.kind === 'chapter');
+  const sureLast = sections.map(s => (s.sure && s.kind === 'chapter' ? 'c' : '')).lastIndexOf('c');
   if (unsure.length) {
     try {
       for (let k = 0; k < unsure.length; k += 32) { // 32 questions per call
@@ -55,16 +64,22 @@ export async function classifySections(sections) {
         batch.forEach((i, j) => { sections[i].kind = kinds[j]; });
       }
     } catch (err) {
-      console.warn('Import: section classification fell back to "chapter":', err.message);
-      unsure.forEach(i => { if (!sections[i].kind) sections[i].kind = 'chapter'; });
+      // no decide model: place by position (before the story = front, after = back)
+      console.warn('Import: section classification fell back to position:', err.message);
+      unsure.forEach(i => {
+        if (sections[i].kind) return;
+        sections[i].kind = sureFirst >= 0 && i < sureFirst ? 'front' : sureLast >= 0 && i > sureLast ? 'back' : 'chapter';
+      });
     }
   }
-  // front matter after the story starts, or back matter before it ends, is story
-  const firstStory = sections.findIndex(s => s.kind === 'chapter');
-  const lastStory = sections.map(s => s.kind).lastIndexOf('chapter');
+  // Front matter inside the story is story (a mid-book "Contents" is rare; an
+  // epigraph page between parts is common). Back matter is only moved into
+  // the story when a SURE chapter follows it: one long excerpt or a short
+  // "what's next" page at the end must not drag the acknowledgements in.
   sections.forEach((s, i) => {
-    if (s.kind === 'front' && firstStory >= 0 && i > firstStory && i < lastStory) s.kind = 'chapter';
-    if (s.kind === 'back' && lastStory >= 0 && i < lastStory && i > firstStory) s.kind = 'chapter';
+    if (s.kind === 'front' && sureFirst >= 0 && i > sureFirst && i < sureLast) s.kind = 'chapter';
+    if (s.kind === 'back' && sureLast >= 0 && i > sureFirst && i < sureLast) s.kind = 'chapter';
+    delete s.sure;
   });
   return sections;
 }
