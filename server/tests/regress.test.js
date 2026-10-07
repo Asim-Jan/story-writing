@@ -828,7 +828,8 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   r = await call('POST', jobsUrl, owner.token, { type: 'animation', target: { type: 'animation', id: 't1' }, params: {
     options: { style: 'animated' },
     scenes: [{ sceneNumber: 1, title: 'A', visualPrompt: 'Mira climbs the lighthouse stairs', characters: ['Mira'], duration: 1 },
-      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves FAIL_ONCE', characters: ['mira vale'], duration: 1 }] } });
+      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves FAIL_ONCE', characters: ['mira vale'], duration: 1 },
+      { sceneNumber: 3, title: 'C', visualPrompt: 'Mira keeps watching the waves', characters: ['Mira'], duration: 1, transition: 'continue' }] } });
   const animId = r.json?.job?.jobId;
   let sawProgress = false;
   for (let i = 0; i < 300; i++) {
@@ -838,26 +839,53 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     await new Promise(res => setTimeout(res, 500));
   }
   check('media job: animation reports per-scene progress', sawProgress);
-  check('media job: animation done with a project and a playable film', done?.status === 'done' && /^\/api\/media\/videos\//.test(done?.result?.project?.finalVideo?.videoUrl || '') &&
-    done?.result?.project?.finalVideo?.duration === 2, JSON.stringify(done).slice(0, 240));
+  const film = done?.result?.project?.finalVideo || {};
+  check('media job: animation done with a project and a playable film', done?.status === 'done' && /^\/api\/media\/videos\//.test(film.videoUrl || '') &&
+    film.duration > 1.5 && film.duration < 3, JSON.stringify(done).slice(0, 240));
+  // 2.23.55: the joins are real transitions, not a plain concat
+  check('film: joined with transitions (scene 2 dissolves in, scene 3 continues the shot)', film.joinVersion === 2
+    && film.transitions?.map(t => t.transition).join() === 'dissolve,continue' && film.transitions.every(t => t.seconds > 0), JSON.stringify(film.transitions));
   check('media job: the server did not write the book (no 409 for the user)', (await db.query('SELECT version FROM books WHERE id = $1', [book.id])).rows[0].version === versionBefore);
   const filmCalls = gateway.requests.slice(filmStart);
   const keyframes = filmCalls.filter(q => q.path.endsWith('/images/generations') && q.body?.model === 'qwen-image-2.1');
   const starts = filmCalls.filter(q => q.path.endsWith('/video/generations'));
-  check('film: a 16:9 keyframe per scene (qwen-image-2.1, 1280x720, canvas:size)',
+  check('film: a 16:9 keyframe per drawn scene (qwen-image-2.1, 1280x720, canvas:size); none for a continued shot',
     keyframes.length === 2 && keyframes.every(k => k.body.size === '1280x720' && k.body.canvas === 'size'), `${keyframes.length} keyframes`);
   check('film: scene 1 keyframe references the character\'s portrait', /^data:image\//.test(keyframes[0]?.body?.image || '') && /image 1 is Mira Vale/.test(keyframes[0]?.body?.prompt || ''),
     (keyframes[0]?.body?.prompt || '').slice(0, 200));
   check('film: scene 2 keyframe references the portrait AND the previous clip\'s last frame', keyframes[1]?.body?.images?.length === 2 && /previous shot/.test(keyframes[1]?.body?.prompt || ''));
   check('film: every clip starts from its keyframe, in the locked style, never "realistic"',
-    starts.length === 3 && starts.every(v => /^data:image\//.test(v.body?.image || '') && /stylised 3D animated/.test(v.body?.prompt || '') && !/realistic/i.test(v.body?.prompt || '')),
+    starts.length === 4 && starts.every(v => /^data:image\//.test(v.body?.image || '') && /stylised 3D animated/.test(v.body?.prompt || '') && !/realistic/i.test(v.body?.prompt || '')),
     (starts[0]?.body?.prompt || '').slice(0, 160));
   check('film: a clip that fails once is retried and the scene still renders',
-    done?.result?.project?.scenes?.[1]?.status === 'completed' && starts.length === 3,
+    done?.result?.project?.scenes?.[1]?.status === 'completed' && starts.length === 4,
     `scene2 ${done?.result?.project?.scenes?.[1]?.status}`);
   check('film: the project records the style, keyframes and cast',
     done?.result?.project?.style === 'animated' && done.result.project.scenes.every(sc => /^\/api\/media\/images\/keyframe-/.test(sc.keyframeUrl || '') && sc.cast?.[0] === 'Mira Vale'));
+  check('film: a continued shot starts from the previous clip\'s last frame (not a new keyframe)',
+    done?.result?.project?.scenes?.[2]?.transition === 'continue' && /^data:image\/png/.test(starts[3]?.body?.image || '')
+    && !keyframes.some(k => /keeps watching/.test(k.body?.prompt || '')));
   await call('POST', `${jobsUrl}/${animId}/ack`, owner.token);
+
+  // rejoin a saved film: free, a new project, the asked-for transitions.
+  // As the editor: the owner is near the 50-per-15-min AI limit by now.
+  if (done?.result?.project) {
+    await db.query('UPDATE books SET animation_projects = $2 WHERE id = $1', [book.id, JSON.stringify([done.result.project])]);
+    const editorQuota = async () => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [editor.id])).rows[0]?.ai_requests_today;
+    const e0 = await editorQuota();
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't1' }, params: { projectId: 'anim-nope' } });
+    check('film rejoin: an unknown film = 404', r.status === 404, `status ${r.status}`);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't1' }, params: { projectId: done.result.project.id, transitions: { 2: 'wipe' } } });
+    check('film rejoin: an unknown transition = 400', r.status === 400, `status ${r.status}`);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't1' }, params: { projectId: done.result.project.id, transitions: { 2: 'fade', 3: 'cut' } } });
+    const joined = await waitJob(editor.token, r.json?.job?.jobId);
+    const p2 = joined?.result?.project;
+    check('film rejoin: a new project with the new transitions, the old film kept',
+      joined?.status === 'done' && p2?.rejoinedFrom === done.result.project.id && p2.id !== done.result.project.id
+      && p2.finalVideo?.filename !== film.filename && p2.finalVideo?.transitions?.map(t => t.transition).join() === 'fade,cut',
+      `${joined?.status} ${joined?.error || ''} ${JSON.stringify(p2?.finalVideo?.transitions)}`);
+    check('film rejoin: costs no AI quota', (await editorQuota()) === e0, `${e0} -> ${await editorQuota()}`);
+  }
 
   // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──
   await importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJob });

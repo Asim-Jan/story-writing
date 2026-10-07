@@ -80,7 +80,6 @@ export async function processVideoGeneration(job) {
     // Persist through the data service (the Redis write was landing in an
     // empty store — animation projects never survived a reload)
     // the shape the Animation Studio reads (it showed nothing for `video`)
-    finalVideo.duration = sceneVideos.reduce((n, v) => n + (v.duration || 0), 0);
     const project = {
       id: `anim-${Date.now()}`,
       transcriptId,

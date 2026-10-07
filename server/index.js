@@ -44,7 +44,7 @@ import { extractChapters, validateChapters, getChapterStats } from './parsers/ch
 import { mediaStorage } from './services/mediaStorage.js';
 import { VideoSceneParser } from './services/videoSceneParser.js';
 import { VideoGenerator } from './services/videoGenerator.js';
-import { VideoAssembler } from './services/videoAssembler.js';
+import { VideoAssembler, TRANSITIONS, TRANSITION_IDS } from './services/videoAssembler.js';
 import rateLimit from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -4681,6 +4681,7 @@ const MEDIA_JOB_TARGETS = {
   reference: ['character'],
   image: ['character', 'location', 'chapter', 'cover', 'visual'],
   animation: ['animation'],
+  'film-join': ['animation'],
   analysis: ['book'],
   audiobook: ['audiobook'],
   enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book', 'missing'],
@@ -4698,6 +4699,11 @@ const enhanceBatchMax = (type) => (type === 'timelines' ? 400 : 40);
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
 const TEXT_JOBS = new Set(['enhance']);
 const mediaFeatureUnlessText = (req, res, next) => (TEXT_JOBS.has(req.body?.type) ? next() : requireFeature('media_generation')(req, res, next));
+// Jobs that call no AI model (rejoining a film's existing clips) cost no AI request.
+const FREE_JOBS = new Set(['film-join']);
+const quotaUnlessFree = (req, res, next) => (FREE_JOBS.has(req.body?.type) ? next() : consumeAIQuota(req, res, next));
+const filmProject = (book, projectId) => (book?.animationProjects || []).find(p => String(p.id) === String(projectId)) || null;
+const joinableScenes = (project) => (project?.scenes || []).filter(sc => sc?.filename && sc.status === 'completed');
 
 // Validate before the quota middleware, so a bad request costs nothing.
 async function validateMediaJob(req, res, next) {
@@ -4722,6 +4728,11 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
     }
+    if (type === 'film-join' && !String(params.projectId || '').trim()) return res.status(400).json({ error: 'projectId is required' });
+    if (type === 'film-join' && params.transitions !== undefined && (typeof params.transitions !== 'object' || Array.isArray(params.transitions)
+      || Object.values(params.transitions).some(t => !TRANSITIONS[t]))) {
+      return res.status(400).json({ error: `transitions must map scene numbers to one of: ${TRANSITION_IDS.join(', ')}` });
+    }
     if (type === 'enhance' && ENHANCE_ONE[target.type]) {
       const items = params.items;
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: `Choose at least one of the ${ENHANCE_NOUN[target.type]}` });
@@ -4738,6 +4749,9 @@ async function validateMediaJob(req, res, next) {
     }
     if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
       return res.status(403).json({ error: 'You do not have permission to edit this book' });
+    }
+    if (type === 'film-join' && !joinableScenes(filmProject(book, params.projectId)).length) {
+      return res.status(404).json({ error: 'That film is not in the saved book, or it has no rendered scenes' });
     }
     req.mediaJobBook = book;
     next();
@@ -4866,6 +4880,19 @@ function mediaJobRunner(req) {
       return { files };
     };
   }
+  if (type === 'film-join') {
+    // join a finished film's clips again (new transitions, levelled sound);
+    // no clip is rendered, so it is quick and free. The result is a NEW
+    // project, so the author can compare it with the old film.
+    return async (report) => {
+      const project = filmProject(req.mediaJobBook, params.projectId);
+      const overrides = params.transitions || {};
+      const scenes = (project.scenes || []).map(sc => (TRANSITIONS[overrides[sc.sceneNumber]] ? { ...sc, transition: overrides[sc.sceneNumber] } : sc));
+      await report({ message: `Joining ${joinableScenes(project).length} scenes with smooth transitions...` });
+      const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title: project.title });
+      return { project: { ...project, id: `anim-${uuidv4()}`, scenes, finalVideo, rejoinedFrom: project.id, createdAt: new Date().toISOString() } };
+    };
+  }
   // animation: per-scene status for the UI
   const scenes = params.scenes;
   return async (report) => {
@@ -4905,10 +4932,11 @@ function mediaJobLabel({ type, target, params }) {
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
+  if (type === 'film-join') return 'Rejoining the film';
   return `Image: ${String(params.prompt).slice(0, 40)}`;
 }
 
-app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, mediaFeatureUnlessText, validateMediaJob, consumeAIQuota, async (req, res) => {
+app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, mediaFeatureUnlessText, validateMediaJob, quotaUnlessFree, async (req, res) => {
   try {
     const userId = req.user.userId;
     const job = await startMediaJob({
@@ -4923,7 +4951,8 @@ app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, mediaFea
         ? req.body.label.trim().slice(0, 120)
         : mediaJobLabel(req.body),
       run: mediaJobRunner(req),
-      onNothingProduced: () => refundAIQuota(userId),
+      // nothing to refund for a job that was never charged
+      onNothingProduced: FREE_JOBS.has(req.body.type) ? undefined : () => refundAIQuota(userId),
     });
     res.status(202).json({ job });
   } catch (error) {
@@ -6234,8 +6263,8 @@ async function renderAnimation({ user, bookId, book, transcriptId, scenes, optio
 
   onProgress({ stage: 'assembling', message: `Assembling ${completed.length} of ${scenes.length} scenes into the film...` });
   const title = book.transcripts?.find(t => String(t.id) === String(transcriptId))?.title || 'Animation';
+  // the assembler measures the joined film (blends overlap the clips)
   const finalVideo = await new VideoAssembler(bookId).assembleFilm(results, { title, ...options });
-  finalVideo.duration = completed.reduce((n, r) => n + (r.duration || 0), 0);
   return {
     id: `anim-${uuidv4()}`,
     transcriptId,

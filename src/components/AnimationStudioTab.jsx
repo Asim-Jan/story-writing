@@ -3,7 +3,7 @@ import { Film, Play, Download, Trash2, Edit3, Loader, CheckCircle2, AlertCircle,
 import { getMediaUrl } from '../utils/mediaUrl';
 import { useMediaJobsContext, MediaJobList, MediaJobStatus } from '../contexts/MediaJobsContext';
 import { characterFields } from './CharacterReferences';
-import { FILM_STYLES, DEFAULT_FILM_STYLE, filmStyle, buildCast } from '../utils/filmCast';
+import { FILM_STYLES, DEFAULT_FILM_STYLE, FILM_TRANSITIONS, filmStyle, buildCast, sceneTransition } from '../utils/filmCast';
 
 // Rendering a film is a book media job (type "animation", target the
 // transcript): it runs on the server whether or not this tab is open, its
@@ -20,7 +20,12 @@ const formatDuration = (seconds) => {
 // finalVideo carries a storageKey (older projects) or a videoUrl (media jobs).
 const videoSrc = (finalVideo) => getMediaUrl(finalVideo, 'videos') || finalVideo?.videoUrl || null;
 
-const RENDER_OPTIONS = { resolution: '1080p', transitionType: 'fade' };
+const RENDER_OPTIONS = {};
+
+// Any film with rendered clips can be joined again: films joined before
+// 2.23.55 were a plain concat (hard cuts, uneven sound), and a newer one picks
+// up transitions changed on the scene list since it was made.
+const canRejoin = (project) => (project.scenes || []).some(sc => sc?.filename && sc.status === 'completed');
 
 // A single-scene render is labelled "Scene N: ..."; a whole film "Animation: ...".
 const sceneLabelPrefix = (sceneNumber) => `Scene ${sceneNumber}: `;
@@ -188,7 +193,10 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const transcripts = data.transcripts || [];
   const animationProjects = data.animationProjects || [];
   const drafts = data.metadata?.animationDrafts || {};
-  const animationJobs = jobsFor('animation');
+  // renders and rejoins both target the transcript; only renders drive the steps
+  const animationJobs = jobsFor('animation').filter(j => j.type === 'animation');
+  const joinJobs = jobsFor('animation').filter(j => j.type === 'film-join');
+  const [joining, setJoining] = useState(null); // project id while its rejoin is starting
 
   // Coming back to the tab opens what the user was working on: a transcript
   // that is rendering (or failed), else the most recently parsed one.
@@ -309,6 +317,22 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       setActionError(`Video generation failed: ${error.message}`);
     } finally {
       setStarting(null);
+    }
+  };
+
+  const handleRejoin = async (project) => {
+    setJoining(project.id);
+    setActionError(null);
+    try {
+      // the scene list's transitions (as edited there) for the film's scenes
+      const draftScenes = drafts[project.transcriptId]?.scenes || [];
+      const transitions = {};
+      draftScenes.forEach((sc, i) => { if (i > 0) transitions[sc.sceneNumber] = sceneTransition(draftScenes, i); });
+      await startJob('film-join', { type: 'animation', id: project.transcriptId ?? 'film' }, { projectId: project.id, transitions }, `Rejoining: ${project.title || 'film'}`);
+    } catch (error) {
+      setActionError(`Could not rejoin the film: ${error.message}`);
+    } finally {
+      setJoining(null);
     }
   };
 
@@ -479,6 +503,18 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                       </span>
                       <h4 className="font-semibold text-gray-900">{scene.title}</h4>
                       <span className="text-xs text-gray-500">{scene.duration}s &middot; {scene.cameraDirection}</span>
+                      {idx > 0 && (
+                        <select
+                          value={sceneTransition(parsedScenes, idx)}
+                          onChange={(e) => updateScene(scene.sceneNumber, { transition: e.target.value })}
+                          title={FILM_TRANSITIONS.find(t => t.id === sceneTransition(parsedScenes, idx))?.hint}
+                          aria-label={`How scene ${scene.sceneNumber} begins`}
+                          data-testid="scene-transition"
+                          className="text-xs border border-gray-300 rounded px-1 py-0.5 bg-white"
+                        >
+                          {FILM_TRANSITIONS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                        </select>
+                      )}
                       {scene.status === 'completed' && (
                         <span className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded">
                           <CheckCircle2 className="w-3 h-3" />
@@ -623,6 +659,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       {animationProjects.length > 0 && (
         <div className="bg-white rounded-lg p-6 border-2 border-gray-200">
           <h3 className="text-xl font-bold text-gray-900 mb-4">Your Animation Films</h3>
+          <MediaJobList jobs={joinJobs} className="mb-4" hint="Joining the existing scenes; this takes a minute or two. The new film appears below." />
 
           <div className="space-y-4">
             {animationProjects.map(project => (
@@ -638,9 +675,22 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                       )}
                       <span>{(project.finalVideo?.size / 1024 / 1024).toFixed(1)} MB</span>
                       <span className="text-purple-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Completed</span>
+                      {project.rejoinedFrom && <span className="text-gray-500" data-testid="project-rejoined">Rejoined</span>}
                     </div>
                   </div>
                   <div className="flex gap-2">
+                    {canRejoin(project) && (
+                      <button
+                        onClick={() => handleRejoin(project)}
+                        disabled={joining === project.id || joinJobs.some(j => j.status === 'running')}
+                        title="Join this film's scenes again with the scene list's transitions and even sound. No scene is rendered again, and it is free; the current film is kept so you can compare."
+                        data-testid="film-rejoin"
+                        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-2"
+                      >
+                        <Film className="w-4 h-4" />
+                        {project.finalVideo?.joinVersion ? 'Rejoin' : 'Rejoin with smooth transitions'}
+                      </button>
+                    )}
                     <a
                       href={videoSrc(project.finalVideo)}
                       download
@@ -718,7 +768,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
           <li>• <strong>Scene Parsing:</strong> Automatically breaks transcripts into filmable scenes</li>
           <li>• <strong>Native Audio:</strong> clips come with generated sound</li>
           <li>• <strong>Professional Assembly:</strong> FFmpeg stitches scenes into complete films</li>
-          <li>• <strong>High Quality:</strong> 1080p output with smooth transitions</li>
+          <li>• <strong>Smooth joins:</strong> each scene begins with a continue, cut, dissolve or fade, and the sound is evened out and blended at every change</li>
           <li>• <strong>Cloud Storage:</strong> All videos stored in MinIO, accessible from any device</li>
         </ul>
       </div>

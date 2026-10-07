@@ -255,6 +255,7 @@ export const applyJob = (book, job) => {
     case 'reference': return applyReference(book, job);
     case 'image': return applyImage(book, job);
     case 'animation': return applyAnimation(book, job);
+    case 'film-join': return applyAnimation(book, job); // a rejoined film is a new project
     case 'audiobook': return applyAudiobook(book, job);
     case 'analysis': return applyAnalysis(book, job);
     case 'enhance': return applyEnhanceJob(book, job);

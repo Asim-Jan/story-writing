@@ -9,6 +9,7 @@ import { mediaStorage } from './mediaStorage.js';
 import { recordMediaOwner } from '../utils/mediaMapping.js';
 import { describeCharacter, mediaUrlToDataUrl } from './characterReferences.js';
 import { VideoGenerator } from './videoGenerator.js';
+import { transitionOf } from './videoAssembler.js';
 
 // Consistent films. Clips made from text alone each invent their own look:
 // one scene lifelike, the next animated, the characters different every time.
@@ -19,6 +20,13 @@ import { VideoGenerator } from './videoGenerator.js';
 //   2. the video model animates from that keyframe (it is the clip's first
 //      frame), with the same style in its prompt;
 //   3. the new clip's last frame becomes the next scene's continuity reference.
+// A scene whose transition is "continue" skips the keyframe: its clip starts
+// from the previous clip's exact last frame, so the shot carries on with no
+// jump. At most MAX_CONTINUES in a row (each generation from a last frame
+// softens the picture and lets faces drift), and never from a dark frame.
+
+const MAX_CONTINUES = 2;
+const DARK_LUMA = 24; // mean brightness (0-255) below which a frame is "faded out"
 
 export const FILM_STYLES = {
   animated: {
@@ -85,21 +93,40 @@ const run = (cmd, args) => new Promise((resolve, reject) => {
   p.on('exit', code => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.slice(-300)}`))));
 });
 
-// The clip's last frame, as a data: URL for the next keyframe.
-async function lastFrame(videoBuffer) {
+const luma = (file) => new Promise((resolve) => {
+  const p = spawn(ffmpegPath, ['-hide_banner', '-i', file, '-vf', 'signalstats,metadata=print:key=lavfi.signalstats.YAVG', '-f', 'null', '-'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  p.stderr.on('data', d => { err += d; });
+  p.on('exit', () => resolve(Number((err.match(/YAVG=([\d.]+)/) || [])[1])));
+});
+
+/**
+ * The clip's closing frame, as a data: URL for the next scene. The very last
+ * frame when it is lit (exact = true: a "continue" can start from it); when
+ * the clip fades out, a frame from a second earlier (exact = false), and when
+ * that is dark too, null (the caller falls back to the keyframe). A faded
+ * black frame was being handed on as "the previous shot".
+ */
+async function closingFrame(videoBuffer) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'film-'));
   try {
     const clip = path.join(dir, 'clip.mp4');
-    const frame = path.join(dir, 'last.png');
+    const last = path.join(dir, 'last.png');
+    const earlier = path.join(dir, 'earlier.png');
     fs.writeFileSync(clip, videoBuffer);
-    await run(ffmpegPath, ['-y', '-loglevel', 'error', '-sseof', '-0.25', '-i', clip, '-frames:v', '1', frame]);
-    return `data:image/png;base64,${fs.readFileSync(frame).toString('base64')}`;
+    // -update 1 keeps overwriting, so the file ends as the final frame
+    await run(ffmpegPath, ['-y', '-loglevel', 'error', '-sseof', '-0.5', '-i', clip, '-update', '1', last]);
+    const dataUrl = (f) => `data:image/png;base64,${fs.readFileSync(f).toString('base64')}`;
+    if (!((await luma(last)) < DARK_LUMA)) return { frame: dataUrl(last), exact: true };
+    await run(ffmpegPath, ['-y', '-loglevel', 'error', '-sseof', '-1.2', '-i', clip, '-frames:v', '1', earlier]);
+    if (!((await luma(earlier)) < DARK_LUMA)) return { frame: dataUrl(earlier), exact: false };
+    return { frame: null, exact: false };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function keyframePrompt({ scene, style, cast, hasPrevious, previous }) {
+function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition }) {
   const lines = [`${style.prompt}.`, `Opening frame of a film scene: ${scene.visualPrompt || scene.title || ''}`];
   if (scene.cameraDirection) lines.push(`Camera: ${scene.cameraDirection}.`);
   if (scene.location) lines.push(`Setting: ${scene.location}.`);
@@ -115,9 +142,15 @@ function keyframePrompt({ scene, style, cast, hasPrevious, previous }) {
   if (hasPrevious) {
     const n = cast.filter(c => c.ref).length + 1;
     const sameSetting = previous?.location && scene.location && previous.location === scene.location;
-    lines.push(sameSetting
-      ? `Image ${n} is the previous shot: this continues straight from it, in the same place, lighting and time of day.`
-      : `Image ${n} is the previous shot: match its art style, colour palette and character designs.`);
+    // a new shot of the same moment must not repeat the framing: the same
+    // angle with the character in a new pose is a jump cut
+    if (sameSetting && (transition === 'cut' || transition === 'continue')) {
+      lines.push(`Image ${n} is the previous shot. This is a NEW camera angle on the same moment, in the same place, lighting and time of day: use a clearly different shot size and angle from image ${n} (for example wide to close-up, or a reverse angle); do not repeat its framing.`);
+    } else if (sameSetting) {
+      lines.push(`Image ${n} is the previous shot: a little later, in the same place; keep its lighting, art style and character designs, with a different framing.`);
+    } else {
+      lines.push(`Image ${n} is the previous shot: match its art style, colour palette and character designs.`);
+    }
   }
   if (previous?.action || previous?.title) lines.push(`Just before this: ${previous.action || previous.title}.`);
   lines.push('No text, captions or watermarks.');
@@ -135,7 +168,9 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
   const generator = new VideoGenerator(null, bookId);
   const results = [];
   let previousFrame = null;
+  let previousExact = false; // previousFrame is the clip's true last frame
   let previousScene = null;
+  let continues = 0; // "continue" shots in a row
 
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
@@ -153,12 +188,29 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
       }
     }
 
+    // what this scene actually gets: a "continue" needs the previous clip's
+    // true last frame and a short enough run, else it becomes a cut
+    let transition = transitionOf(scene, previousScene);
+    const canContinue = transition === 'continue' && previousFrame && previousExact && continues < MAX_CONTINUES;
+    if (transition === 'continue' && !canContinue) transition = 'cut';
+    continues = canContinue ? continues + 1 : 0;
+
     let keyframe = null;
     let keyframeUrl = null;
-    try {
+    if (canContinue) {
+      keyframe = previousFrame;
+      try {
+        const filename = `keyframe-${uuidv4()}.png`;
+        await mediaStorage.upload('images', Buffer.from(previousFrame.split(',')[1], 'base64'), filename, { 'x-amz-meta-type': 'film-keyframe' });
+        await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
+        keyframeUrl = `/api/media/images/${filename}`;
+      } catch (err) {
+        console.warn(`Film: could not store scene ${scene.sceneNumber}'s opening frame:`, err.message);
+      }
+    } else try {
       await onProgress({ stage: 'keyframe', ...base });
       const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(previousFrame ? [previousFrame] : [])];
-      const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene });
+      const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition });
       const image = await saiImage({
         model: 'qwen-image-2.1',
         size: '1280x720',
@@ -192,17 +244,22 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
       }
       const { buffer, ...stored } = clip;
       try {
-        previousFrame = await lastFrame(buffer);
+        const closing = await closingFrame(buffer);
+        previousFrame = closing.frame || keyframe;
+        previousExact = closing.exact;
       } catch (err) {
         console.warn(`Film: could not take scene ${scene.sceneNumber}'s last frame:`, err.message);
         previousFrame = keyframe;
+        previousExact = false;
       }
       previousScene = scene;
-      const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name) };
+      const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name), ...(transition ? { transition } : {}) };
       results.push(result);
       await onProgress({ stage: 'scene-complete', ...base, keyframeUrl, result });
     } catch (err) {
       results.push({ sceneNumber: scene.sceneNumber, status: 'failed', error: err.message, keyframeUrl });
+      // the next scene cannot carry on from a shot that does not exist
+      previousExact = false;
       await onProgress({ stage: 'scene-failed', ...base, keyframeUrl, error: err.message });
     }
   }
