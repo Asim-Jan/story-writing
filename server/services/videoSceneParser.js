@@ -2,8 +2,20 @@ import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import { extractJSON } from '../utils/extractJSON.js';
 import dotenv from 'dotenv';
 import { saiTextOf } from '../utils/saiText.js';
+import { transitionOf } from './videoAssembler.js';
 
 dotenv.config();
+
+// Every scene gets a valid transition: the model's when it is one of ours,
+// else the same place is a cut and a new place a dissolve.
+export function normaliseTransitions(scenes) {
+  if (!Array.isArray(scenes)) return scenes;
+  return scenes.map((scene, i) => {
+    if (!scene || typeof scene !== 'object') return scene;
+    if (i === 0) return { ...scene, transition: 'fade' };
+    return { ...scene, transition: transitionOf(scene, scenes[i - 1]) };
+  });
+}
 
 /**
  * Video Scene Parser
@@ -41,7 +53,7 @@ For each scene:
 5. Extract dialogue/audio cues
 6. Determine scene duration (typically 5-8 seconds)
 
-IMPORTANT: Each scene should be a complete visual moment that can stand alone.
+IMPORTANT: the scenes are the SHOTS of one continuous film, edited together. Consecutive shots in the same place must use different shot sizes or angles (wide, medium, close-up, over-the-shoulder, reverse): never the same framing twice in a row, which looks like a jump.
 
 Return ONLY valid JSON array:
 [
@@ -56,11 +68,19 @@ Return ONLY valid JSON array:
     "dialogue": "Any spoken dialogue in this scene",
     "audioPrompt": "Background sounds, music cues, sound effects",
     "mood": "Scene mood/tone",
-    "action": "Key action or event in this scene"
+    "action": "Key action or event in this scene",
+    "transition": "continue | cut | dissolve | fade"
   }
 ]
 
-Aim for 10-15 scenes per minute of story content.
+"transition" is how this shot begins after the previous one:
+- continue: the previous shot carries on unbroken (same place, same moment, the camera keeps rolling, e.g. a character keeps walking); use it for at most two shots in a row
+- cut: the same scene and moment from a new camera angle (the usual choice within a scene)
+- dissolve: a short jump in time or a move to another place
+- fade: a big jump in time or a new part of the story
+Scene 1 is "fade".
+
+Aim for 8-10 scenes per minute of story content.
 
 CONSISTENCY: every scene is drawn from the characters' reference portraits, so
 always list who is on screen in "characters" using the exact names from the
@@ -95,7 +115,7 @@ Parse this into video-ready scenes with detailed visual prompts for AI video gen
       const scenes = extractJSON(cleaned);
 
       console.log(`Parsed ${scenes.length} scenes from transcript`);
-      return scenes;
+      return normaliseTransitions(scenes);
     } catch (error) {
       console.error('Scene parsing error:', error);
       throw error;

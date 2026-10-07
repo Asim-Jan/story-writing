@@ -16,6 +16,24 @@ export const FILM_STYLES = [
 
 export const DEFAULT_FILM_STYLE = 'animated';
 
+// How each scene begins after the previous one (mirrors the server's
+// services/videoAssembler.js TRANSITIONS and transitionOf).
+export const FILM_TRANSITIONS = [
+  { id: 'continue', label: 'Continue the shot', hint: 'Starts from the last frame of the previous scene: no jump' },
+  { id: 'cut', label: 'Cut', hint: 'Same moment, new camera angle, with a soft 0.25 s blend' },
+  { id: 'dissolve', label: 'Dissolve', hint: 'A short time jump or another place (0.8 s)' },
+  { id: 'fade', label: 'Fade through black', hint: 'A big jump in time (1.2 s)' },
+];
+
+export const sceneTransition = (scenes, index) => {
+  if (index <= 0) return null;
+  const scene = scenes[index];
+  const own = String(scene?.transition || '').trim().toLowerCase();
+  if (FILM_TRANSITIONS.some(t => t.id === own)) return own;
+  const same = scene?.location && String(scene.location).trim().toLowerCase() === String(scenes[index - 1]?.location || '').trim().toLowerCase();
+  return same ? 'cut' : 'dissolve';
+};
+
 export const filmStyle = (id) => FILM_STYLES.find(s => s.id === id) || FILM_STYLES[0];
 
 const norm = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
