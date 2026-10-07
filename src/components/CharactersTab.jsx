@@ -241,7 +241,7 @@ const CharactersTab = ({
           </div>
           <DuplicatesNotice kind="character" data={data} setData={setData}
             onMerged={(keepId, dropId) => { if (selectedCharacter && String(selectedCharacter.id) === String(dropId)) setSelectedCharacter(data.characters.find(c => String(c.id) === String(keepId)) || null); }} />
-          <EnhanceAllBar noun="characters" kind="character" items={data.characters} hasChapterText={hasChapterText} />
+          <EnhanceAllBar noun="characters" kind="character" items={data.characters} setData={setData} hasChapterText={hasChapterText} />
           <MissingFromBook which="people" data={data} setData={setData} />
           {data.characters.length > 1 && (
             <button

@@ -146,7 +146,7 @@ const PlotlinesTab = ({
               {viewMode === 'list' ? <Grid3x3 size={20} /> : <List size={20} />}
             </button>
           </div>
-          <EnhanceAllBar noun="plotlines" kind="plotline" items={data.plotlines} hasChapterText={hasChapterText}
+          <EnhanceAllBar noun="plotlines" kind="plotline" items={data.plotlines} setData={setData} hasChapterText={hasChapterText}
             note="SAI reads the chapters each plotline runs through and suggests what the book says. It runs in the background (about 10 to 30 seconds each); the suggestions wait on each one for you to use or skip." />
           {/* Search Input */}
           {data.plotlines.length > 0 && (
