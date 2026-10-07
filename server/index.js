@@ -8,6 +8,7 @@ import { speakLongText } from './utils/speech.js';
 import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './services/mediaJobs.js';
 import { applyOps, createFromImport, deleteImport, getImport, getImportChapter, listImports, patchImport, pruneImports, startImport } from './import/imports.js';
 import { analyzeBook } from './import/analyze.js';
+import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
@@ -4567,6 +4568,83 @@ app.delete('/api/imports/:id', authenticateToken, async (req, res) => {
 setTimeout(() => pruneImports().catch(() => {}), 60000);
 setInterval(() => pruneImports().catch(() => {}), 24 * 3600 * 1000);
 
+// ==================== AUDIOBOOK VOICES ====================
+// Presets from VibeVoice and Qwen3-TTS, plus the user's own cloned voices
+// (services/voices.js). A sample is stored privately and sent with each
+// request; consent is required to create one.
+
+const voiceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^audio\//.test(file.mimetype) || /\.(wav|mp3|m4a|ogg|oga|webm|flac|aac)$/i.test(file.originalname);
+    cb(ok ? null : new Error('Upload an audio file (WAV, MP3, M4A, OGG or WebM)'), ok);
+  },
+});
+
+app.get('/api/audiobook/voices', authenticateToken, async (req, res) => {
+  try {
+    res.json(await availableVoices(req.user.userId));
+  } catch (error) {
+    console.error('Voice list failed:', error.message);
+    res.status(502).json({ error: 'Could not list voices' });
+  }
+});
+
+// About ten seconds in a voice, to choose by ear. No AI quota; rate-limited.
+app.post('/api/audiobook/preview', authenticateToken, aiLimiter, async (req, res) => {
+  try {
+    const text = String(req.body?.text || 'The lighthouse stood alone on the cliff, and every night its keeper climbed the long stair to light the lamp.').slice(0, 300);
+    const audio = await speak(req.user.userId, req.body?.voice, text);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(audio.mp3);
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Voice preview failed:', error.message);
+    res.status(502).json({ error: 'Could not make a preview', detail: error.message });
+  }
+});
+
+app.get('/api/voices', authenticateToken, async (req, res) => {
+  try {
+    res.json({ voices: await listCustomVoices(req.user.userId) });
+  } catch (error) {
+    console.error('Custom voice list failed:', error.message);
+    res.status(500).json({ error: 'Could not list your voices' });
+  }
+});
+
+app.post('/api/voices', authenticateToken, aiLimiter, requireMinIO, (req, res, next) => {
+  voiceUpload.single('sample')(req, res, (err) => (err ? res.status(400).json({ error: err.message }) : next()));
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Attach a voice sample' });
+    const voice = await createCustomVoice({
+      userId: req.user.userId,
+      name: req.body?.name,
+      sample: req.file.buffer,
+      transcript: req.body?.transcript,
+      consent: req.body?.consent === 'true' || req.body?.consent === true,
+    });
+    res.status(201).json({ voice });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Custom voice create failed:', error.message);
+    res.status(500).json({ error: 'Could not save the voice' });
+  }
+});
+
+app.delete('/api/voices/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!(await deleteCustomVoice(req.user.userId, req.params.id))) return res.status(404).json({ error: 'Voice not found' });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Custom voice delete failed:', error.message);
+    res.status(500).json({ error: 'Could not delete the voice' });
+  }
+});
+
 // ==================== BOOK MEDIA JOBS ====================
 // Every generation is a server job listed per book (services/mediaJobs.js), so
 // progress and results outlive the screen that started it. The site sits
@@ -4580,6 +4658,7 @@ const MEDIA_JOB_TARGETS = {
   image: ['character', 'location', 'chapter', 'cover', 'visual'],
   animation: ['animation'],
   analysis: ['book'],
+  audiobook: ['audiobook'],
 };
 
 // Validate before the quota middleware, so a bad request costs nothing.
@@ -4597,11 +4676,15 @@ async function validateMediaJob(req, res, next) {
       if (!params.character?.name) return res.status(400).json({ error: 'Character data is required' });
     }
     if (type === 'image' && !params.prompt) return res.status(400).json({ error: 'Prompt is required' });
+    if (type === 'audiobook') {
+      if (!Array.isArray(params.chapterIds) || params.chapterIds.length === 0) return res.status(400).json({ error: 'Choose at least one chapter' });
+      if (params.chapterIds.length > 200) return res.status(400).json({ error: 'At most 200 chapters per job' });
+    }
     if (type === 'animation') {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
     }
-    if (type !== 'animation' && !minioAvailable) return res.status(503).json({ error: 'Media storage is unavailable right now' });
+    if (!minioAvailable) return res.status(503).json({ error: 'Media storage is unavailable right now' });
     const book = await getBook(bookId);
     if (!book) return res.status(404).json({ error: 'Book not found' });
     if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
@@ -4652,6 +4735,40 @@ function mediaJobRunner(req) {
       report,
     });
   }
+  if (type === 'audiobook') {
+    // Chapters are read from the SAVED book (what was saved is what is spoken),
+    // one after another; each finished chapter is kept even if a later one fails.
+    return async (report) => {
+      const spec = normaliseSpec(params.voice);
+      const chapters = req.mediaJobBook.chapters || [];
+      const queue = params.chapterIds.map(id => chapters.find(c => String(c.id) === String(id))).filter(Boolean);
+      if (queue.length === 0) throw Object.assign(new Error('None of those chapters are in the saved book'), { status: 400 });
+      const rows = queue.map(c => ({ chapterId: c.id, status: 'pending' }));
+      const files = {};
+      for (let i = 0; i < queue.length; i++) {
+        const chapter = queue[i];
+        rows[i].status = 'speaking';
+        await report({ message: `Reading chapter ${chapter.number || i + 1}: ${chapter.title || ''}`.trim(), current: i, total: queue.length, chapters: rows.map(r => ({ ...r })) });
+        try {
+          const text = `Chapter ${chapter.number || i + 1}${chapter.title ? `: ${chapter.title}` : ''}.\n\n${chapter.content || ''}`;
+          const audio = await speak(user.userId, spec, text, { speed: params.speed });
+          const stored = await storeAudio(user.userId, bookId, audio.mp3, `chapter-${chapter.number || i + 1}`);
+          files[chapter.id] = { ...stored, durationSec: audio.durationSec, voice: audio.spec, format: 'mp3', createdAt: new Date().toISOString() };
+          rows[i].status = 'done';
+        } catch (error) {
+          rows[i].status = 'failed';
+          rows[i].error = error.message;
+          if (error.status === 404) { // the custom voice is gone: no point going on
+            error.partial = Object.keys(files).length ? { files } : undefined;
+            throw error;
+          }
+        }
+      }
+      await report({ message: 'Done', current: queue.length, total: queue.length, chapters: rows.map(r => ({ ...r })) });
+      if (Object.keys(files).length === 0) throw new Error(rows.find(r => r.error)?.error || 'No chapter could be spoken');
+      return { files };
+    };
+  }
   // animation: per-scene status for the UI
   const scenes = params.scenes;
   return async (report) => {
@@ -4684,6 +4801,7 @@ function mediaJobRunner(req) {
 
 function mediaJobLabel({ type, params }) {
   if (type === 'analysis') return 'Analysing the book';
+  if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
   return `Image: ${String(params.prompt).slice(0, 40)}`;
@@ -6091,6 +6209,33 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
     if (!(await canAccessMedia(req.user, bucketType, filename, 'read'))) {
       return res.status(404).json({ error: 'Media not found' });
     }
+
+    // Audio and video answer Range requests: Safari and iOS will not play or
+    // seek a media file without them. These files are small (an MP3 chapter is
+    // a few MB), so the range is cut from the whole object.
+    if ((bucketType === 'audio' || bucketType === 'videos') && req.headers.range) {
+      const buf = await mediaStorage.getFile(bucketType, filename);
+      const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range).trim());
+      const ext0 = path.extname(filename).toLowerCase();
+      const type0 = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime' }[ext0] || 'application/octet-stream';
+      let start = m && m[1] !== '' ? Number(m[1]) : null;
+      let end = m && m[2] !== '' ? Number(m[2]) : null;
+      if (start === null && end !== null) { start = Math.max(0, buf.length - end); end = buf.length - 1; }
+      if (start === null) start = 0;
+      if (end === null || end >= buf.length) end = buf.length - 1;
+      if (!m || start > end || start >= buf.length) {
+        res.setHeader('Content-Range', `bytes */${buf.length}`);
+        return res.status(416).end();
+      }
+      res.status(206);
+      res.setHeader('Content-Type', type0);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${buf.length}`);
+      res.setHeader('Content-Length', String(end - start + 1));
+      res.setHeader('Cache-Control', 'private, max-age=86400');
+      return res.end(buf.subarray(start, end + 1));
+    }
+    if (bucketType === 'audio' || bucketType === 'videos') res.setHeader('Accept-Ranges', 'bytes');
 
     // Get file stream from storage
     const stream = await mediaStorage.getStream(

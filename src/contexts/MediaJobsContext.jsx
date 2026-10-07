@@ -49,7 +49,9 @@ export const formatElapsed = (seconds) => {
 
 export const jobErrorText = (job) => {
   const base = job.detail ? `${job.error || 'Generation failed'}: ${job.detail}` : (job.error || 'Generation failed');
-  return job.result?.portrait ? `${base} (the base portrait was kept)` : base;
+  if (job.result?.portrait) return `${base} (the base portrait was kept)`;
+  const kept = Object.keys(job.result?.files || {}).length;
+  return kept ? `${base} (${kept} finished chapter${kept === 1 ? ' was' : 's were'} kept)` : base;
 };
 
 // One job's state: a running line (elapsed + the server's progress message),

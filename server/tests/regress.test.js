@@ -114,6 +114,18 @@ async function fakeGateway() {
         res.end(JSON.stringify({ model: 'sai-decide', answers }));
         return;
       }
+      if (req.url.includes('/audio/voices')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(req.url.includes('qwen')
+          ? { object: 'list', data: [{ id: 'Serena', name: 'Serena', kind: 'preset', language: 'English' }, { id: 'v_someone', kind: 'clone' }] }
+          : { model: 'vibevoice', voices: ['en-emma_woman', 'de-spk0_man'] }));
+        return;
+      }
+      if (req.url.endsWith('/audio/transcriptions')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ text: 'hello from the sample' }));
+        return;
+      }
       if (req.url.endsWith('/models') && req.method === 'GET') {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ object: 'list', data: ['sai-chat', 'sai-chat-fast', 'sai-decide'].map(id => ({ id, object: 'model' })) }));
@@ -669,6 +681,64 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
 
   // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──
   await importChecks({ call, db, owner, stranger, jobsUrl, waitJob });
+  // ── audiobook voices: presets, custom clones, the audiobook job ──
+  {
+    r = await call('GET', '/api/audiobook/voices', owner.token);
+    check('voices: both engines\' presets, clones on the shared engine hidden',
+      r.json?.vibevoice?.some(v => v.id === 'en-emma_woman' && /Emma \(English, woman\)/.test(v.name)) && r.json?.qwen?.length === 1 && Array.isArray(r.json?.custom),
+      JSON.stringify(r.json).slice(0, 220));
+    const { default: ffmpegPath } = await import('ffmpeg-static');
+    const tone = async (secs) => {
+      const f = path.join(os.tmpdir(), `regress-voice-${secs}-${process.pid}.wav`);
+      await new Promise((ok, bad) => spawn(ffmpegPath, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `sine=frequency=220:duration=${secs}`, f]).on('exit', c => (c === 0 ? ok() : bad(new Error('ffmpeg')))));
+      return fs.readFileSync(f);
+    };
+    const upload = async (fields, wav) => {
+      const fd = new FormData();
+      for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+      if (wav) fd.append('sample', new Blob([wav], { type: 'audio/wav' }), 'sample.wav');
+      const res = await fetch(`${call.base}/api/voices`, { method: 'POST', headers: { Authorization: `Bearer ${owner.token}` }, body: fd });
+      return { status: res.status, json: await res.json().catch(() => null) };
+    };
+    const five = await tone(5);
+    r = await upload({ name: 'Narrator' }, five);
+    check('custom voice: refused without consent', r.status === 400 && /permission/.test(r.json?.error || ''), JSON.stringify(r.json));
+    r = await upload({ name: 'Too short', consent: 'true' }, await tone(1));
+    check('custom voice: a 1-second sample is refused', r.status === 400 && /too short/.test(r.json?.error || ''));
+    r = await upload({ name: 'Narrator', consent: 'true' }, five);
+    const voice = r.json?.voice;
+    check('custom voice: created, transcribed automatically, sample playable by its owner',
+      r.status === 201 && voice?.transcript === 'hello from the sample' && Math.abs(voice?.durationSec - 5) < 0.2 &&
+      (await fetch(`${call.base}${voice.sampleUrl}`, { headers: { Authorization: `Bearer ${owner.token}` } })).status === 200,
+      JSON.stringify(r.json).slice(0, 200));
+    const other = await fetch(`${call.base}${voice?.sampleUrl}`, { headers: { Authorization: `Bearer ${stranger.token}` } });
+    check('custom voice: the sample is private', other.status === 404);
+
+    const before = gateway.requests.length;
+    const pv = await fetch(`${call.base}/api/audiobook/preview`, { method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ voice: { engine: 'qwen', customVoiceId: voice?.id } }) });
+    const pvSpeech = gateway.requests.slice(before).find(q => q.path.endsWith('/audio/speech'));
+    check('preview in a cloned voice: MP3 back; the bridge got qwen3-tts + the sample + its transcript',
+      pv.status === 200 && pv.headers.get('content-type') === 'audio/mpeg' && pvSpeech?.body?.model === 'qwen3-tts' &&
+      /^data:audio\/wav;base64,/.test(pvSpeech?.body?.ref_audio || '') && pvSpeech?.body?.ref_text === 'hello from the sample',
+      `status ${pv.status} model ${pvSpeech?.body?.model}`);
+    const strangerPv = await fetch(`${call.base}/api/audiobook/preview`, { method: 'POST', headers: { Authorization: `Bearer ${stranger.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ voice: { engine: 'qwen', customVoiceId: voice?.id } }) });
+    check('another user cannot speak with someone else\'s cloned voice', strangerPv.status === 404, `got ${strangerPv.status}`);
+
+    const chapterIds = (await db.query('SELECT id FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number', [book.id])).rows.map(x => x.id);
+    r = await call('POST', jobsUrl, owner.token, { type: 'audiobook', target: { type: 'audiobook', id: null }, params: { voice: { engine: 'vibevoice', voice: 'en-emma_woman' }, chapterIds } });
+    const ab = await waitJob(owner.token, r.json?.job?.jobId);
+    const files = Object.values(ab?.result?.files || {});
+    check('audiobook job: one MP3 per saved chapter', ab?.status === 'done' && files.length === chapterIds.length && files.every(f => f.format === 'mp3' && /\.mp3$/.test(f.audioUrl)),
+      JSON.stringify(ab).slice(0, 220));
+    const mp3 = await fetch(`${call.base}${files[0]?.audioUrl}`, { headers: { Authorization: `Bearer ${owner.token}`, Range: 'bytes=0-99' } });
+    check('audio answers Range requests (Safari seeking)', mp3.status === 206 && mp3.headers.get('content-range')?.startsWith('bytes 0-99/') && (await mp3.arrayBuffer()).byteLength === 100,
+      `status ${mp3.status} ${mp3.headers.get('content-range')}`);
+    await call('POST', `${jobsUrl}/${ab?.jobId}/ack`, owner.token);
+
+    r = await call('DELETE', `/api/voices/${voice?.id}`, owner.token);
+    const gone = await fetch(`${call.base}/api/audiobook/preview`, { method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ voice: { engine: 'qwen', customVoiceId: voice?.id } }) });
+    check('a deleted voice is gone', r.status === 200 && gone.status === 404);
+  }
 
   // long text to speech = one valid WAV
   const longText = 'The tide came in slowly over the black sand. '.repeat(250); // ~11k chars, 3 chunks

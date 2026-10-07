@@ -144,6 +144,26 @@ const applyAnimation = (book, job) => {
   return next;
 };
 
+// An audiobook job's files go into audioFiles, keyed by chapter id. A file
+// only replaces an entry that is older (by createdAt), so re-applying an old
+// unacknowledged job after a reload can't undo a newer regeneration. A failed
+// job's partial files are applied too.
+const fileTime = (file) => Date.parse(file?.createdAt || '') || 0;
+const applyAudiobook = (book, job) => {
+  const files = job.result?.files;
+  if (!files || typeof files !== 'object') return book;
+  const current = book.audioFiles || {};
+  let next = null;
+  for (const [chapterId, file] of Object.entries(files)) {
+    if (!file?.audioUrl && !file?.filename) continue;
+    const have = current[chapterId];
+    if (have && (have.audioUrl === file.audioUrl || fileTime(have) > fileTime(file))) continue;
+    if (!next) next = { ...current };
+    next[chapterId] = file;
+  }
+  return next ? { ...book, audioFiles: next } : book;
+};
+
 // Apply a job's result to a book. Pure and idempotent: when there is nothing
 // (more) to apply it returns the SAME book object, which is how the hook tells
 // "already in the book" apart from "still to apply".
@@ -153,11 +173,13 @@ export const applyJob = (book, job) => {
     case 'reference': return applyReference(book, job);
     case 'image': return applyImage(book, job);
     case 'animation': return applyAnimation(book, job);
+    case 'audiobook': return applyAudiobook(book, job);
     default: return book;
   }
 };
 
-const isApplicable = (job) => job.status === 'done' || (job.status === 'failed' && !!job.result?.portrait);
+const hasPartialFiles = (job) => job.type === 'audiobook' && Object.keys(job.result?.files || {}).length > 0;
+const isApplicable = (job) => job.status === 'done' || (job.status === 'failed' && (!!job.result?.portrait || hasPartialFiles(job)));
 
 export const useMediaJobs = ({ bookId, data, setData, ready, savedSnapshot }) => {
   const [jobs, setJobs] = useState([]);
