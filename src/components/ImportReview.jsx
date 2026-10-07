@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { ArrowLeft, ArrowUp, ArrowDown, Merge, Scissors, Trash2, Pencil, BookOpen, Loader, AlertTriangle, X, Check } from 'lucide-react';
+import { ArrowLeft, ArrowUp, ArrowDown, Merge, Scissors, Trash2, Pencil, BookOpen, Loader, AlertTriangle, X, Check, Sparkles } from 'lucide-react';
 import { importsApi, KIND_LABEL, SOURCE_LABEL, formatBytes } from '../utils/importsApi';
 
 // Step 2 of an import: review the detected sections before the book is made.
@@ -174,6 +174,61 @@ const SectionRow = ({ section, number, prevSame, nextSame, next, busy, onOp, onR
   );
 };
 
+// What a suggestion does, as the one op the buttons would send.
+const suggestionOp = (s) => (s.type === 'kind' ? { op: 'kind', index: s.index, kind: s.value }
+  : s.type === 'merge' ? { op: 'merge', index: s.index }
+    : { op: 'rename', index: s.index, title: s.value });
+
+const describe = (s, chapters) => {
+  const at = chapters[s.index];
+  const name = `"${at?.title || 'Untitled section'}"`;
+  if (s.type === 'kind') return `Move ${name} to ${KIND_LABEL[s.value] || s.value}`;
+  if (s.type === 'merge') return `Merge ${name} with "${chapters[s.index + 1]?.title || 'the next section'}"`;
+  return `Rename ${name} to "${s.value}"`;
+};
+
+// The outline review: sai-chat-fast read the whole outline and suggests fixes.
+// Nothing changes until the user applies a suggestion.
+const SuggestionsPanel = ({ status, suggestions, chapters, busy, onApply, onApplyAll, onDismiss }) => {
+  if (!status || status === 'skipped') return null;
+  if (status === 'checking') {
+    return (
+      <p className="text-sm text-[var(--dim)] flex items-center gap-2" role="status" data-testid="suggestions-checking">
+        <Loader size={14} className="animate-spin" />SAI is checking the structure. You can keep editing.
+      </p>
+    );
+  }
+  if (status === 'failed') {
+    return <p className="text-xs text-[var(--dim)]" data-testid="suggestions-failed">The SAI structure check did not finish. The sections below are as the file was read.</p>;
+  }
+  if (!suggestions.length) {
+    return <p className="text-sm text-[var(--dim)] flex items-center gap-2" data-testid="suggestions-none"><Sparkles size={14} />SAI checked the structure: nothing to change.</p>;
+  }
+  return (
+    <section className="card p-4" data-testid="suggestions">
+      <div className="flex flex-wrap items-center gap-3 mb-2">
+        <h2 className="text-base font-bold text-[var(--ink)] flex items-center gap-2"><Sparkles size={16} className="text-[var(--blue)]" />SAI suggestions</h2>
+        <span className="text-xs text-[var(--dim)]">{suggestions.length} to check. Nothing changes until you apply one.</span>
+        <button type="button" onClick={onApplyAll} disabled={busy} className="btn sm ml-auto" data-testid="suggestions-apply-all">
+          <Check size={14} />Apply all
+        </button>
+      </div>
+      <ul className="space-y-2">
+        {suggestions.map(s => (
+          <li key={s.id} className="flex flex-wrap items-start gap-2 border-t border-[var(--line)] pt-2" data-testid="suggestion" data-type={s.type}>
+            <div className="flex-1 min-w-[200px]">
+              <p className="text-sm text-[var(--ink)]">{describe(s, chapters)}</p>
+              {s.reason && <p className="text-xs text-[var(--dim)]">{s.reason}</p>}
+            </div>
+            <button type="button" onClick={() => onApply(s)} disabled={busy} className="btn pri sm" data-testid="suggestion-apply"><Check size={13} />Apply</button>
+            <button type="button" onClick={() => onDismiss(s)} disabled={busy} className="btn ghost sm" data-testid="suggestion-dismiss"><X size={13} />Dismiss</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
 const ImportReview = ({ importId, onBack, onOpenBook }) => {
   const [imp, setImp] = useState(null);
   const [error, setError] = useState(null);
@@ -203,6 +258,45 @@ const ImportReview = ({ importId, onBack, onOpenBook }) => {
     const t = setTimeout(() => importsApi.get(importId).then(d => adopt(d.import)).catch(() => setImp(p => ({ ...p }))), POLL_MS);
     return () => clearTimeout(t);
   }, [imp, importId]);
+
+  // the structure check answers after the review opens: poll for it, merging
+  // only the suggestions so the title being typed is never overwritten
+  useEffect(() => {
+    if (!imp || imp.status !== 'review' || imp.suggestionsStatus !== 'checking') return undefined;
+    const t = setTimeout(() => importsApi.get(importId)
+      .then(d => setImp(prev => ({ ...prev, suggestions: d.import?.suggestions || [], suggestionsStatus: d.import?.suggestionsStatus })))
+      .catch(() => setImp(p => ({ ...p }))), POLL_MS);
+    return () => clearTimeout(t);
+  }, [imp, importId]);
+
+  const dismissSuggestion = async (s) => {
+    try {
+      const d = await importsApi.update(importId, { dismissSuggestions: [s.id] });
+      setImp(prev => ({ ...prev, suggestions: d.import?.suggestions || [] }));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // one at a time: every applied op moves indexes, and the server's reply
+  // carries the remaining suggestions at their new indexes
+  const applyAll = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let current = imp;
+      for (let n = 0; n < 100 && current?.suggestions?.length; n++) {
+        const d = await importsApi.ops(importId, [suggestionOp(current.suggestions[0])]);
+        current = { ...current, ...d.import };
+        setImp(current);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const runOp = async (op) => {
     if (busy) return false;
@@ -329,6 +423,18 @@ const ImportReview = ({ importId, onBack, onOpenBook }) => {
               {imp.warnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
           </section>
+        )}
+
+        {imp.status === 'review' && (
+          <SuggestionsPanel
+            status={imp.suggestionsStatus}
+            suggestions={imp.suggestions || []}
+            chapters={chapters}
+            busy={busy || creating}
+            onApply={(s) => runOp(suggestionOp(s))}
+            onApplyAll={applyAll}
+            onDismiss={dismissSuggestion}
+          />
         )}
 
         <section className="card p-4 flex flex-wrap gap-x-6 gap-y-2 text-sm" data-testid="import-options">
