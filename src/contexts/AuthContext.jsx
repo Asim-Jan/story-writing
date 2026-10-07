@@ -68,12 +68,27 @@ export const AuthProvider = ({ children }) => {
     window.dispatchEvent(new CustomEvent('auth:changed'));
   };
 
-  const logout = async () => {
+  // Portal-linked sessions (signed in with SAI Cloud) sign out through /auth/portal/logout, which also clears the
+  // ID-token cookie; `everywhere` additionally returns the SAI Cloud end-session URL and we go there.
+  const logout = async ({ everywhere = false } = {}) => {
+    let portalRedirect = null;
     try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        credentials: 'include'
-      });
+      let viaPortal = false;
+      try { viaPortal = !!JSON.parse(localStorage.getItem('user') || 'null')?.portalLinked; } catch { /* unreadable: treat as a password session */ }
+      if (viaPortal) {
+        const res = await fetch('/auth/portal/logout', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ everywhere: everywhere === true })
+        });
+        if (res.ok) portalRedirect = (await res.json()).redirect || null;
+      } else {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          credentials: 'include'
+        });
+      }
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
@@ -82,6 +97,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       window.dispatchEvent(new CustomEvent('auth:changed'));
+      if (portalRedirect) window.location.assign(portalRedirect);
     }
   };
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Mail, Lock, User, LogIn, UserPlus, BookOpen, Eye, EyeOff, Check, X } from 'lucide-react';
+import { Book, Mail, Lock, User, LogIn, UserPlus, BookOpen, Eye, EyeOff, Check, X, Cloud } from 'lucide-react';
 import { validatePassword, getPasswordStrength, getPasswordError } from '../utils/passwordValidation';
+import { fetchPortalConfig, portalLoginHref } from '../utils/portalAuth';
 
 const AuthPage = ({ onAuthSuccess, initialResetToken = '' }) => {
   const [isLogin, setIsLogin] = useState(true);
@@ -19,6 +20,9 @@ const AuthPage = ({ onAuthSuccess, initialResetToken = '' }) => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [passwordValidation, setPasswordValidation] = useState(null);
+  // Sign in with SAI Cloud: the button only exists when the server says the feature is on
+  const [portal, setPortal] = useState({ enabled: false, only: false, signupsClosed: false });
+  useEffect(() => { fetchPortalConfig().then(setPortal); }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -179,6 +183,18 @@ const AuthPage = ({ onAuthSuccess, initialResetToken = '' }) => {
         <div className="card p-7">
           {!showForgotPassword && !showResetForm && (
             <>
+              {portal.enabled && portal.only && (
+                <div className="mb-2">
+                  <a href={portalLoginHref()} className="btn pri w-full py-2.5 justify-center">
+                    <Cloud className="inline-block w-5 h-5 mr-2" aria-hidden="true" />
+                    Sign in with SAI Cloud
+                  </a>
+                  <p className="text-sm text-[var(--dim)] text-center mt-4">
+                    Stories uses your SAI Cloud account to sign you in.{portal.signupsClosed ? '' : ' New here? The same button creates your Stories account.'}
+                  </p>
+                </div>
+              )}
+              <div hidden={portal.enabled && portal.only}>
               <div className="mb-6">
                 <div className="tabs mb-6">
                   <button
@@ -410,6 +426,17 @@ const AuthPage = ({ onAuthSuccess, initialResetToken = '' }) => {
               </p>
             </div>
           )}
+
+          {portal.enabled && !portal.only && (
+            <div className="mt-5 pt-5 border-t border-[var(--line)]">
+              <p className="lbl text-center mb-3">or</p>
+              <a href={portalLoginHref()} className="btn w-full py-2.5 justify-center">
+                <Cloud className="inline-block w-5 h-5 mr-2" aria-hidden="true" />
+                {isLogin ? 'Sign in with SAI Cloud' : 'Sign up with SAI Cloud'}
+              </a>
+            </div>
+          )}
+          </div>
           </>
           )}
 

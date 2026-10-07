@@ -9,7 +9,9 @@ import { normalizeVoiceSpec, voiceKey, specFromKey, vibeVoiceLabel, languageOf }
 const API_URL = import.meta.env.VITE_API_URL || 'https://story-writing.com';
 
 const ProfilePage = ({ onBack }) => {
-  const { logout } = useAuth();
+  const { user: authUser, logout } = useAuth();
+  const portalLinked = !!authUser?.portalLinked;
+  const [alsoSignOutPortal, setAlsoSignOutPortal] = useState(false);
   const [activeTab, setActiveTab] = useState('account');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -296,7 +298,7 @@ const ProfilePage = ({ onBack }) => {
 
   const handleLogout = async () => {
     if (confirm('Are you sure you want to logout?')) {
-      await logout();
+      await logout({ everywhere: portalLinked && alsoSignOutPortal });
     }
   };
 
@@ -611,7 +613,13 @@ const ProfilePage = ({ onBack }) => {
                   </h2>
 
                   <div className="space-y-8">
-                    {/* Change Password Section */}
+                    {/* Change Password Section (portal-linked accounts sign in through SAI Cloud) */}
+                    {portalLinked ? (
+                      <div className="border-b pb-8">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Sign-in</h3>
+                        <p className="text-sm text-gray-600">You sign in with SAI Cloud, so your password is managed there.</p>
+                      </div>
+                    ) : (
                     <div className="border-b pb-8">
                       <h3 className="text-lg font-semibold text-gray-900 mb-4">Change Password</h3>
 
@@ -667,6 +675,7 @@ const ProfilePage = ({ onBack }) => {
                         </div>
                       </div>
                     </div>
+                    )}
 
                     {/* Logout Section */}
                     <div>
@@ -682,6 +691,12 @@ const ProfilePage = ({ onBack }) => {
                           </div>
                         </div>
 
+                        {portalLinked && (
+                          <label className="flex items-center gap-2 text-sm text-gray-700 mb-4">
+                            <input type="checkbox" checked={alsoSignOutPortal} onChange={(e) => setAlsoSignOutPortal(e.target.checked)} />
+                            Also sign out of SAI Cloud
+                          </label>
+                        )}
                         <button
                           onClick={handleLogout}
                           className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center gap-2"
