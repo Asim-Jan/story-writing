@@ -202,7 +202,7 @@ const SuggestionsPanel = ({ status, suggestions, chapters, busy, onApply, onAppl
     return <p className="text-xs text-[var(--dim)]" data-testid="suggestions-failed">The SAI structure check did not finish. The sections below are as the file was read.</p>;
   }
   if (!suggestions.length) {
-    return <p className="text-sm text-[var(--dim)] flex items-center gap-2" data-testid="suggestions-none"><Sparkles size={14} />SAI checked the structure: nothing to change.</p>;
+    return <p className="text-sm text-[var(--dim)] flex items-center gap-2" data-testid="suggestions-none"><Sparkles size={14} />SAI checked the structure: no open suggestions.</p>;
   }
   return (
     <section className="card p-4" data-testid="suggestions">
