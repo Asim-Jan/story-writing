@@ -89,7 +89,7 @@ test('callback, a NEW person: creates the account, issues the SAME JWT the passw
     assert.match(tokenCookie, /HttpOnly/); assert.match(tokenCookie, /Secure/); assert.match(tokenCookie, /SameSite=Lax/);
     assert.match(tokenCookie, /Max-Age=86400/);
     const d = jwt.verify(b.jar.get('token').value, JWT_SECRET);
-    assert.deepEqual(Object.keys(d).sort(), ['email', 'exp', 'iat', 'tokenVersion', 'userId', 'via']);
+    assert.deepEqual(Object.keys(d).sort(), ['email', 'exp', 'iat', 'jti', 'tokenVersion', 'userId', 'via']);
     assert.equal(d.userId, u.id);
     assert.equal(d.exp - d.iat, 24 * 3600, 'portal sessions are 24 h, not 7 d');
     assert.equal(d.via, 'portal');
@@ -107,7 +107,8 @@ test('callback, an existing VERIFIED Stories account with the same email: linked
     const cb = await b.signIn(t.provider, portalClaims());
     assert.equal(loc(cb), '/auth/portal/done');
     assert.equal(t.store.users.length, 1);
-    assert.deepEqual({ id: u.id, tier: u.tier, hash: u.password_hash }, before);
+    assert.deepEqual({ id: u.id, tier: u.tier }, { id: before.id, tier: before.tier });
+    assert.notEqual(u.password_hash, before.hash, 'an automatic link replaces the local password (see review-fixes.test.js)');
     assert.equal(u.portal_sub, 'u_aaaaaaaaaaaaaaaa');
     assert.equal(jwt.verify(b.jar.get('token').value, JWT_SECRET).userId, u.id);
     assert.deepEqual(t.audit.map((a) => a.reason), ['portal_link_auto']);
@@ -353,7 +354,11 @@ test('SIGNUPS_CLOSED=1 closes local registration too', async () => {
 });
 
 test('health reports the state without secrets', async () => {
-  await withApp({}, async (t) => assert.deepEqual(t.portal.health(), { requested: true, enabled: true, only: false }));
+  await withApp({}, async (t) => {
+    const h = t.portal.health();
+    assert.deepEqual({ requested: h.requested, enabled: h.enabled, only: h.only, onlyRequested: h.onlyRequested, providerHealthy: h.providerHealthy },
+      { requested: true, enabled: true, only: false, onlyRequested: false, providerHealthy: true });
+  });
   await withApp({ env: { PORTAL_OIDC: '' } }, async (t) => assert.deepEqual(t.portal.health(), { requested: false, enabled: false, only: false }));
   await withApp({ env: { PORTAL_CLIENT_SECRET: '' } }, async (t) => {
     const h = t.portal.health();

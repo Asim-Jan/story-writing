@@ -7,16 +7,26 @@
 //   (a) a user already linked to this sub                      -> signed in (the email is not consulted: it may have
 //                                                                 changed at the portal)
 //   (b) no link yet, a Stories user has the same email:
+//         - MORE THAN ONE account has it (case-duplicates)      -> refused ('ambiguous_email'): nobody is linked by guesswork
 //         - that user is already linked to ANOTHER sub          -> refused ('linked_elsewhere'), never re-linked
 //         - Stories email verified AND not an admin AND the
-//           portal asserts email_verified                       -> linked automatically, signed in
+//           portal asserts email_verified                       -> linked automatically, signed in. The link bumps
+//                                                                 token_version (every older JWT dies) and REPLACES the local
+//                                                                 password by an unusable one: whoever pre-registered this
+//                                                                 address keeps neither a session nor a password. The person
+//                                                                 signs in with SAI Cloud; "Forgot password" gives a password back.
 //         - otherwise (Stories email NOT verified, or admin)    -> 'needs_password': nothing is linked or signed in until
 //                                                                 the person proves they own the Stories account with its
-//                                                                 old password (portalLink route)
+//                                                                 old password (portalLink route). That link bumps token_version too.
 //   (c) no such user                                            -> a new free-tier user, linked to the sub, only if
-//                                                                 signups are open ('signups_closed' otherwise)
+//                                                                 signups are open ('signups_closed' otherwise), the
+//                                                                 sign-up limiter allows it ('rate_limited'), and no account
+//                                                                 exists under another spelling of the email
+//                                                                 ('similar_email': plus-tag / Gmail dots; DETECTION only)
 //
 // `store` is the small persistence interface (store.js is the Postgres one; the tests use a memory one).
+
+import { emailKey } from './emailKey.js';
 
 export const OUTCOME = Object.freeze({
   SIGNED_IN: 'signed_in',
@@ -26,6 +36,9 @@ export const OUTCOME = Object.freeze({
   BLOCKED: 'blocked',
   EMAIL_UNVERIFIED: 'email_unverified',
   UNAVAILABLE: 'unavailable',
+  AMBIGUOUS_EMAIL: 'ambiguous_email',
+  SIMILAR_EMAIL: 'similar_email',
+  RATE_LIMITED: 'rate_limited',
 });
 
 const isBlocked = (u) => u && (u.status === 'suspended' || u.status === 'banned');
@@ -38,10 +51,11 @@ const cleanName = (name, email) => {
 /**
  * @param {object} store    see store.js
  * @param {object} who      the library's handleCallback() result: { sub, verifiedEmail, emailVerified, name, ... }
- * @param {{signupsOpen: boolean}} opts
+ * @param {{signupsOpen: boolean, allowCreate?: () => Promise<boolean>}} opts
+ *   allowCreate: asked right before a NEW account would be created (the app's sign-up rate limiter)
  * @returns {Promise<{kind: string, user?: object, linked?: boolean, created?: boolean, pending?: object}>}
  */
-export async function resolveAccount(store, who, { signupsOpen }) {
+export async function resolveAccount(store, who, { signupsOpen, allowCreate }) {
   const sub = typeof who?.sub === 'string' ? who.sub : '';
   if (!sub) return { kind: OUTCOME.UNAVAILABLE };
 
@@ -57,7 +71,9 @@ export async function resolveAccount(store, who, { signupsOpen }) {
   if (!email) return { kind: OUTCOME.EMAIL_UNVERIFIED };
 
   // (b) an existing Stories account with this email
-  const existing = await store.findByEmail(email);
+  const matches = await store.findUsersByEmail(email);
+  if (matches.length > 1) return { kind: OUTCOME.AMBIGUOUS_EMAIL };
+  const existing = matches[0];
   if (existing) {
     if (isBlocked(existing)) return { kind: OUTCOME.BLOCKED, user: existing };
     if (existing.portal_sub) return { kind: OUTCOME.LINKED_ELSEWHERE };   // linked to a different sub (a) did not match
@@ -65,7 +81,7 @@ export async function resolveAccount(store, who, { signupsOpen }) {
     const storiesVerified = existing.email_verified === true;
     const isAdmin = existing.role === 'admin';
     if (storiesVerified && !isAdmin) {
-      const r = await store.linkPortal(existing.id, sub, { markEmailVerified: false });
+      const r = await store.linkPortal(existing.id, sub, { markEmailVerified: false, invalidatePassword: true });
       if (!r.ok) return { kind: OUTCOME.LINKED_ELSEWHERE };
       return { kind: OUTCOME.SIGNED_IN, user: r.user, linked: true, created: false };
     }
@@ -76,6 +92,10 @@ export async function resolveAccount(store, who, { signupsOpen }) {
 
   // (c) nobody has this email: a new account, if signups are open
   if (!signupsOpen) return { kind: OUTCOME.SIGNUPS_CLOSED };
+  // Another spelling of an address that already has an account (ada+x@, a.da@gmail.com): do not silently create a second,
+  // empty account for what is probably the same person. The key only DETECTS this; it never links anything.
+  if ((await store.findUsersByEmailKey(emailKey(email))).length) return { kind: OUTCOME.SIMILAR_EMAIL };
+  if (allowCreate && !(await allowCreate())) return { kind: OUTCOME.RATE_LIMITED };
   const created = await store.createPortalUser({ email, name: cleanName(who.name, email), sub });
   if (created.ok) return { kind: OUTCOME.SIGNED_IN, user: created.user, linked: true, created: true };
 
@@ -97,11 +117,14 @@ export async function linkWithPassword(store, pending, password, { compare, dumm
   const ok = await compare(String(password || ''), hash);
   if (!user || !ok) return { kind: 'bad_password' };
   if (isBlocked(user)) return { kind: OUTCOME.BLOCKED, user };
+  // case-duplicates may have appeared since the callback: still refuse to guess
+  if (pending.email && (await store.findUsersByEmail(pending.email)).length > 1) return { kind: OUTCOME.AMBIGUOUS_EMAIL };
   if (user.portal_sub) {
     // already linked meanwhile: the same sub is simply a sign-in, another sub is a conflict
     return user.portal_sub === pending.sub ? { kind: OUTCOME.SIGNED_IN, user, linked: false } : { kind: OUTCOME.LINKED_ELSEWHERE };
   }
-  // the portal asserted this address is verified and the person just proved the password: the Stories side is now verified too
+  // the portal asserted this address is verified and the person just proved the password: the Stories side is now verified too.
+  // The password stays (they just proved it); the link still bumps token_version, so older JWTs die.
   const r = await store.linkPortal(user.id, pending.sub, { markEmailVerified: true });
   if (!r.ok) return { kind: OUTCOME.LINKED_ELSEWHERE };
   return { kind: OUTCOME.SIGNED_IN, user: r.user, linked: true };

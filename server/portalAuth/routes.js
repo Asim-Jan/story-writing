@@ -7,7 +7,7 @@
 //                                        password login issues is set as the `token` cookie, 302 to /auth/portal/done
 //   POST /auth/portal/logout             clears the Stories session; {everywhere:true} also returns the portal's end_session URL
 //   GET  /api/auth/portal/config         what the login page may know ({enabled, only, signupsClosed}); answers when OFF too
-//   POST /api/auth/portal/session        hands the freshly issued JWT to the SPA once (see below)
+//   POST /api/auth/portal/session        hands the freshly issued JWT to the SPA ONCE (see below): the second call is 410
 //   GET  /api/auth/portal/link/status    is there an account-linking step pending in this browser?
 //   POST /api/auth/portal/link           the old Stories password, once, to link an UNVERIFIED Stories account
 //
@@ -20,6 +20,8 @@ import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { OUTCOME, resolveAccount, linkWithPassword } from './accounts.js';
 import { publicPortalConfig } from './config.js';
+import { createProviderHealth } from './health.js';
+import { createOnceStore } from './session.js';
 
 const require = createRequire(import.meta.url);
 const { createClient, OidcError } = require('../vendor/sai-auth-client/index.cjs');
@@ -45,12 +47,25 @@ const errorCodeFor = (e) => {
   }
 };
 
-export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}, log = console, fetch: fetchImpl, now = Date.now }) {
+/**
+ * @param {object} o
+ * @param {(req) => Promise<boolean>} [o.allowSignup]   asked right before a NEW account is created (index.js: the registration limiter's counter)
+ * @param {{consume: (id: string) => Promise<boolean>}} [o.handoff]   one-time-use memory for the SPA hand-off (default: this process)
+ * @param {{autoStart?: boolean, intervalMs?: number}} [o.probe]   the provider health probe (tests switch the timer off)
+ */
+export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}, log = console, fetch: fetchImpl, now = Date.now,
+  allowSignup = async () => true, handoff = createOnceStore({ now, log }), probe: probeOpts = {} }) {
   const router = express.Router();
   const noStore = (res) => res.set('Cache-Control', 'no-store');
   const dummyHash = bcrypt.hashSync('not-a-password-' + crypto.randomBytes(8).toString('hex'), 10);
 
-  router.get('/api/auth/portal/config', (req, res) => { noStore(res); res.json(publicPortalConfig(cfg)); });
+  // PORTAL_ONLY is a REQUEST (cfg.only). It is ENFORCED only while the portal is healthy (health.js), so a portal outage,
+  // or a portal that is gone, never locks everyone out of Stories. Admins are never locked out by it at all.
+  let providerHealth = null;
+  const onlyActive = () => !!(cfg.only && providerHealth && providerHealth.check());
+  const ctx = { cfg, store, onlyActive, providerHealth: () => providerHealth };
+
+  router.get('/api/auth/portal/config', (req, res) => { noStore(res); res.json({ ...publicPortalConfig(cfg), only: onlyActive() }); });
 
   let client = null;
   if (cfg.enabled) {
@@ -76,8 +91,11 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
       res.clearCookie(IDT_COOKIE, { httpOnly: true, secure: true, sameSite: 'lax', path: '/auth/portal' });
       res.json({ ok: true, redirect: null });
     });
-    return finish(router, cfg);
+    return finish(router, ctx);
   }
+
+  providerHealth = createProviderHealth({ issuer: cfg.issuer, fetch: fetchImpl, now, log, ...probeOpts });
+  providerHealth.start();
 
   // The link cookie and the JWT use different keys: HMAC-derived from the session secret per purpose.
   const linkKey = crypto.createHmac('sha256', cfg.cookieSecret).update('stories-portal-link').digest();
@@ -102,7 +120,8 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
   function startSession(res, user, idToken) {
     const token = jwt.sign(
       { userId: user.id, email: user.email, tokenVersion: user.token_version ?? user.tokenVersion ?? 1, via: 'portal' },
-      jwtSecret, { expiresIn: cfg.sessionTtlS });
+      // jti: the id the SPA hand-off consumes (see /api/auth/portal/session); one fresh id per issued session
+      jwtSecret, { expiresIn: cfg.sessionTtlS, jwtid: crypto.randomBytes(16).toString('hex') });
     res.cookie(TOKEN_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: cfg.sessionTtlS * 1000 });
     if (idToken) res.cookie(IDT_COOKIE, idToken, { ...idtCookieOpts, maxAge: cfg.sessionTtlS * 1000 });
     res.clearCookie(LINK_COOKIE, linkCookieOpts);
@@ -153,7 +172,7 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
 
     let outcome;
     try {
-      outcome = await resolveAccount(store, who, { signupsOpen: !cfg.signupsClosed });
+      outcome = await resolveAccount(store, who, { signupsOpen: !cfg.signupsClosed, allowCreate: () => allowSignup(req) });
     } catch (e) {
       log.error('[portal-auth] account resolution failed:', e.message);
       return toError(res, 'unavailable');
@@ -177,12 +196,20 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
       case OUTCOME.LINKED_ELSEWHERE: await audit(who.verifiedEmail, null, false, 'portal_linked_elsewhere', req); return toError(res, 'linked_elsewhere');
       case OUTCOME.BLOCKED: await audit(who.verifiedEmail, outcome.user?.id || null, false, 'portal_account_' + (outcome.user?.status || 'blocked'), req); return toError(res, 'suspended');
       case OUTCOME.EMAIL_UNVERIFIED: return toError(res, 'email_unverified');
+      case OUTCOME.AMBIGUOUS_EMAIL:
+        // operator hint only: no address in the log
+        log.warn('[portal-auth] a SAI Cloud sign-in was refused: more than one Stories account has its email (case-duplicates). Run node server/portalAuth/duplicateEmails.js (counts only) and merge them.');
+        await audit(who.verifiedEmail, null, false, 'portal_email_ambiguous', req);
+        return toError(res, 'contact_support');
+      case OUTCOME.SIMILAR_EMAIL: await audit(who.verifiedEmail, null, false, 'portal_email_similar', req); return toError(res, 'similar_email');
+      case OUTCOME.RATE_LIMITED: await audit(who.verifiedEmail, null, false, 'portal_signup_rate_limited', req); return toError(res, 'rate_limited');
       default: return toError(res, 'unavailable');
     }
   });
 
   // The cookie is HttpOnly, but the SPA still keeps its token in localStorage (dozens of components read it), so right after
-  // the callback it asks for it ONCE. Only a portal session, and only in the first two minutes after it was issued.
+  // the callback it asks for it ONCE. Only a portal session, only in the first two minutes after it was issued, and the
+  // session's jti is consumed on the first success: a second call (a replay of the cookie, a second tab) is 410.
   router.post('/api/auth/portal/session', async (req, res) => {
     noStore(res);
     const raw = req.cookies?.[TOKEN_COOKIE];
@@ -192,6 +219,8 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
       if (d.via !== 'portal' || typeof d.iat !== 'number' || t - d.iat > HANDOFF_WINDOW_S) throw new Error('not fresh');
       const user = await store.findById(d.userId);
       if (!user || user.status === 'suspended' || user.status === 'banned' || (d.tokenVersion !== undefined && d.tokenVersion !== (user.token_version ?? 1))) throw new Error('gone');
+      if (typeof d.jti !== 'string' || !d.jti) throw new Error('no id');
+      if (!(await handoff.consume(d.jti))) return res.status(410).json({ error: 'This sign-in was already collected. Sign in again.', code: 'used' });
       return res.json({ user: userJson(user), token: raw });
     } catch {
       return res.status(401).json({ error: 'Sign in again', code: 'expired' });
@@ -210,13 +239,17 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
     if (!p) return res.status(400).json({ error: 'This step has expired. Please sign in with SAI Cloud again.', code: 'expired' });
     const password = typeof req.body?.password === 'string' ? req.body.password.slice(0, 200) : '';
     try {
-      const r = await linkWithPassword(store, { userId: p.uid, sub: p.sub }, password, { compare: bcrypt.compare, dummyHash });
+      const r = await linkWithPassword(store, { userId: p.uid, sub: p.sub, email: p.email }, password, { compare: bcrypt.compare, dummyHash });
       if (r.kind === 'bad_password') {
         await audit(p.email, p.uid, false, 'portal_link_bad_password', req);
         return res.status(401).json(BAD_PASSWORD);
       }
       if (r.kind === OUTCOME.BLOCKED) return res.status(403).json({ error: 'This account is not available.', code: 'suspended' });
       if (r.kind === OUTCOME.LINKED_ELSEWHERE) return res.status(409).json({ error: 'This Stories account is already linked to a different SAI Cloud account.', code: 'linked_elsewhere' });
+      if (r.kind === OUTCOME.AMBIGUOUS_EMAIL) {
+        log.warn('[portal-auth] account linking refused: more than one Stories account has the email (case-duplicates).');
+        return res.status(409).json({ error: 'More than one Stories account uses this email address. Please contact support.', code: 'contact_support' });
+      }
       const token = startSession(res, r.user, p.idt);
       await audit(r.user.email, r.user.id, true, r.linked ? 'portal_link_password' : 'portal_login', req);
       return res.json({ user: userJson(r.user), token, returnTo: p.rt && RETURN_TO_RE.test(p.rt) ? p.rt : null });
@@ -240,24 +273,62 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
     res.json({ ok: true, redirect });
   });
 
-  return finish(router, cfg);
+  return finish(router, ctx);
 }
 
 // What index.js needs besides the router.
-function finish(router, cfg) {
+function finish(router, { cfg, store, onlyActive, providerHealth }) {
+  const onlyBody = { error: 'Email and password sign-in is turned off. Sign in with SAI Cloud.', code: 'PORTAL_ONLY' };
   return {
     router,
     config: cfg,
-    /** PORTAL_ONLY: the password routes answer 403 (existing sessions keep working until they expire). */
+    /** PORTAL_ONLY is requested AND the portal is healthy: the password routes are really off. */
+    onlyActive,
+    /** PORTAL_ONLY, local sign-UP: refused for everyone while it is enforced (existing sessions keep working until they expire). */
     blockPasswordAuth(req, res, next) {
-      if (!cfg.only) return next();
-      return res.status(403).json({ error: 'Email and password sign-in is turned off. Sign in with SAI Cloud.', code: 'PORTAL_ONLY' });
+      if (!onlyActive()) return next();
+      return res.status(403).json(onlyBody);
     },
+    /**
+     * PORTAL_ONLY, password sign-IN: refused while it is enforced, EXCEPT for an admin account (break-glass: the way in
+     * when SAI Cloud is misconfigured in a way the health probe cannot see). The account looked at is the one the login
+     * handler will use (the oldest with that email). Side effect worth knowing: under PORTAL_ONLY a non-admin gets 403
+     * where an admin gets the normal 401, so admin addresses can be told apart.
+     */
+    async blockPasswordLogin(req, res, next) {
+      if (!onlyActive()) return next();
+      try {
+        const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+        if (email && (await store.findUsersByEmail(email))[0]?.role === 'admin') return next();
+      } catch { return next(); }       // the database is in trouble: the handler answers (and fails the same way)
+      return res.status(403).json(onlyBody);
+    },
+    /**
+     * PORTAL_ONLY, "forgot password" / "reset password" for this account? An account WITHOUT a SAI Cloud link can still reset
+     * (reset-then-link is how an unverified Stories account whose password is forgotten gets onto SAI Cloud), and so can an
+     * admin. A linked account signs in through SAI Cloud while the portal is healthy.
+     */
+    passwordResetAllowed(user) {
+      if (!onlyActive()) return true;
+      return !!user && (user.role === 'admin' || !user.portal_sub);
+    },
+    onlyBody,
     /** SIGNUPS_CLOSED: new accounts (local) answer 403. */
     blockSignups(req, res, next) {
       if (!cfg.signupsClosed) return next();
       return res.status(403).json({ error: 'New accounts are closed at the moment.', code: 'SIGNUPS_CLOSED' });
     },
-    health: () => ({ requested: cfg.requested, enabled: cfg.enabled, only: cfg.only, ...(cfg.requested && !cfg.enabled ? { reason: cfg.reason } : {}) }),
+    /** One probe now (tests, and an operator hook); resolves to healthy/not. */
+    probe: () => (providerHealth() ? providerHealth().probe() : Promise.resolve(false)),
+    stop: () => providerHealth()?.stop(),
+    health() {
+      const h = providerHealth();
+      return {
+        requested: cfg.requested, enabled: cfg.enabled, only: onlyActive(),
+        ...(cfg.enabled ? { onlyRequested: cfg.onlyRequested, providerHealthy: !!h?.isHealthy(), provider: h?.status() } : {}),
+        ...(cfg.requested && !cfg.enabled ? { reason: cfg.reason } : {}),
+        ...(cfg.only && !onlyActive() ? { note: 'PORTAL_ONLY is requested but NOT enforced: SAI Cloud is not reachable, so password sign-in stays available' } : {}),
+      };
+    },
   };
 }

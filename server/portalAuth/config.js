@@ -8,8 +8,12 @@
 //                           account-linking cookies
 //   PORTAL_REDIRECT_URI     default <APP_URL>/auth/portal/callback; must be registered at the portal byte for byte
 //   PORTAL_POST_LOGOUT_URI  default <APP_URL>/
-//   PORTAL_ONLY             1 disables local password sign-up, sign-in and password reset (the final cutover). Only
-//                           honoured when SAI Cloud sign-in is actually working, so a bad config cannot lock everyone out.
+//   PORTAL_ONLY             1 asks for the final cutover: local password sign-up, sign-in and password reset are refused.
+//                           It is only ENFORCED while the portal is healthy (health.js: its discovery document and keys were
+//                           fetched OK in the last 10 minutes), so an outage cannot lock everyone out; admin accounts can always
+//                           sign in with their password (break-glass); an account that has no SAI Cloud link can still use
+//                           "forgot password" (reset-then-link). The probe CANNOT see a wrong client secret or an unregistered
+//                           redirect URI: leave this OFF until a real round trip has worked for every person.
 //   SIGNUPS_CLOSED          1 refuses NEW accounts, local and through SAI Cloud (default open)
 //
 // A mistake while PORTAL_OIDC=1 (missing secret, bad URL) leaves the feature OFF and the pod UP, with the reason in the
@@ -28,7 +32,7 @@ export function loadPortalConfig(env = process.env) {
     enabled: false,
     reason: requested ? '' : 'PORTAL_OIDC is not 1',
     onlyRequested: flag(env.PORTAL_ONLY),
-    only: false,
+    only: false,                      // requested AND the feature is enabled; whether it is enforced right now is routes.js (provider health)
     signupsClosed: flag(env.SIGNUPS_CLOSED),
     issuer: String(env.PORTAL_ISSUER || DEFAULT_ISSUER),
     clientId: String(env.PORTAL_CLIENT_ID || 'stories'),

@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { createPortalAuth } from '../routes.js';
 import { loadPortalConfig } from '../config.js';
+import { emailKey } from '../emailKey.js';
 
 export const ISSUER = 'https://portal.test';
 export const APP = 'https://stories.test';
@@ -77,14 +78,17 @@ export function memoryStore() {
       row.email = u.email; users.push(row); return row;
     },
     async findByPortalSub(sub) { return users.find((u) => u.portal_sub === sub && !u.deleted_at) || null; },
-    async findByEmail(email) { return users.find((u) => lower(u.email) === lower(email) && !u.deleted_at) || null; },
+    async findUsersByEmail(email) { return users.filter((u) => lower(u.email) === lower(email) && !u.deleted_at).slice(0, 2); },
+    async findUsersByEmailKey(key) { return users.filter((u) => emailKey(u.email) === key && !u.deleted_at).slice(0, 2); },
     async findById(id) { return users.find((u) => u.id === id && !u.deleted_at) || null; },
-    async linkPortal(id, sub, { markEmailVerified = false } = {}) {
+    async linkPortal(id, sub, { markEmailVerified = false, invalidatePassword = false } = {}) {
       const u = users.find((x) => x.id === id && !x.deleted_at);
       if (!u) return { ok: false, reason: 'not_found' };
       if (users.some((x) => x.portal_sub === sub && x !== u)) return { ok: false, reason: 'sub_in_use' };
       if (u.portal_sub) return { ok: false, reason: u.portal_sub === sub ? 'already_linked' : 'sub_in_use' };
       u.portal_sub = sub; u.portal_linked_at = new Date();
+      u.token_version = (u.token_version ?? 1) + 1;                              // every link bumps it
+      if (invalidatePassword) u.password_hash = 'unusable-' + crypto.randomBytes(8).toString('hex');
       if (markEmailVerified) u.email_verified = true;
       return { ok: true, user: u };
     },
@@ -98,26 +102,54 @@ export function memoryStore() {
 }
 
 /* ── the real routes on a real server ──────────────────────────────────────────────────────────── */
-export async function startApp({ env = {}, store = memoryStore(), provider = fakeProvider(), now } = {}) {
+export async function startApp({ env = {}, store = memoryStore(), provider = fakeProvider(), now, probe = true, allowSignup, handoff, log } = {}) {
   const cfg = loadPortalConfig({ ...baseEnv(), ...env });
   const audit = [];
-  const quiet = { error() {}, warn() {}, log() {} };
+  const quiet = log || { error() {}, warn() {}, log() {} };
   const portal = createPortalAuth({ cfg, store, jwtSecret: JWT_SECRET, fetch: provider.fetch, log: quiet, ...(now ? { now } : {}),
+    probe: { autoStart: false }, ...(allowSignup ? { allowSignup } : {}), ...(handoff ? { handoff } : {}),
     audit: async (email, userId, ok, reason) => { audit.push({ email, userId, ok, reason }); } });
   const app = express();
   app.set('trust proxy', 1);
   app.use(express.json());
   app.use(cookieParser());
   app.use(portal.router);
-  app.post('/api/auth/login', portal.blockPasswordAuth, (req, res) => res.json({ ok: 'password-login-ran' }));
+  app.post('/api/auth/login', portal.blockPasswordLogin, (req, res) => res.json({ ok: 'password-login-ran' }));
+  // the same decisions index.js makes for forgot / reset
+  app.post('/api/auth/forgot-password', async (req, res) => {
+    const u = (await store.findUsersByEmail(String(req.body?.email || '')))[0];
+    if (u && !portal.passwordResetAllowed(u)) return res.json({ generic: true, sent: false });
+    res.json({ generic: true, sent: !!u });
+  });
+  app.post('/api/auth/reset-password', async (req, res) => {
+    const u = store.users.find((x) => x.id === req.body?.userId);
+    if (!u) return res.status(404).json({});
+    if (!portal.passwordResetAllowed(u)) return res.status(403).json(portal.onlyBody);
+    u.password_hash = 'reset'; u.email_verified = true; u.token_version = (u.token_version ?? 1) + 1;   // = UserRepository.completePasswordReset
+    res.json({ ok: true });
+  });
   app.post('/api/auth/register', portal.blockPasswordAuth, portal.blockSignups, (req, res) => res.json({ ok: 'register-ran' }));
-  app.get('/api/probe', (req, res) => {          // stands in for authenticateToken: same cookie, same JWT secret
-    try { res.json({ ok: true, claims: jwt.verify(req.cookies.token || '', JWT_SECRET) }); } catch { res.status(401).json({ ok: false }); }
+  app.get('/api/probe', (req, res) => {          // stands in for authenticateToken: same cookie, same JWT secret, same token_version rule
+    try {
+      const claims = jwt.verify(req.cookies.token || '', JWT_SECRET);
+      const u = store.users.find((x) => x.id === claims.userId && !x.deleted_at);
+      if (!u || (claims.tokenVersion !== undefined && claims.tokenVersion !== (u.token_version ?? 1))) return res.status(401).json({ ok: false });
+      res.json({ ok: true, claims });
+    } catch { res.status(401).json({ ok: false }); }
+  });
+  app.get('/api/with-token', (req, res) => {     // the same, for a bearer token (what an attacker's saved JWT looks like)
+    try {
+      const claims = jwt.verify(String(req.headers.authorization || '').split(' ')[1] || '', JWT_SECRET);
+      const u = store.users.find((x) => x.id === claims.userId && !x.deleted_at);
+      if (!u || (claims.tokenVersion !== undefined && claims.tokenVersion !== (u.token_version ?? 1))) return res.status(401).json({ ok: false });
+      res.json({ ok: true });
+    } catch { res.status(401).json({ ok: false }); }
   });
   const server = http.createServer(app);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = 'http://127.0.0.1:' + server.address().port;
-  return { base, store, provider, portal, cfg, audit, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
+  if (probe) await portal.probe();                 // steady state: the first provider health probe has finished
+  return { base, store, provider, portal, cfg, audit, close: () => new Promise((r) => { portal.stop(); server.closeAllConnections?.(); server.close(r); }) };
 }
 
 /** A tiny cookie-keeping browser (no redirects followed: tests assert each hop). */

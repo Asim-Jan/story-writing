@@ -4,14 +4,21 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { UserRepository } from '../db/repositories/UserRepository.js';
 
+// nobody knows this password: a bcrypt hash of 48 random bytes
+const unusablePasswordHash = () => bcrypt.hash(crypto.randomBytes(48).toString('base64'), 10);
+
 export const pgStore = {
   findByPortalSub: (sub) => UserRepository.findByPortalSub(sub),
-  findByEmail: (email) => UserRepository.findByEmail(email),
+  /** every account with this email (case-insensitive), at most 2: more than one means case-duplicates */
+  findUsersByEmail: (email) => UserRepository.findUsersByEmail(email, 2),
+  /** accounts under another SPELLING of the email (plus-tag, Gmail dots): detection only */
+  findUsersByEmailKey: (key) => UserRepository.findUsersByEmailKey(key, 2),
   findById: (id) => UserRepository.findById(id),
-  linkPortal: (userId, sub, opts) => UserRepository.linkPortal(userId, sub, opts),
+  /** opts.invalidatePassword: replace the local password by one nobody knows (automatic links) */
+  async linkPortal(userId, sub, { markEmailVerified = false, invalidatePassword = false } = {}) {
+    return UserRepository.linkPortal(userId, sub, { markEmailVerified, passwordHash: invalidatePassword ? await unusablePasswordHash() : null });
+  },
   async createPortalUser({ email, name, sub }) {
-    // nobody knows this password: a bcrypt hash of 48 random bytes. The account signs in through SAI Cloud.
-    const passwordHash = await bcrypt.hash(crypto.randomBytes(48).toString('base64'), 10);
-    return UserRepository.createPortalUser({ email, name, sub, passwordHash });
+    return UserRepository.createPortalUser({ email, name, sub, passwordHash: await unusablePasswordHash() });
   },
 };
