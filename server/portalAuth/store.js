@@ -11,8 +11,11 @@ export const pgStore = {
   findByPortalSub: (sub) => UserRepository.findByPortalSub(sub),
   /** every account with this email (case-insensitive), at most 2: more than one means case-duplicates */
   findUsersByEmail: (email) => UserRepository.findUsersByEmail(email, 2),
-  /** accounts under another SPELLING of the email (plus-tag, Gmail dots): detection only */
-  findUsersByEmailKey: (key) => UserRepository.findUsersByEmailKey(key, 2),
+  /**
+   * accounts under another SPELLING of the email (plus-tag, Gmail dots): detection only, and only accounts that prove
+   * their address (email_verified or portal-linked): anyone can register an unverified lookalike without a mailbox.
+   */
+  findUsersByEmailKey: (key) => UserRepository.findUsersByEmailKey(key, 2, { trustedOnly: true }),
   findById: (id) => UserRepository.findById(id),
   /** opts.invalidatePassword: replace the local password by one nobody knows (automatic links) */
   async linkPortal(userId, sub, { markEmailVerified = false, invalidatePassword = false } = {}) {

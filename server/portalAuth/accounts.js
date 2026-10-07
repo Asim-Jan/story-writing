@@ -22,7 +22,9 @@
 //                                                                 signups are open ('signups_closed' otherwise), the
 //                                                                 sign-up limiter allows it ('rate_limited'), and no account
 //                                                                 exists under another spelling of the email
-//                                                                 ('similar_email': plus-tag / Gmail dots; DETECTION only)
+//                                                                 ('similar_email': plus-tag / Gmail dots; DETECTION only, and only
+//                                                                 a lookalike that is verified or portal-linked counts: an unverified
+//                                                                 one is free for anybody to register, so it never blocks)
 //
 // `store` is the small persistence interface (store.js is the Postgres one; the tests use a memory one).
 
@@ -94,7 +96,10 @@ export async function resolveAccount(store, who, { signupsOpen, allowCreate }) {
   if (!signupsOpen) return { kind: OUTCOME.SIGNUPS_CLOSED };
   // Another spelling of an address that already has an account (ada+x@, a.da@gmail.com): do not silently create a second,
   // empty account for what is probably the same person. The key only DETECTS this; it never links anything.
-  if ((await store.findUsersByEmailKey(emailKey(email))).length) return { kind: OUTCOME.SIMILAR_EMAIL };
+  // Only a lookalike that PROVES its address counts (Stories-verified, or portal-linked): an unverified one can be registered by
+  // anybody with no mailbox (victim+x@gmail.com) and would otherwise lock the real person out of their own sign-up.
+  const lookalikes = (await store.findUsersByEmailKey(emailKey(email))).filter((u) => u.email_verified === true || !!u.portal_sub);
+  if (lookalikes.length) return { kind: OUTCOME.SIMILAR_EMAIL };
   if (allowCreate && !(await allowCreate())) return { kind: OUTCOME.RATE_LIMITED };
   const created = await store.createPortalUser({ email, name: cleanName(who.name, email), sub });
   if (created.ok) return { kind: OUTCOME.SIGNED_IN, user: created.user, linked: true, created: true };

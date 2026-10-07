@@ -450,6 +450,17 @@ async function portalOnlyEnforced(db, gateway) {
     check('6a. an unlinked password user keeps the 7 days they always had', r.status === 200 && lifetime(r.json?.token) === 7 * 24 * 3600, `got ${r.status}`);
     r = await call('GET', '/api/auth/me', t1);
     check('6a. the replacement token works (it carries the bumped token_version)', r.status === 200, `got ${r.status}`);
+
+    // second review, finding 3: the PORTAL_ONLY refusal runs AFTER the limiters, so a flood of blocked logins is throttled
+    // before each one costs a database query. (Last in this section: it spends this client's whole per-IP budget.)
+    const same = [];
+    for (let i = 0; i < 8; i++) same.push((await call('POST', '/api/auth/login', null, { email: reader.email, password: 'x' })).status);
+    const s429 = same.indexOf(429);   // this address was already refused once above, so the 5th refusal in all is the last 403
+    check('3. the same blocked address is rate limited after 5 refusals (403 ..., then 429 and stays 429)', s429 === 4 && same.slice(0, s429).every(c => c === 403) && same.slice(s429).every(c => c === 429), same.join(','));
+    const varied = [];
+    for (let i = 0; i < 45; i++) varied.push((await call('POST', '/api/auth/login', null, { email: `flood${i}-${Date.now()}@regress.local`, password: 'x' })).status);
+    const first429 = varied.indexOf(429);
+    check('3. a flood that changes the address every time is rate limited too (per-IP budget), and stays limited', first429 > 0 && first429 <= 31 && varied.slice(first429).every(c => c === 429) && varied.slice(0, first429).every(c => c === 403), varied.join(','));
   } finally {
     await srv.stop();
     await redis.quit();

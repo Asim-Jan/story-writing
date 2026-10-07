@@ -79,7 +79,7 @@ export function memoryStore() {
     },
     async findByPortalSub(sub) { return users.find((u) => u.portal_sub === sub && !u.deleted_at) || null; },
     async findUsersByEmail(email) { return users.filter((u) => lower(u.email) === lower(email) && !u.deleted_at).slice(0, 2); },
-    async findUsersByEmailKey(key) { return users.filter((u) => emailKey(u.email) === key && !u.deleted_at).slice(0, 2); },
+    async findUsersByEmailKey(key) { return users.filter((u) => emailKey(u.email) === key && !u.deleted_at).slice(0, 2); },   // = the repository WITHOUT trustedOnly: accounts.js filters too
     async findById(id) { return users.find((u) => u.id === id && !u.deleted_at) || null; },
     async linkPortal(id, sub, { markEmailVerified = false, invalidatePassword = false } = {}) {
       const u = users.find((x) => x.id === id && !x.deleted_at);

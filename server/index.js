@@ -989,7 +989,19 @@ async function logUserActivity(userId, activityType, details = {}, req) {
   }
 }
 
-app.post('/api/auth/login', portalAuth.blockPasswordLogin, authLimiter, async (req, res) => {
+// PORTAL_ONLY refusals cost one database query each (blockPasswordLogin asks "is this an admin?"). authLimiter is keyed by
+// email+IP, so a flood that changes the address each time would not trip it: this per-IP budget does, and only counts while
+// PORTAL_ONLY is enforced and only the refusals (a successful admin break-glass login is not counted).
+const portalOnlyRefusalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: 'Too many login attempts, please try again later',
+  skipSuccessfulRequests: true,
+  skip: () => !portalAuth.onlyActive(),
+  keyGenerator: (req) => `portal-only:${req.ip}`,
+});
+// both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query
+app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.blockPasswordLogin, async (req, res) => {
   try {
     console.log('Login attempt for:', req.body?.email);
     const { email, password } = req.body;

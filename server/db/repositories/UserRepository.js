@@ -220,14 +220,19 @@ export class UserRepository {
   /**
    * Users whose email has this normalised key (see portalAuth/emailKey.js: lower-case, no "+tag", Gmail dots).
    * Used only to DETECT another spelling of an address, never to link or sign anyone in.
+   * `trustedOnly`: count only accounts that prove their address, i.e. email_verified OR already portal-linked. An UNVERIFIED
+   * lookalike is something anyone can register without owning a mailbox (victim+x@gmail.com), so it must not block the real
+   * person. The filter is in SQL so unverified rows cannot crowd a verified one out of the LIMIT.
    * @param {string} key
    * @param {number} [limit]
+   * @param {{trustedOnly?: boolean}} [opts]
    * @returns {Promise<object[]>}
    */
-  static async findUsersByEmailKey(key, limit = 2) {
+  static async findUsersByEmailKey(key, limit = 2, { trustedOnly = false } = {}) {
     const result = await query(
       `SELECT * FROM users
        WHERE deleted_at IS NULL
+         ${trustedOnly ? 'AND (email_verified = true OR portal_sub IS NOT NULL)' : ''}
          AND (CASE WHEN split_part(lower(email), '@', 2) IN ('gmail.com', 'googlemail.com')
                    THEN replace(split_part(split_part(lower(email), '@', 1), '+', 1), '.', '') || '@gmail.com'
                    ELSE split_part(split_part(lower(email), '@', 1), '+', 1) || '@' || split_part(lower(email), '@', 2)

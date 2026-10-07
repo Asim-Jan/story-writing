@@ -197,6 +197,19 @@ test('review 5: the SQL normalisation is the same rule as emailKey.js', { skip }
   assert.equal((await Repo.findUsersByEmailKey(emailKey('nobody@example.org'))).length, 0);
 });
 
+test('second review 1: trustedOnly counts verified or portal-linked lookalikes only, in SQL, so unverified rows cannot crowd the LIMIT', { skip }, async () => {
+  const mk = async (email, verified, sub = null) => (await pool.query(`INSERT INTO users (email,name,password_hash,email_verified,portal_sub) VALUES ($1,'K','h',$2,$3) RETURNING id`, [email, verified, sub])).rows[0].id;
+  for (let i = 0; i < 4; i++) await mk(`sq.uat+${i}@gmail.com`, false);                                   // squatters, oldest first
+  assert.equal((await Repo.findUsersByEmailKey(emailKey('sq.uat@gmail.com'), 10, { trustedOnly: true })).length, 0, 'unverified only: nobody counts');
+  assert.equal((await Repo.findUsersByEmailKey(emailKey('sq.uat@gmail.com'), 10)).length, 4, 'the untrusted default still sees them');
+  await mk('squat.real@gmail.com', true);                                                                   // different key: must not match
+  const v = await mk('sq.u.at+real@gmail.com', true);
+  const hit = await Repo.findUsersByEmailKey(emailKey('sq.uat@gmail.com'), 2, { trustedOnly: true });
+  assert.deepEqual(hit.map((u) => u.id), [v], 'the verified one is returned even though four older unverified rows precede it and the limit is 2');
+  await mk('lk.unverified+1@example.org', false, 'u_second_review_sub_1');
+  assert.equal((await Repo.findUsersByEmailKey(emailKey('lk.unverified@example.org'), 2, { trustedOnly: true })).length, 1, 'portal-linked counts even if unverified');
+});
+
 test('review 6e: a generic update cannot move portal_sub / portal_linked_at, even from a stale copy of the whole user', { skip }, async () => {
   const u = (await pool.query(`INSERT INTO users (email,name,password_hash) VALUES ('rv6e@example.com','N','h') RETURNING *`)).rows[0];
   const stale = await Repo.findById(u.id);                                   // portal_sub NULL
