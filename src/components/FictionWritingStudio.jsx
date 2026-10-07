@@ -1214,8 +1214,6 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             <TranscriptsTab
               data={data}
               setData={setData}
-              onGenerateTranscript={handleAIToolGenerate}
-              generatingAI={generatingAI}
             />
           )}
 
