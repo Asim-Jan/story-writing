@@ -6,6 +6,8 @@ import helmet from 'helmet';
 import axios from 'axios';
 import { speakLongText } from './utils/speech.js';
 import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './services/mediaJobs.js';
+import { applyOps, createFromImport, deleteImport, getImport, getImportChapter, listImports, patchImport, pruneImports, startImport } from './import/imports.js';
+import { analyzeBook } from './import/analyze.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4474,6 +4476,99 @@ async function checkReferenceRequest(req, res) {
   return true;
 }
 
+// ==================== BOOK IMPORT (rebuilt) ====================
+// Upload → background parse (ePub structure, Word/Markdown headings, PDF
+// cleanup, pattern then AI detection, front/back matter classification) →
+// review with small edit ops → create the book once → analysis as a book
+// media job. State in Postgres (import/imports.js); see the contract in the PR.
+
+const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const importError = (res, error) => {
+  if (error.status) return res.status(error.status).json({ error: error.message });
+  console.error('Import error:', error.message);
+  return res.status(500).json({ error: 'Import failed', detail: error.message });
+};
+
+app.post('/api/imports', authenticateToken, aiLimiter, (req, res, next) => {
+  importUpload.single('file')(req, res, (err) => (err ? res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'The file is over 50 MB' : err.message }) : next()));
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Attach a file' });
+    res.status(202).json({ import: await startImport({ ownerId: req.user.userId, fileName: req.file.originalname, buffer: req.file.buffer }) });
+  } catch (error) { importError(res, error); }
+});
+
+app.get('/api/imports', authenticateToken, async (req, res) => {
+  try { res.json({ imports: await listImports(req.user.userId) }); } catch (error) { importError(res, error); }
+});
+
+app.get('/api/imports/:id', authenticateToken, async (req, res) => {
+  try {
+    const imp = await getImport(req.user.userId, req.params.id);
+    return imp ? res.json({ import: imp }) : res.status(404).json({ error: 'Import not found' });
+  } catch (error) { importError(res, error); }
+});
+
+app.get('/api/imports/:id/chapters/:index', authenticateToken, async (req, res) => {
+  try {
+    const chapter = await getImportChapter(req.user.userId, req.params.id, Number(req.params.index));
+    return chapter ? res.json({ chapter }) : res.status(404).json({ error: 'Section not found' });
+  } catch (error) { importError(res, error); }
+});
+
+app.patch('/api/imports/:id/chapters', authenticateToken, async (req, res) => {
+  try {
+    const imp = await applyOps(req.user.userId, req.params.id, req.body?.ops);
+    return imp ? res.json({ import: imp }) : res.status(404).json({ error: 'Import not found' });
+  } catch (error) { importError(res, error); }
+});
+
+app.patch('/api/imports/:id', authenticateToken, async (req, res) => {
+  try {
+    const imp = await patchImport(req.user.userId, req.params.id, req.body || {});
+    return imp ? res.json({ import: imp }) : res.status(404).json({ error: 'Import not found' });
+  } catch (error) { importError(res, error); }
+});
+
+app.post('/api/imports/:id/create', authenticateToken, async (req, res, next) => {
+  // an import that already made its book answers without the quota check
+  // (a second click must not hit "book limit reached")
+  const existing = await getImport(req.user.userId, req.params.id).catch(() => null);
+  if (existing?.bookId) return res.json({ bookId: existing.bookId, analysisJob: null });
+  return checkBookQuota(req, res, next);
+}, async (req, res) => {
+  try {
+    const out = await createFromImport(req.user.userId, req.params.id, req.body || {}, createBook);
+    if (!out) return res.status(404).json({ error: 'Import not found' });
+    let analysisJob = null;
+    if (out.created && req.body?.analyze !== false) {
+      const book = await getBook(out.bookId);
+      const userId = req.user.userId;
+      analysisJob = await startMediaJob({
+        redis: await getRedisClient(),
+        userId,
+        bookId: out.bookId,
+        type: 'analysis',
+        target: { type: 'book', id: out.bookId },
+        label: 'Analysing the book',
+        run: mediaJobRunner({ ...req, params: { bookId: out.bookId }, body: { type: 'analysis', target: { type: 'book', id: out.bookId }, params: {} }, mediaJobBook: book }),
+      });
+    }
+    res.json({ bookId: out.bookId, analysisJob });
+  } catch (error) { importError(res, error); }
+});
+
+app.delete('/api/imports/:id', authenticateToken, async (req, res) => {
+  try {
+    return (await deleteImport(req.user.userId, req.params.id)) ? res.json({ ok: true }) : res.status(404).json({ error: 'Import not found (or it already made a book)' });
+  } catch (error) { importError(res, error); }
+});
+
+// abandoned imports go after 14 days: once at boot, then daily
+// unref'd: housekeeping must never keep the process alive on shutdown
+setTimeout(() => pruneImports().catch(() => {}), 60000).unref();
+setInterval(() => pruneImports().catch(() => {}), 24 * 3600 * 1000).unref();
+
 // ==================== AUDIOBOOK VOICES ====================
 // Presets from VibeVoice and Qwen3-TTS, plus the user's own cloned voices
 // (services/voices.js). A sample is stored privately and sent with each
@@ -4563,6 +4658,7 @@ const MEDIA_JOB_TARGETS = {
   reference: ['character'],
   image: ['character', 'location', 'chapter', 'cover', 'visual'],
   animation: ['animation'],
+  analysis: ['book'],
   audiobook: ['audiobook'],
 };
 
@@ -4631,6 +4727,15 @@ function mediaJobRunner(req) {
       return { imageUrl: image.imageUrl, prompt: image.prompt };
     };
   }
+  if (type === 'analysis') {
+    // reads the SAVED book chapter by chapter (import/analyze.js); the client
+    // applies the result and acks after its save
+    return async (report) => analyzeBook({
+      chapters: (req.mediaJobBook.chapters || []).map(c => ({ id: c.id, number: c.number, title: c.title, content: c.content })),
+      title: req.mediaJobBook.title,
+      report,
+    });
+  }
   if (type === 'audiobook') {
     // Chapters are read from the SAVED book (what was saved is what is spoken),
     // one after another; each finished chapter is kept even if a later one fails.
@@ -4696,6 +4801,7 @@ function mediaJobRunner(req) {
 }
 
 function mediaJobLabel({ type, params }) {
+  if (type === 'analysis') return 'Analysing the book';
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
@@ -8946,7 +9052,7 @@ async function prepareDatabase() {
 
 await prepareDatabase();
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   verifyEmailTransport().catch(() => {});
   ensureMediaOwnersTable().catch((err) => console.error('media_owners table check failed:', err.message));
   console.log('\n🚀 Fiction Writing Studio Server');
@@ -8975,3 +9081,26 @@ app.listen(PORT, () => {
   console.log(`  Health: ${apiUrl}/api/health`);
   console.log('================================\n');
 });
+
+// Graceful shutdown. db/postgres.js closes its pool on SIGTERM but nothing
+// closed the listener or the Redis clients, so the process never exited and
+// every rollout waited out the pod's grace period for a SIGKILL. Stop taking
+// requests, let in-flight ones finish (open SSE streams get 10 s), then exit.
+let shuttingDown = false;
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal}: closing the HTTP server`);
+    const deadline = setTimeout(() => {
+      console.log('shutdown: requests still open after 10 s, exiting anyway');
+      process.exit(0);
+    }, 10000);
+    httpServer.close(() => {
+      clearTimeout(deadline);
+      // a moment for the pool's own SIGTERM handler to finish closing
+      setTimeout(() => process.exit(0), 500);
+    });
+    httpServer.closeIdleConnections?.();
+  });
+}

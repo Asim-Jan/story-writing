@@ -164,6 +164,86 @@ const applyAudiobook = (book, job) => {
   return next ? { ...book, audioFiles: next } : book;
 };
 
+// ---- analysis (characters, places, plot found in the book's text) ----
+// Merged by name, case-insensitively. A field the user already filled is never
+// overwritten; only empty ones are filled. New items are marked fromImport.
+// Returns the SAME book when there is nothing left to merge.
+const normName = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+const isEmpty = (v) => v === undefined || v === null || (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length);
+let importSeq = 0;
+const importId = (prefix) => `${prefix}-${Date.now().toString(36)}-${(importSeq++).toString(36)}`;
+
+// Merge `incoming` items into `list` by key. `fill(item)` gives the fields an
+// existing item may receive (only where empty); `create(item)` builds a new one.
+const mergeByName = (list = [], incoming = [], keyOf, fill, create) => {
+  let next = null;
+  const out = () => (next || (next = [...list]));
+  for (const item of incoming || []) {
+    const key = normName(keyOf(item));
+    if (!key) continue;
+    const current = next || list;
+    const at = current.findIndex(x => normName(keyOf(x)) === key);
+    if (at === -1) { out().push(create(item)); continue; }
+    const existing = current[at];
+    let updated = null;
+    for (const [field, value] of Object.entries(fill(item))) {
+      if (isEmpty(value) || !isEmpty(existing[field])) continue;
+      updated = updated || { ...existing };
+      updated[field] = value;
+    }
+    if (updated) out()[at] = updated;
+  }
+  return next || list;
+};
+
+const applyAnalysis = (book, job) => {
+  const r = job.result;
+  if (!r || typeof r !== 'object') return book;
+  const next = { ...book };
+  let changed = false;
+  const set = (field, value) => { if (value !== book[field]) { next[field] = value; changed = true; } };
+
+  set('characters', mergeByName(book.characters, r.characters, c => c.name,
+    c => ({ role: c.role, description: c.description, background: c.description, appearance: c.appearance, firstChapter: c.firstChapter, mentions: c.mentions }),
+    c => ({ id: importId('char'), name: String(c.name).trim(), role: c.role || '', description: c.description || '', background: c.description || '',
+      appearance: c.appearance || '', firstChapter: c.firstChapter ?? null, mentions: c.mentions ?? null, relationships: [], referenceImages: [], fromImport: true })));
+  set('locations', mergeByName(book.locations, r.locations, l => l.name,
+    l => ({ type: l.type, description: l.description, firstChapter: l.firstChapter }),
+    l => ({ id: importId('loc'), name: String(l.name).trim(), type: l.type || '', description: l.description || '', significance: '', atmosphere: '', history: '',
+      firstChapter: l.firstChapter ?? null, fromImport: true })));
+  set('plotlines', mergeByName(book.plotlines, r.plotlines, pl => pl.title || pl.name,
+    pl => ({ description: pl.description, chapters: pl.chapters }),
+    pl => ({ id: importId('plot'), title: String(pl.title || pl.name).trim(), type: '', description: pl.description || '', status: 'planning', themes: '', conflicts: '',
+      linkedPlotlines: [], chapters: pl.chapters || [], fromImport: true })));
+
+  // timeline: append events that aren't there yet (same title and chapter)
+  const events = book.timelines || [];
+  const eventKey = (title, chapter) => `${normName(title)}|${chapter ?? ''}`;
+  const have = new Set(events.map(e => eventKey(e.event || e.title, e.chapter)));
+  const added = (r.timeline || [])
+    .filter(e => e?.title && !have.has(eventKey(e.title, e.chapter)))
+    .filter((e, i, arr) => arr.findIndex(x => eventKey(x.title, x.chapter) === eventKey(e.title, e.chapter)) === i)
+    .map(e => ({ id: importId('evt'), event: e.title, description: e.description || '', chapter: e.chapter ?? null,
+      chapterHint: e.chapter != null ? `Chapter ${e.chapter}` : '', date: '', location: '', sceneType: 'action', branch: 'main', locked: false, fromImport: true }));
+  if (added.length) set('timelines', [...events, ...added]);
+
+  // summaries for chapters that have none
+  const summaries = r.chapterSummaries || {};
+  if (Object.keys(summaries).length && (book.chapters || []).some(ch => isEmpty(ch.summary) && !isEmpty(summaries[ch.id]))) {
+    set('chapters', book.chapters.map(ch => (isEmpty(ch.summary) && !isEmpty(summaries[ch.id]) ? { ...ch, summary: summaries[ch.id] } : ch)));
+  }
+  if (isEmpty(book.overview) && !isEmpty(r.overview)) set('overview', r.overview);
+
+  const status = job.status === 'done' ? 'completed' : 'partial';
+  const analyzedAt = job.finishedAt || job.updatedAt || null;
+  const prevMark = book.metadata?.importAnalysis;
+  if (!prevMark || prevMark.status !== status || prevMark.analyzedAt !== analyzedAt) {
+    next.metadata = { ...(book.metadata || {}), importAnalysis: { status, analyzedAt, ...(status === 'partial' ? { error: job.error || null } : {}) } };
+    changed = true;
+  }
+  return changed ? next : book;
+};
+
 // Apply a job's result to a book. Pure and idempotent: when there is nothing
 // (more) to apply it returns the SAME book object, which is how the hook tells
 // "already in the book" apart from "still to apply".
@@ -174,12 +254,16 @@ export const applyJob = (book, job) => {
     case 'image': return applyImage(book, job);
     case 'animation': return applyAnimation(book, job);
     case 'audiobook': return applyAudiobook(book, job);
+    case 'analysis': return applyAnalysis(book, job);
     default: return book;
   }
 };
 
 const hasPartialFiles = (job) => job.type === 'audiobook' && Object.keys(job.result?.files || {}).length > 0;
-const isApplicable = (job) => job.status === 'done' || (job.status === 'failed' && (!!job.result?.portrait || hasPartialFiles(job)));
+const hasPartialAnalysis = (job) => job.type === 'analysis' && !!job.result
+  && ['characters', 'locations', 'plotlines', 'timeline'].some(k => (job.result[k] || []).length > 0);
+const isApplicable = (job) => job.status === 'done'
+  || (job.status === 'failed' && (!!job.result?.portrait || hasPartialFiles(job) || hasPartialAnalysis(job)));
 
 export const useMediaJobs = ({ bookId, data, setData, ready, savedSnapshot }) => {
   const [jobs, setJobs] = useState([]);

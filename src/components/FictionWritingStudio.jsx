@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Upload, Video, Briefcase, Swords, User, Lock } from 'lucide-react';
+import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Video, Briefcase, Swords, User, Lock, ScanSearch } from 'lucide-react';
 import { useBook } from '../hooks/useBook';
 import { useMediaJobs } from '../hooks/useMediaJobs';
 import { MediaJobsProvider, MediaJobList } from '../contexts/MediaJobsContext';
@@ -22,7 +22,7 @@ import TranscriptsTab from './TranscriptsTab';
 import ContinuityTab from './ContinuityTab';
 import AudiobookTab from './AudiobookTab';
 import ComicTab from './ComicTab';
-import ImportProgressTab from './ImportProgressTab';
+import AnalysisPanel from './AnalysisPanel';
 import AnimationStudioTab from './AnimationStudioTab';
 import JobsTab from './JobsTab';
 import RPGGameTab from './RPGGameTab';
@@ -559,7 +559,6 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   const tabs = [
     { id: 'overview', icon: BookOpen, label: 'Overview', requiredFeature: null },
     { id: 'metadata', icon: FileText, label: 'Book Info', requiredFeature: null },
-    ...(data.importedFrom ? [{ id: 'import', icon: Upload, label: 'Import Info', requiredFeature: null }] : []),
     { id: 'story', icon: Book, label: 'Story', requiredFeature: null },
     { id: 'characters', icon: Users, label: 'Characters', requiredFeature: null },
     { id: 'locations', icon: MapPin, label: 'Locations', requiredFeature: null },
@@ -575,6 +574,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     { id: 'rpggame', icon: Swords, label: 'RPG Game', requiredFeature: 'export_rpg', requiredTier: 'Basic' },
     { id: 'continuity', icon: Shield, label: 'Continuity', requiredFeature: 'continuity_check', requiredTier: 'Basic' },
     { id: 'jobs', icon: Briefcase, label: 'Jobs', requiredFeature: null },
+    { id: 'analysis', icon: ScanSearch, label: 'Analysis', requiredFeature: null },
     { id: 'ai-tools', icon: Wand2, label: 'AI Tools', requiredFeature: null }
   ];
 
@@ -1229,15 +1229,8 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
             />
           )}
 
-          {activeTab === 'import' && data.importedFrom && (
-            <ImportProgressTab
-              data={data}
-              bookId={bookId}
-              onAnalysisComplete={() => {
-                // Reload book data after analysis
-                window.location.reload();
-              }}
-            />
+          {activeTab === 'analysis' && (
+            <AnalysisPanel data={data} bookId={bookId} autosave={autosave} />
           )}
 
           {activeTab === 'animation' && (

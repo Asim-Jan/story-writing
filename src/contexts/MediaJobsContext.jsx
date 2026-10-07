@@ -50,6 +50,7 @@ export const formatElapsed = (seconds) => {
 export const jobErrorText = (job) => {
   const base = job.detail ? `${job.error || 'Generation failed'}: ${job.detail}` : (job.error || 'Generation failed');
   if (job.result?.portrait) return `${base} (the base portrait was kept)`;
+  if (job.type === 'analysis' && job.result) return `${base} (what it found so far was kept)`;
   const kept = Object.keys(job.result?.files || {}).length;
   return kept ? `${base} (${kept} finished chapter${kept === 1 ? ' was' : 's were'} kept)` : base;
 };
