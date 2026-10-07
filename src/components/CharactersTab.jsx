@@ -7,8 +7,8 @@ import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
 import CharacterReferences from './CharacterReferences';
-import CharacterEnhancePanel from './CharacterEnhancePanel';
-import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/characterEnhance';
+import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
 
@@ -111,7 +111,7 @@ const CharactersTab = ({
   const handleEnhance = async (character) => {
     setEnhanceError(null);
     try {
-      await startJob('enhance', { type: 'character', id: character.id }, enhanceParams(character));
+      await startJob('enhance', { type: 'character', id: character.id }, enhanceParams('character', character));
     } catch (error) {
       setEnhanceError({ characterId: character.id, message: error.message });
     }
@@ -445,10 +445,11 @@ const CharactersTab = ({
                 )}
               </div>
 
-              <CharacterEnhancePanel
-                character={selectedCharacter}
-                onResolve={(items, use) => setData(prev => resolveEnhancement(prev, selectedCharacter.id, items, use))}
-                onClose={() => setData(prev => closeEnhancement(prev, selectedCharacter.id))}
+              <EnhanceFromBookPanel
+                kind="character"
+                item={selectedCharacter}
+                onResolve={(items, use) => setData(prev => resolveEnhancement(prev, 'character', selectedCharacter.id, items, use))}
+                onClose={() => setData(prev => closeEnhancement(prev, 'character', selectedCharacter.id))}
               />
 
               {/* Character Image */}

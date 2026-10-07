@@ -1,19 +1,31 @@
 // "Enhance from the book": a job (type 'enhance') reads the passages that
-// mention a character and returns suggestions. They are kept ON the character
-// (character.enhancement) until the author uses or skips each one, so they
+// mention a character or a location and returns suggestions. They are kept ON
+// the item (item.enhancement) until the author uses or skips each one, so they
 // survive a reload and the job can be acknowledged after the next save.
 //
-// character.enhancement = { jobId, at, read, suggestions: [{field, value, chapters}],
-//                           relationships: [{characterId, name, type, description}],
-//                           aliases: [string], closed }
+// item.enhancement = { jobId, at, read, suggestions: [{field, value, chapters}],
+//                      relationships: [{characterId, name, type, description}] (characters),
+//                      aliases: [string], closed }
 
-export const FIELD_LABELS = {
-  role: 'Role', age: 'Age', gender: 'Gender', skinColor: 'Skin', hairColor: 'Hair', eyeColor: 'Eyes',
-  height: 'Height', weight: 'Weight', build: 'Build', appearance: 'Appearance details', background: 'Background',
-  personality: 'Personality', arc: 'Character arc', motivations: 'Motivations', fears: 'Fears & vulnerabilities',
-  quirks: 'Quirks & mannerisms',
+export const ENHANCE_KINDS = {
+  character: {
+    collection: 'characters',
+    labels: {
+      role: 'Role', age: 'Age', gender: 'Gender', skinColor: 'Skin', hairColor: 'Hair', eyeColor: 'Eyes',
+      height: 'Height', weight: 'Weight', build: 'Build', appearance: 'Appearance details', background: 'Background',
+      personality: 'Personality', arc: 'Character arc', motivations: 'Motivations', fears: 'Fears & vulnerabilities',
+      quirks: 'Quirks & mannerisms',
+    },
+    long: new Set(['appearance', 'background', 'personality', 'arc', 'motivations', 'fears', 'quirks']),
+  },
+  location: {
+    collection: 'locations',
+    labels: {
+      type: 'Type', description: 'Description', atmosphere: 'Atmosphere & mood', history: 'History & background', significance: 'Story significance',
+    },
+    long: new Set(['description', 'atmosphere', 'history', 'significance']),
+  },
 };
-export const LONG_FIELDS = new Set(['appearance', 'background', 'personality', 'arc', 'motivations', 'fears', 'quirks']);
 
 const sameId = (a, b) => a !== undefined && a !== null && String(a) === String(b);
 const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -25,40 +37,43 @@ export const openItems = (enhancement) => {
   return (enhancement.suggestions || []).length + (enhancement.relationships || []).length + (enhancement.aliases || []).length;
 };
 
-// A finished job onto its character. Suggestions the character already
-// matches (the author typed the same meanwhile) are dropped. Applying the same
-// job twice returns the SAME book.
+// A finished job onto its character or location. Suggestions the item
+// already matches (the author typed the same meanwhile) are dropped. Applying
+// the same job twice returns the SAME book.
 export const applyEnhanceJob = (book, job) => {
   const r = job.result;
-  if (!r || !Array.isArray(r.suggestions)) return book;
+  const kind = ENHANCE_KINDS[job.target?.type];
+  if (!kind || !r || !Array.isArray(r.suggestions)) return book;
+  const list = book[kind.collection] || [];
+  const item = list.find(c => sameId(c.id, job.target?.id));
+  if (!item || item.enhancement?.jobId === job.jobId) return book;
   const characters = book.characters || [];
-  const character = characters.find(c => sameId(c.id, job.target?.id));
-  if (!character || character.enhancement?.jobId === job.jobId) return book;
-  const has = new Set((character.relationships || []).map(x => String(x.characterId)));
-  const aliases = new Set([character.name, ...(character.aliases || [])].map(norm));
+  const has = new Set((item.relationships || []).map(x => String(x.characterId)));
+  const aliases = new Set([item.name, ...(item.aliases || [])].map(norm));
   const enhancement = {
     jobId: job.jobId,
     at: job.finishedAt || new Date().toISOString(),
     read: r.read || null,
-    suggestions: r.suggestions.filter(s => FIELD_LABELS[s?.field] && s.value && norm(s.value) !== norm(character[s.field])),
-    relationships: (r.relationships || []).filter(x => x?.characterId != null && !has.has(String(x.characterId))
+    suggestions: r.suggestions.filter(s => kind.labels[s?.field] && s.value && norm(s.value) !== norm(item[s.field])),
+    relationships: job.target.type !== 'character' ? [] : (r.relationships || []).filter(x => x?.characterId != null && !has.has(String(x.characterId))
       && characters.some(c => sameId(c.id, x.characterId))),
     aliases: (r.aliases || []).filter(a => a && !aliases.has(norm(a))),
     closed: false,
   };
-  return { ...book, characters: characters.map(c => (c === character ? { ...c, enhancement } : c)) };
+  return { ...book, [kind.collection]: list.map(c => (c === item ? { ...c, enhancement } : c)) };
 };
 
 /**
- * Use or skip some of a character's suggestions. items:
+ * Use or skip some of an item's suggestions (kind: 'character' | 'location'). items:
  *   {kind: 'field', field, value?}   value overrides the suggestion (edited by the author)
  *   {kind: 'relationship', characterId}
  *   {kind: 'alias', value}
  * Or items = 'all'. A used relationship is added both ways, as the form does.
  */
-export const resolveEnhancement = (book, characterId, items, use) => {
-  const characters = book.characters || [];
-  const character = characters.find(c => sameId(c.id, characterId));
+export const resolveEnhancement = (book, kind, id, items, use) => {
+  const { collection } = ENHANCE_KINDS[kind];
+  const characters = book[collection] || [];
+  const character = characters.find(c => sameId(c.id, id));
   const enh = character?.enhancement;
   if (!enh) return book;
   const list = items === 'all'
@@ -99,7 +114,7 @@ export const resolveEnhancement = (book, characterId, items, use) => {
 
   return {
     ...book,
-    characters: characters.map(c => {
+    [collection]: characters.map(c => {
       if (c === character) return next;
       const rel = reciprocals.find(x => sameId(x.characterId, c.id));
       if (!rel || (c.relationships || []).some(x => sameId(x.characterId, character.id))) return c;
@@ -109,14 +124,17 @@ export const resolveEnhancement = (book, characterId, items, use) => {
 };
 
 // Close the panel (when it found nothing, or the author is done with it).
-export const closeEnhancement = (book, characterId) => ({
-  ...book,
-  characters: (book.characters || []).map(c => (sameId(c.id, characterId) && c.enhancement ? { ...c, enhancement: { ...c.enhancement, suggestions: [], relationships: [], aliases: [], closed: true } } : c)),
-});
+export const closeEnhancement = (book, kind, id) => {
+  const { collection } = ENHANCE_KINDS[kind];
+  return {
+    ...book,
+    [collection]: (book[collection] || []).map(c => (sameId(c.id, id) && c.enhancement ? { ...c, enhancement: { ...c.enhancement, suggestions: [], relationships: [], aliases: [], closed: true } } : c)),
+  };
+};
 
 // What the enhance job is sent: the profile as the author has it now.
-export const enhanceParams = (character) => ({
-  character: Object.fromEntries(['name', 'aliases', 'relationships', ...Object.keys(FIELD_LABELS)]
-    .filter(k => character[k] !== undefined && character[k] !== null && character[k] !== '')
-    .map(k => [k, k === 'relationships' ? (character.relationships || []).map(r => ({ characterId: r.characterId, type: r.type })) : character[k]])),
+export const enhanceParams = (kind, item) => ({
+  item: Object.fromEntries(['name', 'aliases', 'relationships', ...Object.keys(ENHANCE_KINDS[kind].labels)]
+    .filter(k => item[k] !== undefined && item[k] !== null && item[k] !== '')
+    .map(k => [k, k === 'relationships' ? (item.relationships || []).map(r => ({ characterId: r.characterId, type: r.type })) : item[k]])),
 });
