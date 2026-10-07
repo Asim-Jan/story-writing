@@ -2,7 +2,7 @@ import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import { extractJSON } from '../utils/extractJSON.js';
 import dotenv from 'dotenv';
 import { saiTextOf } from '../utils/saiText.js';
-import { normaliseTransitions } from './filmShots.js';
+import { normaliseTransitions, shotDirection } from './filmShots.js';
 
 export { normaliseTransitions };
 import { matchLocation } from './filmLocations.js';
@@ -37,7 +37,7 @@ export class VideoSceneParser {
 
 Each shot is ONE continuous camera take of 4 to 8 seconds: one place, one moment, one camera move. The video model cannot do montages, quick cuts, split screens, flashback overlays, title cards or on-screen captions: a montage becomes several shots (or one telling shot), and a title card is dropped.
 
-Return ONLY a valid JSON array:
+Return ONLY a JSON object: {"shots": [ ... ]}, each shot like this:
 [
   {
     "sceneNumber": 1,
@@ -71,6 +71,7 @@ CONSISTENCY: every shot is drawn from the characters' reference portraits and th
     const contextInfo = this.buildContextString(context, transcript.transcript);
 
     const words = String(transcript.transcript || '').split(/\s+/).filter(Boolean).length;
+    const direction = shotDirection(transcript.guidance);
     const userPrompt = `Screenplay: ${transcript.title}
 Length: ${words} words (about ${Math.min(30, Math.max(3, Math.round(words / 70)))} shots)
 
@@ -79,22 +80,34 @@ ${contextInfo}
 Screenplay:
 ${transcript.transcript}
 
+${direction ? `\n${direction}\n` : ''}
 Break this into shots for AI video generation.`;
 
     try {
-      const completion = await this.getOpenAI().chat.completions.create({
-        model: SAI_CHAT_FAST,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.4,
-        max_tokens: 14000,
-      });
-
-      const responseText = saiTextOf(completion.choices[0]);
-      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const scenes = extractJSON(cleaned);
+      // JSON mode: a bare array let one unescaped quote in a line of dialogue
+      // break the JSON, and the fallback then returned the FIRST SHOT as the
+      // whole list ("scenes.slice is not a function"). One retry on a bad reply.
+      let scenes = null;
+      for (let attempt = 0; attempt < 2 && !scenes; attempt++) {
+        const completion = await this.getOpenAI().chat.completions.create({
+          model: SAI_CHAT_FAST,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.4,
+          max_tokens: 14000,
+        });
+        const responseText = saiTextOf(completion.choices[0]);
+        const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        let parsed = null;
+        try { parsed = extractJSON(cleaned); } catch { /* unreadable: retry */ }
+        const list = Array.isArray(parsed) ? parsed : (parsed?.shots || parsed?.scenes);
+        if (Array.isArray(list) && list.length && list.every(x => x && typeof x === 'object')) scenes = list;
+        else console.warn(`Scene parsing: unreadable reply (attempt ${attempt + 1}, finish ${completion.choices?.[0]?.finish_reason})`);
+      }
+      if (!scenes) throw new Error('The shot list came back unreadable twice; please try again');
 
       console.log(`Parsed ${scenes.length} scenes from transcript`);
       // at most 30 shots (one render), the book's own location names

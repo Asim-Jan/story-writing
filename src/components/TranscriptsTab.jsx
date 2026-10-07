@@ -4,6 +4,21 @@ import { jsPDF } from 'jspdf';
 import { chapterHeading } from '../utils/chapters';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 
+// The author's optional direction (mirrors server/services/transcriptWriter.js
+// GUIDANCE). Empty = the writer's defaults. The last choice is kept on the
+// book (metadata.transcriptGuidance) so the next chapter starts from it.
+export const TRANSCRIPT_GUIDANCE = [
+  { key: 'pace', label: 'Pace', options: [['', 'Writer decides'], ['slow', 'Slow and lingering'], ['brisk', 'Brisk']] },
+  { key: 'dialogue', label: 'Dialogue', options: [['', 'As in the book'], ['little', 'Little: mostly visual'], ['lots', 'Plenty: keep most lines']] },
+  { key: 'shots', label: 'Camera style', options: [['', 'Writer decides'], ['cinematic', 'Cinematic'], ['intimate', 'Intimate close-ups'], ['action', 'Action-driven'], ['documentary', 'Observational']] },
+  { key: 'narration', label: 'Narration', options: [['', 'Writer decides'], ['none', 'No narrator'], ['narrator', 'Narrator voice-over']] },
+];
+const NOTES_MAX = 600;
+const guidanceSummary = (g) => (g ? [
+  ...TRANSCRIPT_GUIDANCE.map(f => f.options.find(([v]) => v && v === g[f.key])?.[1]).filter(Boolean),
+  ...(g.notes ? ['Notes'] : []),
+] : []);
+
 // A transcript is written by a book job (type "transcript", target the
 // chapter): the server reads the SAVED chapter with the book's character
 // looks and location descriptions, and the book-level jobs hook adds the
@@ -17,6 +32,13 @@ const TranscriptsTab = ({ data, setData }) => {
   const transcriptJobs = jobsFor('chapter').filter(j => j.type === 'transcript');
   const writing = (chapterId) => transcriptJobs.some(j => j.status === 'running' && String(j.target?.id) === String(chapterId));
   const generatingAI = starting || (selectedChapter && writing(selectedChapter));
+  const guidance = data.metadata?.transcriptGuidance || {};
+  const setGuidance = (key, value) => setData(prev => ({
+    ...prev,
+    metadata: { ...(prev.metadata || {}), transcriptGuidance: { ...(prev.metadata?.transcriptGuidance || {}), [key]: value } },
+  }));
+  const directionCount = guidanceSummary(guidance).length;
+  const [showDirection, setShowDirection] = useState(directionCount > 0);
 
   const sortedChapters = [...(data.chapters || [])].sort((a, b) =>
     (parseInt(a.number) || 0) - (parseInt(b.number) || 0)
@@ -31,7 +53,8 @@ const TranscriptsTab = ({ data, setData }) => {
     setStarting(true);
     setError(null);
     try {
-      await startJob('transcript', { type: 'chapter', id: chapter.id }, {}, `Transcript: ${chapterHeading(chapter)}`);
+      const chosen = Object.fromEntries(Object.entries(guidance).filter(([, v]) => String(v || '').trim()));
+      await startJob('transcript', { type: 'chapter', id: chapter.id }, Object.keys(chosen).length ? { guidance: chosen } : {}, `Transcript: ${chapterHeading(chapter)}`);
       setSelectedChapter('');
     } catch (err) {
       setError(err.message);
@@ -365,6 +388,63 @@ const TranscriptsTab = ({ data, setData }) => {
           </button>
         </div>
 
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => setShowDirection(v => !v)}
+            aria-expanded={showDirection}
+            data-testid="transcript-direction-toggle"
+            className="text-sm font-medium text-purple-700 hover:text-purple-900 flex items-center gap-1"
+          >
+            {showDirection ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            Direction (optional){directionCount ? `: ${directionCount} set` : ''}
+          </button>
+          {showDirection && (
+            <div className="mt-3 p-4 bg-purple-50 border border-purple-100 rounded-lg" data-testid="transcript-direction">
+              <p className="text-xs text-gray-600 mb-3">Guide how the chapter is adapted. Leave anything on its default; the story itself is always kept. Your choices are remembered for the next chapter, and the scene breakdown in the Animation Studio follows them too.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {TRANSCRIPT_GUIDANCE.map(field => (
+                  <label key={field.key} className="block">
+                    <span className="block text-xs font-semibold text-gray-700 mb-1">{field.label}</span>
+                    <select
+                      value={guidance[field.key] || ''}
+                      onChange={(e) => setGuidance(field.key, e.target.value)}
+                      disabled={generatingAI}
+                      data-testid={`transcript-guidance-${field.key}`}
+                      className="w-full p-2 border border-gray-300 rounded-lg text-sm bg-white"
+                    >
+                      {field.options.map(([value, label]) => <option key={value || 'default'} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <label className="block mt-3">
+                <span className="block text-xs font-semibold text-gray-700 mb-1">Notes for the writer</span>
+                <textarea
+                  value={guidance.notes || ''}
+                  onChange={(e) => setGuidance('notes', e.target.value.slice(0, NOTES_MAX))}
+                  disabled={generatingAI}
+                  rows={2}
+                  maxLength={NOTES_MAX}
+                  placeholder="e.g. Build dread slowly; keep the storm loud; end on the light out on the water."
+                  data-testid="transcript-guidance-notes"
+                  className="w-full p-2 border border-gray-300 rounded-lg text-sm"
+                />
+                <span className="block text-right text-xs text-gray-500">{(guidance.notes || '').length}/{NOTES_MAX}</span>
+              </label>
+              {directionCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setData(prev => ({ ...prev, metadata: { ...(prev.metadata || {}), transcriptGuidance: {} } }))}
+                  className="text-xs text-gray-600 underline hover:text-gray-900"
+                >
+                  Reset to defaults
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         <MediaJobList jobs={transcriptJobs} className="mt-3" hint="Writing reads the saved chapter; a long chapter goes in parts and can take a few minutes. You can leave this page." />
         {error && <p className="mt-3 text-sm text-red-600" role="alert">{error}</p>}
 
@@ -403,6 +483,9 @@ const TranscriptsTab = ({ data, setData }) => {
                           <div className="flex gap-4 mt-1 text-sm text-gray-600">
                             <span>{transcript.sceneCount} scenes</span>
                             <span>{transcript.estimatedDuration}</span>
+                            {guidanceSummary(transcript.guidance).length > 0 && (
+                              <span data-testid="transcript-guidance-summary">Direction: {guidanceSummary(transcript.guidance).join(', ')}</span>
+                            )}
                             {transcript.chapterNumber && (
                               <span>{chapterHeading({ number: transcript.chapterNumber, title: transcript.chapterTitle })}</span>
                             )}

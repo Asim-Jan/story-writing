@@ -264,6 +264,7 @@ const applyTranscript = (book, job) => {
       sceneCount: t.sceneCount || 0,
       estimatedDuration: t.estimatedDuration || '',
       transcript: t.transcript,
+      ...(t.guidance ? { guidance: t.guidance } : {}),
       createdAt: job.finishedAt || new Date().toISOString(),
     }],
   };

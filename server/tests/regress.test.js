@@ -241,6 +241,11 @@ async function fakeGateway() {
         content = JSON.stringify({ hairColor: 'Copper', age: 'unknown', background: current.background || '', personality: 'Stubborn and curious.',
           relationships: [{ name: 'Tomas', type: 'sibling', description: 'Her older brother' }, { name: 'Nobody Here', type: 'Friend' }],
           aliases: ['Mira Vale', 'Mi'], sources: { hairColor: ['Chapter 1'], personality: [2] } });
+      } else if (/breaking an animation screenplay into the SHOTS/.test(sys)) {
+        content = JSON.stringify({ shots: [
+          { sceneNumber: 4, title: 'Tower', visualPrompt: 'The white tower in the storm.', cameraDirection: 'wide shot', duration: 8, characters: [], location: 'Gull Lighthouse (exterior)', transition: 'fade' },
+          { sceneNumber: 9, title: 'Eye', visualPrompt: 'Mira says "It\'s dark." in close-up.', cameraDirection: 'extreme close-up', duration: 7, characters: ['Mira Vale'], location: 'The Gull Lighthouse', transition: 'continue' },
+        ] });
       } else if (/adapt one chapter of a novel into an animation screenplay/.test(sys)) {
         content = 'TITLE: The Keeper\n\nEXT. THE GULL LIGHTHOUSE - NIGHT\n\nSETTING: Black cliffs, a white tower, rain.\n\nMira Vale (31, copper hair, oilskin coat) climbs the steps.\n\nCUT TO:\n\nINT. THE GULL LIGHTHOUSE - NIGHT\n\nSETTING: The lamp room, brass and glass.\n\nShe lights the lamp.';
       } else if (/one-paragraph overview/.test(sys)) {
@@ -1142,6 +1147,35 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
     && /Mira Vale: age 31, hair: copper\. Freckled, wears an oilskin coat\./.test(txUser) && /The Gull Lighthouse \(building\): A white tower on black cliffs\. Lonely and wind-battered\./.test(txUser)
     && /Other places in the book: Far Market/.test(txUser) && !/<p>|undefined/.test(txUser) && !/Tomas Reed/.test(txUser), `model=${txCall?.body?.model} setting=${/SETTING paragraph/.test(txCall?.body?.messages?.[0]?.content)} p=${/<p>/.test(txUser)} undef=${/undefined/.test(txUser)} tomas=${/Tomas Reed/.test(txUser)}`);
   await call('POST', `${jobs}/${txJob?.jobId}/ack`, owner.token);
+
+  // the author's optional direction: validated, in the writer's prompt, kept on the transcript
+  r = await call('POST', jobs, owner.token, { type: 'transcript', target: { type: 'chapter', id: ids[0] }, params: { guidance: { pace: 'glacial' } } });
+  check('transcript direction: an unknown choice = 400', r.status === 400 && /pace is one of slow, brisk/.test(r.json?.error || ''), `${r.status} ${r.json?.error}`);
+  const beforeDir = gateway.requests.length;
+  r = await call('POST', jobs, owner.token, { type: 'transcript', target: { type: 'chapter', id: ids[0] },
+    params: { guidance: { pace: 'slow', dialogue: 'little', shots: '', notes: '  End on the light   out at sea. ' } } });
+  const dirJob = await wait(r.json?.job?.jobId);
+  const dirUser = String(gateway.requests.slice(beforeDir).find(q => q.path.endsWith('/chat/completions'))?.body?.messages?.[1]?.content || '');
+  check('transcript direction: the choices and notes reach the writer, and are kept on the transcript',
+    dirJob?.status === 'done' && /DIRECTION FROM THE AUTHOR/.test(dirUser) && /Slow and lingering/.test(dirUser) && /Little dialogue/.test(dirUser)
+    && /The author's notes: End on the light out at sea\./.test(dirUser) && !/Cinematic|narrator/i.test(dirUser.split('DIRECTION FROM THE AUTHOR')[1]?.split('Characters in this passage')[0] || '')
+    && JSON.stringify(dirJob.result?.transcript?.guidance) === JSON.stringify({ pace: 'slow', dialogue: 'little', notes: 'End on the light out at sea.' }),
+    `${dirJob?.status} ${JSON.stringify(dirJob?.result?.transcript?.guidance)}`);
+  await call('POST', `${jobs}/${dirJob?.jobId}/ack`, owner.token);
+  // the Studio's shot breakdown of a saved transcript that has a direction
+  await db.query('UPDATE books SET transcripts = $2 WHERE id = $1', [bookId, JSON.stringify([{ id: 'tx-dir', title: 'The Keeper', transcript: 'EXT. GULL LIGHTHOUSE - NIGHT\n\nSETTING: Storm.', guidance: { pace: 'slow', shots: 'intimate' } }])]);
+  const beforeParse = gateway.requests.length;
+  r = await call('POST', '/api/video/parse-transcript', owner.token, { transcriptId: 'tx-dir', bookId });
+  const parseCall = gateway.requests.slice(beforeParse).find(q => q.path.endsWith('/chat/completions'));
+  const shots = r.json?.scenes || [];
+  check('shot breakdown: JSON mode, the transcript\'s direction applied, places snapped to the book, shots renumbered, an impossible "continue" made a cut',
+    r.status === 200 && parseCall?.body?.response_format?.type === 'json_object' && /Slow pace: longer takes/.test(parseCall.body.messages[1].content)
+    && /Intimate: mostly close-ups/.test(parseCall.body.messages[1].content)
+    && shots.map(x => `${x.sceneNumber}:${x.location}:${x.transition}`).join('|') === '1:The Gull Lighthouse:fade|2:The Gull Lighthouse:cut',
+    `${r.status} ${JSON.stringify(shots.map(x => [x.sceneNumber, x.location, x.transition]))} ${r.json?.error || ''}`);
+  const { shotDirection } = await import('../services/filmShots.js');
+  check('transcript direction: the shot breakdown follows it (slow pace = longer takes)',
+    /longer takes \(7 to 8 seconds\)/.test(shotDirection({ pace: 'slow', notes: 'x' })) && /author's notes on this screenplay: x/.test(shotDirection({ pace: 'slow', notes: 'x' })) && shotDirection(null) === '');
 
   // the film helpers: book location names, and a "continue" that cannot keep the framing
   const { matchLocation } = await import('../services/filmLocations.js');
