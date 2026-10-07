@@ -11,6 +11,7 @@ import { applyOps, createFromImport, deleteImport, getImport, getImportChapter, 
 import { analyzeBook } from './import/analyze.js';
 import { enhanceCharacter } from './enhance/character.js';
 import { enhanceLocation } from './enhance/location.js';
+import { enhanceBookInfo } from './enhance/book.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4661,12 +4662,15 @@ const MEDIA_JOB_TARGETS = {
   animation: ['animation'],
   analysis: ['book'],
   audiobook: ['audiobook'],
-  enhance: ['character', 'location'],
+  enhance: ['character', 'location', 'characters', 'locations', 'book'],
 };
 
 // The profile an enhance job is about, as the author has it now (params.item;
 // 2.23.49 clients send params.character).
 const enhanceItem = (params) => params?.item || params?.character || null;
+// A whole list in one job ("Enhance all"): at most this many, one after another.
+const ENHANCE_BATCH_MAX = 40;
+const ENHANCE_ONE = { characters: 'character', locations: 'location' };
 
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
 const TEXT_JOBS = new Set(['enhance']);
@@ -4695,7 +4699,14 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
     }
-    if (type === 'enhance' && !String(enhanceItem(params)?.name || '').trim()) return res.status(400).json({ error: `The ${target.type} needs a name` });
+    if (type === 'enhance' && ENHANCE_ONE[target.type]) {
+      const items = params.items;
+      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: `Choose at least one of the ${target.type}` });
+      if (items.length > ENHANCE_BATCH_MAX) return res.status(400).json({ error: `At most ${ENHANCE_BATCH_MAX} ${target.type} per job` });
+      if (items.some(it => it?.id == null || !String(it?.name || '').trim())) return res.status(400).json({ error: `Each of the ${target.type} needs an id and a name` });
+    } else if (type === 'enhance' && target.type !== 'book' && !String(enhanceItem(params)?.name || '').trim()) {
+      return res.status(400).json({ error: `The ${target.type} needs a name` });
+    }
     if (!minioAvailable && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
     const book = await getBook(bookId);
     if (!book) return res.status(404).json({ error: 'Book not found' });
@@ -4753,15 +4764,40 @@ function mediaJobRunner(req) {
   if (type === 'enhance') {
     // reads the SAVED chapters (enhance/*.js); returns suggestions the author
     // uses or skips in the client
-    const chapters = (req.mediaJobBook.chapters || []).map(c => ({ number: c.number, title: c.title, content: c.content }));
+    const book = req.mediaJobBook;
+    const chapters = (book.chapters || []).map(c => ({ number: c.number, title: c.title, content: c.content }));
+    const one = (kind, item, report) => (kind === 'location'
+      ? enhanceLocation({ location: item, chapters, title: book.title, report })
+      : enhanceCharacter({ character: item, chapters, cast: book.characters || [], title: book.title, report }));
+    if (target.type === 'book') {
+      return async (report) => ({ targetId: target.id, ...(await enhanceBookInfo({ book, item: params.item || {}, report })) });
+    }
+    if (ENHANCE_ONE[target.type]) {
+      // "Enhance all": one after another; one that is not in the book (or
+      // fails) is noted and the rest go on. Results keyed by item id.
+      return async (report) => {
+        const list = params.items;
+        const items = {};
+        let failed = 0;
+        for (let i = 0; i < list.length; i++) {
+          const it = list[i];
+          const step = (p) => report({ message: `${i + 1} of ${list.length}: ${p?.message || it.name}`, current: i, total: list.length });
+          await step();
+          try {
+            items[it.id] = await one(ENHANCE_ONE[target.type], it, step);
+          } catch (error) {
+            if (!error.status) failed++;
+            items[it.id] = { error: error.status ? error.message : 'Could not read it' };
+            console.warn(`enhance all: ${it.name} failed:`, error.message);
+          }
+        }
+        if (failed === list.length) throw new Error('The model could not read the book');
+        await report({ message: 'Done', current: list.length, total: list.length });
+        return { items };
+      };
+    }
     const item = { ...enhanceItem(params), id: target.id };
-    const title = req.mediaJobBook.title;
-    return async (report) => ({
-      targetId: target.id,
-      ...(target.type === 'location'
-        ? await enhanceLocation({ location: item, chapters, title, report })
-        : await enhanceCharacter({ character: item, chapters, cast: req.mediaJobBook.characters || [], title, report })),
-    });
+    return async (report) => ({ targetId: target.id, ...(await one(target.type, item, report)) });
   }
   if (type === 'audiobook') {
     // Chapters are read from the SAVED book (what was saved is what is spoken),
@@ -4827,8 +4863,10 @@ function mediaJobRunner(req) {
   };
 }
 
-function mediaJobLabel({ type, params }) {
+function mediaJobLabel({ type, target, params }) {
   if (type === 'analysis') return 'Analysing the book';
+  if (type === 'enhance' && target.type === 'book') return 'Filling Book Info from the book';
+  if (type === 'enhance' && ENHANCE_ONE[target.type]) return `Enhancing ${params.items.length} ${params.items.length === 1 ? ENHANCE_ONE[target.type] : target.type} from the book`;
   if (type === 'enhance') return `Enhancing ${String(enhanceItem(params).name).trim().slice(0, 60)} from the book`;
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;

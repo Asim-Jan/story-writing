@@ -8,6 +8,7 @@ import ImagePreviewModal from './ImagePreviewModal';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import EnhanceAllBar from './EnhanceAllBar';
 import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 
 const LocationsTab = ({
@@ -212,6 +213,7 @@ const LocationsTab = ({
               {viewMode === 'list' ? <Grid3x3 size={20} /> : <List size={20} />}
             </button>
           </div>
+          <EnhanceAllBar noun="locations" kind="location" items={data.locations} hasChapterText={hasChapterText} />
           {/* Search Input */}
           {data.locations.length > 0 && (
             <div className="relative">

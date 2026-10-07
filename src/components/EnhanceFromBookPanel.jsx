@@ -10,6 +10,9 @@ const chaptersText = (chapters) => (chapters?.length ? `${chapters.length === 1 
 
 const readText = (read) => {
   if (!read) return '';
+  if (read.mentions == null) { // the Book Info reads every chapter
+    return `Read ${read.chapters} chapter${read.chapters === 1 ? '' : 's'}${read.summaries ? ` (${read.summaries} from their summaries)` : ''}`;
+  }
   const base = `Read ${read.mentions} mention${read.mentions === 1 ? '' : 's'} across ${read.chapters} chapter${read.chapters === 1 ? '' : 's'}`;
   return read.sampled ? `${base} (a sample spread through the book)` : base;
 };
@@ -17,6 +20,8 @@ const readText = (read) => {
 const FieldSuggestion = ({ kind, suggestion, current, onUse, onSkip }) => {
   const [value, setValue] = useState(suggestion.value);
   const long = ENHANCE_KINDS[kind].long.has(suggestion.field);
+  const options = ENHANCE_KINDS[kind].options?.[suggestion.field];
+  const shown = (v) => options?.find(([o]) => o === v)?.[1] || v;
   return (
     <li className="border-t border-gray-200 pt-3" data-testid="enhance-suggestion" data-field={suggestion.field}>
       <div className="flex items-baseline justify-between gap-2 mb-1">
@@ -24,11 +29,16 @@ const FieldSuggestion = ({ kind, suggestion, current, onUse, onSkip }) => {
         <span className="text-xs text-gray-500">{chaptersText(suggestion.chapters)}</span>
       </div>
       {current ? (
-        <p className="text-sm text-gray-500 mb-2"><span className="font-medium">Now:</span> {current}</p>
+        <p className="text-sm text-gray-500 mb-2"><span className="font-medium">Now:</span> {shown(current)}</p>
       ) : (
         <p className="text-sm text-gray-500 mb-2">Now empty</p>
       )}
-      {long ? (
+      {options ? (
+        <select value={value} onChange={(e) => setValue(e.target.value)}
+          className="w-full p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" data-testid="enhance-value">
+          {options.map(([o, label]) => <option key={o} value={o}>{label}</option>)}
+        </select>
+      ) : long ? (
         <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={Math.min(8, Math.max(3, Math.ceil(value.length / 90)))}
           className="w-full p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-400 outline-none" data-testid="enhance-value" />
       ) : (
@@ -67,7 +77,7 @@ const EnhanceFromBookPanel = ({ kind = 'character', item, onResolve, onClose }) 
         )}
       </div>
       <p className="text-sm text-gray-600 mb-3">
-        {readText(enh.read)}. {count > 0 ? `${count} suggestion${count === 1 ? '' : 's'}; nothing changes until you use one.` : 'Nothing new to add: the profile already has what the book says.'}
+        {readText(enh.read)}. {count > 0 ? `${count} suggestion${count === 1 ? '' : 's'}; nothing changes until you use one.` : 'Nothing new to add: it already has what the book says.'}
       </p>
       {count === 0 && (
         <button type="button" onClick={onClose} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm" data-testid="enhance-close">Close</button>

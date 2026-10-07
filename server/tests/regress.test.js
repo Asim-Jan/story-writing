@@ -204,6 +204,11 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/catalogue details of a novel/.test(sys)) {
+        // keeps the author's genre, says "Young Adult" (normalised by the server), adds a tagline and a blurb
+        const current = JSON.parse(usr.match(/CURRENT details: (\{.*\})/)?.[1] || '{}');
+        content = JSON.stringify({ genre: current.genre || 'Mystery', targetAudience: 'Young Adult', tagline: 'Some maps should stay lost.',
+          blurb: /Mira Vale/.test(usr) ? 'Mira Vale comes home to finish her father\'s map.' : 'A story.' });
       } else if (/note everything they reveal about ONE place/.test(sys)) {
         content = JSON.stringify({ facts: /Gull Lighthouse/.test(usr) ? [{ about: 'history', fact: 'her father kept the light', chapter: 1 }] : [] });
       } else if (/write a location profile for a novel/.test(sys)) {
@@ -924,7 +929,36 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
   const locCalls = gateway.requests.filter(q => /ONE place|location profile/.test(q.body?.messages?.[0]?.content || ''));
   check('enhance a location: the place prompts, not the character ones', locCalls.length === 2, `${locCalls.length} calls`);
   r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'plotline', id: 'p1' }, params: { item: { name: 'x' } } });
-  check('enhance: only characters and locations', r.status === 400, `status ${r.status}`);
+  check('enhance: only characters, locations, their lists and the book', r.status === 400, `status ${r.status}`);
+
+  // "Enhance all": one job, one quota slot, one item after another; one the
+  // book never mentions is noted and the rest go on
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'characters', id: null }, params: { items: [] } });
+  check('enhance all: an empty list = 400', r.status === 400, `status ${r.status}`);
+  const q2 = await usedQuota();
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'characters', id: null },
+    params: { items: [{ id: 'char-mira', ...cast[0] }, { id: 7, name: 'Tomas Reed' }, { id: 'ghost', name: 'Ezra Nobody' }] } });
+  const all = await wait(r.json?.job?.jobId);
+  const items = all?.result?.items || {};
+  check('enhance all: suggestions per character, a missing one noted, one quota slot',
+    all?.status === 'done' && all.label === 'Enhancing 3 characters from the book' && items['char-mira']?.suggestions?.length === 2 && Array.isArray(items[7]?.suggestions) &&
+    /not mentioned/.test(items.ghost?.error || '') && (await usedQuota()) === q2 + 1,
+    `${all?.status} ${all?.label} ${JSON.stringify(Object.fromEntries(Object.entries(items).map(([k, v]) => [k, v.error || (v.suggestions || []).length])))} quota ${q2}->${await usedQuota()}`);
+  await call('POST', `${jobs}/${all?.jobId}/ack`, owner.token);
+
+  // Book Info from the chapters: the author's genre kept, the audience normalised
+  await db.query(`UPDATE books SET metadata = metadata || '{"genre": "Gothic mystery"}'::jsonb WHERE id = $1`, [bookId]);
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'book', id: bookId }, params: { item: { genre: 'Gothic mystery' } } });
+  const info = await wait(r.json?.job?.jobId);
+  const is = (info?.result?.suggestions || []).map(x => `${x.field}=${x.value}`).join('|');
+  const infoCall = gateway.requests.filter(q => /catalogue details/.test(q.body?.messages?.[0]?.content || '')).at(-1);
+  check('Book Info from the book: audience normalised, the unchanged genre not suggested, blurb from the chapters',
+    info?.status === 'done' && info.label === 'Filling Book Info from the book' &&
+    is === "targetAudience=young-adult|tagline=Some maps should stay lost.|blurb=Mira Vale comes home to finish her father's map." && info.result.read?.chapters === 2,
+    `${info?.status} ${is} ${JSON.stringify(info?.result?.read)} ${info?.error || ''}`);
+  check('Book Info: never reveal the ending (in the prompt), the chapter text read as plain text',
+    /NEVER reveal the ending/.test(infoCall?.body?.messages?.[0]?.content || '') && !/<p>/.test(infoCall?.body?.messages?.[1]?.content || ''));
+  await call('POST', `${jobs}/${info?.jobId}/ack`, owner.token);
   await call('POST', `${jobs}/${place?.jobId}/ack`, owner.token);
 }
 
