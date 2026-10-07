@@ -83,6 +83,7 @@ export const PortalLinkPage = ({ onSignedIn }) => {
         if (data.code === 'expired') setState((s) => ({ ...s, pending: false }));
         else if (data.code === 'linked_elsewhere') window.location.assign('/auth/portal/error?code=linked_elsewhere');
         else if (data.code === 'suspended') window.location.assign('/auth/portal/error?code=suspended');
+        else if (data.code === 'contact_support') window.location.assign('/auth/portal/error?code=contact_support');
         else setError(data.error || 'That did not work. Check your Stories password and try again.');
         return;
       }

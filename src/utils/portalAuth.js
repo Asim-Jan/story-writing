@@ -52,6 +52,18 @@ export const PORTAL_ERRORS = {
     body: 'The Stories account for this email address is already linked to a different SAI Cloud account. Sign in with the SAI Cloud account you linked first.',
     different: true,
   },
+  contact_support: {
+    title: 'Please contact support',
+    body: 'More than one Stories account uses your email address, so Stories cannot tell which one this sign-in belongs to. Nothing was changed. Contact support and we will sort it out.',
+  },
+  similar_email: {
+    title: 'You may already have a Stories account',
+    body: 'Your SAI Cloud email looks like another spelling of an email address that already has a Stories account (for example with a +tag or different dots). No new account was created. If that account is yours, sign in to Stories with its email and password, or contact support so it can be linked to SAI Cloud.',
+  },
+  rate_limited: {
+    title: 'Too many new accounts',
+    body: 'Too many accounts have been created from your network recently. Please try again in about an hour.',
+  },
   suspended: {
     title: 'This account is not available',
     body: 'The Stories account for this sign-in has been suspended. Please contact support.',
