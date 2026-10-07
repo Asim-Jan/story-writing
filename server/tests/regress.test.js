@@ -104,6 +104,16 @@ async function fakeGateway() {
       let parsed = null;
       try { parsed = JSON.parse(body); } catch { /* not json */ }
       requests.push({ path: req.url, body: parsed });
+      if (req.url.endsWith('/systemone')) {
+        const answers = {};
+        for (const [id] of Object.entries(parsed?.questions || {})) {
+          const st = String(parsed?.state?.[id] || '').toLowerCase();
+          answers[id] = { type: 'choice', choice: /copyright|dedicat/.test(st) ? 'front' : /about the author/.test(st) ? 'back' : 'chapter', confidence: 0.9 };
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ model: 'sai-decide', answers }));
+        return;
+      }
       if (req.url.endsWith('/models') && req.method === 'GET') {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ object: 'list', data: ['sai-chat', 'sai-chat-fast', 'sai-decide'].map(id => ({ id, object: 'model' })) }));
@@ -156,7 +166,18 @@ async function fakeGateway() {
         res.end(JSON.stringify({ error: { message: 'upstream down' } }));
         return;
       }
-      const content = JSON.stringify({ name: 'Sir Test', role: 'Hero', description: 'Brave and kind.' });
+      const sys = String(parsed?.messages?.[0]?.content || '');
+      const usr = String(parsed?.messages?.[1]?.content || '');
+      let content = JSON.stringify({ name: 'Sir Test', role: 'Hero', description: 'Brave and kind.' });
+      if (/find where chapters start/.test(sys)) {
+        const nums = [...usr.matchAll(/^\[(\d+)\]/gm)].map(m => Number(m[1]));
+        content = JSON.stringify({ chapters: nums.length > 4 ? [{ start: nums[0], title: 'Chapter 1' }, { start: nums[Math.floor(nums.length / 2)], title: 'Chapter 2' }, { start: 99999, title: 'bogus' }] : [] });
+      } else if (/read one chapter of a novel/.test(sys)) {
+        content = JSON.stringify({ summary: 'Mira finds a map.', characters: [{ name: 'Mira Vale', role: 'protagonist', description: 'A cartographer', appearance: 'copper hair' }],
+          locations: [{ name: 'The Lighthouse', type: 'building', description: 'On a cliff' }], events: [{ title: 'Map found', description: 'She finds it.' }], plot: [{ title: 'The map', description: 'It leads somewhere.' }] });
+      } else if (/one-paragraph overview/.test(sys)) {
+        content = JSON.stringify({ overview: 'A cartographer follows a map.' });
+      }
       res.end(JSON.stringify({
         id: 'x', object: 'chat.completion', created: 0, model: 'sai-chat',
         choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }],
@@ -646,6 +667,9 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
     done?.result?.project?.style === 'animated' && done.result.project.scenes.every(sc => /^\/api\/media\/images\/keyframe-/.test(sc.keyframeUrl || '') && sc.cast?.[0] === 'Mira Vale'));
   await call('POST', `${jobsUrl}/${animId}/ack`, owner.token);
 
+  // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──
+  await importChecks({ call, db, owner, stranger, jobsUrl, waitJob });
+
   // long text to speech = one valid WAV
   const longText = 'The tide came in slowly over the black sand. '.repeat(250); // ~11k chars, 3 chunks
   r = await call('POST', '/api/generate-audio', owner.token, { text: longText, voice: 'nova', bookId: book.id });
@@ -661,6 +685,138 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
       wav.readUInt32LE(4) === wav.length - 8 && dataLen === wav.length - dataIdx - 8 && wav.indexOf('RIFF', 4, 'ascii') === -1,
       `riff ${wav.readUInt32LE(4)} len ${wav.length} data ${dataLen}`);
   }
+}
+
+// ─── book import ──────────────────────────────────────────────────────────
+async function importChecks({ call, db, owner, stranger, jobsUrl, waitJob }) {
+  console.log('\n== book import');
+  const { default: JSZip } = await import('jszip');
+  const xhtml = (title, body, type = '') => `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>${title}</title></head><body${type ? ` epub:type="${type}"` : ''}>${body}</body></html>`;
+  const para = (n, word) => Array.from({ length: n }, (_, i) => `<p>${word} sentence ${i} walks along the cliff and the lighthouse keeper&#8217;s lamp burns.</p>`).join('');
+  const epub = new JSZip();
+  epub.file('mimetype', 'application/epub+zip');
+  epub.file('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
+  epub.file('OEBPS/content.opf', `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>The Keeper</dc:title><dc:creator>Ada Writer</dc:creator><dc:language>en</dc:language></metadata>
+    <manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/><item id="copy" href="copyright.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/><item id="about" href="about.xhtml" media-type="application/xhtml+xml"/></manifest>
+    <spine><itemref idref="cover"/><itemref idref="copy"/><itemref idref="c1"/><itemref idref="c2"/><itemref idref="about"/></spine></package>`);
+  epub.file('OEBPS/nav.xhtml', xhtml('Contents', '<nav epub:type="toc"><ol><li><a href="text/ch1.xhtml">One: The Storm</a></li><li><a href="text/ch2.xhtml#start">Two: The Map</a></li></ol></nav><nav epub:type="landmarks"><ol><li><a epub:type="copyright-page" href="copyright.xhtml">Copyright</a></li></ol></nav>'));
+  epub.file('OEBPS/cover.xhtml', xhtml('Cover', '<img src="cover.jpg"/>'));
+  epub.file('OEBPS/copyright.xhtml', xhtml('Copyright', '<p>Copyright 2026 Ada Writer. All rights reserved.</p>'));
+  epub.file('OEBPS/text/ch1.xhtml', xhtml('ch1', `<h1>Chapter One</h1>${para(30, 'Storm')}`, 'bodymatter chapter'));
+  epub.file('OEBPS/text/ch2.xhtml', xhtml('ch2', `<h1>Chapter Two</h1>${para(30, 'Map')}`, 'bodymatter chapter'));
+  epub.file('OEBPS/about.xhtml', xhtml('About', '<h2>About the Author</h2><p>Ada Writer lives by the sea.</p>'));
+  const epubBuf = await epub.generateAsync({ type: 'nodebuffer' });
+
+  const upload = async (token, name, buf) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([buf]), name);
+    const res = await fetch(`${call.base}/api/imports`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  };
+  const settle = async (token, id) => {
+    for (let i = 0; i < 300; i++) {
+      const r = await call('GET', `/api/imports/${id}`, token);
+      if (r.json?.import && r.json.import.status !== 'parsing') return r.json.import;
+      await new Promise(res => setTimeout(res, 100));
+    }
+    return null;
+  };
+
+  let r = await upload(owner.token, 'book.zip', Buffer.from('nope'));
+  check('import: an unsupported file type = 400', r.status === 400);
+  r = await upload(owner.token, 'The Keeper.epub', epubBuf);
+  check('import: upload = 202, parsing in the background', r.status === 202 && r.json?.import?.status === 'parsing');
+  let imp = await settle(owner.token, r.json?.import?.id);
+  const kinds = (imp?.chapters || []).map(c => `${c.kind}:${c.title}`);
+  check('ePub: title and author from the package', imp?.status === 'review' && imp.title === 'The Keeper' && imp.author === 'Ada Writer', JSON.stringify(imp).slice(0, 200));
+  check('ePub: spine order, TOC titles, front/back matter classified, image-only cover skipped',
+    kinds.join('|') === 'front:Copyright|chapter:One: The Storm|chapter:Two: The Map|back:About the Author', kinds.join('|'));
+  const ch1 = await call('GET', `/api/imports/${imp?.id}/chapters/1`, owner.token);
+  check('ePub: entities decoded, paragraphs kept', /keeper’s lamp/.test(ch1.json?.chapter?.content || '') && (ch1.json?.chapter?.content || '').split('\n\n').length >= 30);
+  r = await call('GET', `/api/imports/${imp?.id}`, stranger.token);
+  check('import: another user cannot see it', r.status === 404);
+
+  // review ops: small edits, never the whole book
+  r = await call('PATCH', `/api/imports/${imp?.id}/chapters`, owner.token, { ops: [{ op: 'nonsense' }] });
+  check('review: a bad op = 400', r.status === 400);
+  const c1len = (ch1.json?.chapter?.content || '').length;
+  r = await call('PATCH', `/api/imports/${imp?.id}/chapters`, owner.token, { ops: [
+    { op: 'rename', index: 1, title: 'The Storm' },
+    { op: 'split', index: 1, at: Math.floor(c1len / 2), title: 'The Storm, part 2' },
+    { op: 'merge', index: 2 },
+    { op: 'kind', index: 0, kind: 'front' },
+  ] });
+  const after = r.json?.import?.chapters || [];
+  check('review: rename, split, merge and kind apply in order', r.status === 200 && after.length === 4 && after[1].title === 'The Storm' && after[2].title === 'The Storm, part 2' && after[2].wordCount > 300,
+    after.map(c => `${c.kind}:${c.title}:${c.wordCount}`).join('|'));
+
+  // create once
+  const booksBefore = (await db.query('SELECT COUNT(*)::int n FROM books WHERE owner_id = $1', [owner.id])).rows[0].n;
+  const [first, second] = await Promise.all([
+    call('POST', `/api/imports/${imp?.id}/create`, owner.token, {}),
+    call('POST', `/api/imports/${imp?.id}/create`, owner.token, {}),
+  ]);
+  const bookId = first.json?.bookId || second.json?.bookId;
+  const booksAfter = (await db.query('SELECT COUNT(*)::int n FROM books WHERE owner_id = $1', [owner.id])).rows[0].n;
+  check('create: two clicks at once make ONE book', bookId && first.json?.bookId === second.json?.bookId && booksAfter === booksBefore + 1,
+    `${first.status}/${second.status} ${booksBefore}->${booksAfter}`);
+  const rows = (await db.query('SELECT chapter_number, title FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number', [bookId])).rows;
+  check('create: only story sections, numbered in order', rows.map(x => `${x.chapter_number}:${x.title}`).join('|') === '1:The Storm|2:The Storm, part 2', rows.map(x => `${x.chapter_number}:${x.title}`).join('|'));
+  const job = (first.json?.analysisJob || second.json?.analysisJob);
+  const analysed = job ? await (async () => {
+    for (let i = 0; i < 300; i++) {
+      const l = await call('GET', `/api/books/${bookId}/media-jobs`, owner.token);
+      const j = (l.json?.jobs || []).find(x => x.jobId === job.jobId);
+      if (j && j.status !== 'running') return j;
+      await new Promise(res => setTimeout(res, 200));
+    }
+    return null;
+  })() : null;
+  check('analysis job: characters, locations, plotlines, summaries per chapter, overview',
+    analysed?.status === 'done' && analysed.result.characters[0]?.name === 'Mira Vale' && analysed.result.characters[0]?.mentions === 2 &&
+    analysed.result.locations.length === 1 && Object.keys(analysed.result.chapterSummaries).length === 2 && analysed.result.overview,
+    JSON.stringify(analysed).slice(0, 220));
+
+  r = await upload(owner.token, 'The Keeper.epub', epubBuf);
+  check('duplicate: the same file again says which book it made', r.json?.import?.duplicateOf?.bookId === bookId);
+  await call('DELETE', `/api/imports/${r.json?.import?.id}`, owner.token);
+
+  // Word: heading styles split the chapters; text before the first heading is kept
+  const docx = new JSZip();
+  docx.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>');
+  docx.file('_rels/.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  docx.file('word/_rels/document.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+  docx.file('word/styles.xml', '<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style></w:styles>');
+  const wp = (t, style) => `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ''}<w:r><w:t xml:space="preserve">${t}</w:t></w:r></w:p>`;
+  docx.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${wp('A note before the story begins.')}${wp('The Arrival', 'Heading1')}${wp('She came by boat.')}${wp('The Departure', 'Heading1')}${wp('He left by train.')}</w:body></w:document>`);
+  r = await upload(owner.token, 'novel.docx', await docx.generateAsync({ type: 'nodebuffer' }));
+  imp = await settle(owner.token, r.json?.import?.id);
+  check('Word: split on Heading 1, the opening note kept', (imp?.chapters || []).map(c => c.title).join('|').endsWith('The Arrival|The Departure') && imp.chapters.length === 3 && /note before/.test(imp.chapters[0].preview),
+    (imp?.chapters || []).map(c => `${c.kind}:${c.title}`).join('|'));
+
+  // text in Windows-1252 with smart quotes, chapter headings, a preamble
+  const cp1252 = Buffer.concat([Buffer.from('A preamble that is not a chapter.\n\nChapter 1\n\nShe said \x93hello\x94 and smiled.\n\nCHAPTER TWO\n\nThe end.', 'latin1')]);
+  r = await upload(owner.token, 'old.txt', cp1252);
+  imp = await settle(owner.token, r.json?.import?.id);
+  check('text: Windows-1252 decoded, headings split, nothing dropped',
+    (imp?.chapters || []).length === 3 && /\u201chello\u201d/.test(imp.chapters[1].preview) && /preamble/.test(imp.chapters[0].preview),
+    JSON.stringify((imp?.chapters || []).map(c => c.preview)).slice(0, 220));
+
+  r = await upload(owner.token, 'notes.md', Buffer.from('# Part One\n\nAlpha text.\n\n# Part Two\n\nBeta text.'));
+  imp = await settle(owner.token, r.json?.import?.id);
+  check('Markdown: split on # headings', (imp?.chapters || []).map(c => c.title).join('|') === 'Part One|Part Two');
+
+  // no headings at all: the model finds the chapters from numbered paragraphs; bogus numbers are ignored
+  const plain = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} ${'word '.repeat(90)}`).join('\n\n');
+  r = await upload(owner.token, 'unbroken.txt', Buffer.from(plain));
+  imp = await settle(owner.token, r.json?.import?.id);
+  check('no headings: AI finds the chapters, validated, every paragraph kept',
+    (imp?.chapters || []).filter(c => c.source === 'ai').length === 2 && imp.warnings.some(w => /found by AI/.test(w)) &&
+    imp.chapters.reduce((n, c) => n + c.wordCount, 0) === 40 * 92,
+    JSON.stringify(imp?.chapters?.map(c => [c.source, c.wordCount])) + ' ' + JSON.stringify(imp?.warnings));
+  r = await call('GET', '/api/imports', owner.token);
+  check('imports list: recent imports to resume', r.status === 200 && r.json.imports.length >= 4 && r.json.imports[0].chapters === undefined);
 }
 
 // ─── 2. a database shaped like prod: old schema + legacy files, no tracker ──
