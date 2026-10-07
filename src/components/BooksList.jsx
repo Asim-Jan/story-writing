@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User, Shield, BookTemplate } from 'lucide-react';
+import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User, Shield, BookTemplate, History, ArrowRight } from 'lucide-react';
 import AIBookGeneratorModal from './AIBookGeneratorModal';
-import ImportBookModal from './ImportBookModal';
-import ChapterReviewModal from './ChapterReviewModal';
+import ImportUploadDialog from './ImportUploadDialog';
+import RecentImports from './RecentImports';
+import ImportReview from './ImportReview';
+import { importsApi } from '../utils/importsApi';
 import SettingsModal from './SettingsModal';
 import ProfilePage from './ProfilePage';
 import TemplateGalleryModal from './TemplateGalleryModal';
@@ -20,9 +22,10 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState(null);
   const [showAIGenerator, setShowAIGenerator] = useState(false);
-  const [showImport, setShowImport] = useState(false);
-  const [importData, setImportData] = useState(null);
-  const [showChapterReview, setShowChapterReview] = useState(false);
+  // import flow: { mode: 'upload' | 'recent' | 'review', id? }
+  const [importView, setImportView] = useState(null);
+  const [pendingImports, setPendingImports] = useState([]); // imports waiting for review
+  const setShowImport = (open) => setImportView(open ? { mode: 'upload' } : null);
   const [showSettings, setShowSettings] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [quotas, setQuotas] = useState(null);
@@ -33,7 +36,23 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   useEffect(() => {
     loadBooks();
     loadQuotas();
+    loadPendingImports();
   }, []);
+
+  const loadPendingImports = async () => {
+    try {
+      const d = await importsApi.list();
+      setPendingImports((d?.imports || []).filter(i => i.status === 'review'));
+    } catch {
+      setPendingImports([]); // the list is a convenience; the library works without it
+    }
+  };
+
+  const openImportedBook = (bookId) => {
+    setImportView(null);
+    loadBooks();
+    onSelectBook(bookId);
+  };
 
   const loadBooks = async () => {
     try {
@@ -155,6 +174,17 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
     );
   }
 
+  // The review is a full page: big books have hundreds of sections.
+  if (importView?.mode === 'review') {
+    return (
+      <ImportReview
+        importId={importView.id}
+        onBack={() => { setImportView(null); loadPendingImports(); }}
+        onOpenBook={openImportedBook}
+      />
+    );
+  }
+
   if (showProfile) {
     return <ProfilePage onBack={() => setShowProfile(false)} />;
   }
@@ -207,6 +237,22 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
           </div>
         </div>
 
+        {pendingImports.length > 0 && (
+          <div className="mb-6 card px-4 py-3 flex flex-wrap items-center gap-3" data-testid="pending-imports">
+            <History size={16} className="text-[var(--dim)]" />
+            <p className="flex-1 text-sm text-[var(--ink)]">
+              {pendingImports.length === 1
+                ? <>The import of <strong>{pendingImports[0].title || pendingImports[0].fileName}</strong> is waiting for your review.</>
+                : <>{pendingImports.length} imports are waiting for your review.</>}
+            </p>
+            {pendingImports.length === 1 ? (
+              <button onClick={() => setImportView({ mode: 'review', id: pendingImports[0].id })} className="btn sm" data-testid="resume-pending">Resume review<ArrowRight size={14} /></button>
+            ) : (
+              <button onClick={() => setImportView({ mode: 'recent' })} className="btn sm">Show imports</button>
+            )}
+          </div>
+        )}
+
         {/* Search + actions row */}
         <div className="mb-8">
           <div className="flex flex-col sm:flex-row gap-3 sm:items-stretch">
@@ -222,9 +268,13 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
               />
             </div>
             <div className="grid grid-cols-2 sm:flex gap-2">
-              <button onClick={() => setShowImport(true)} className="btn">
+              <button onClick={() => setShowImport(true)} className="btn" data-testid="open-import">
                 <Upload size={15} />
                 <span>Import</span>
+              </button>
+              <button onClick={() => setImportView({ mode: 'recent' })} className="btn" data-testid="open-recent-imports">
+                <History size={15} />
+                <span>Recent imports</span>
               </button>
               <button onClick={() => setShowTemplateGallery(true)} className="btn">
                 <BookTemplate size={15} />
@@ -371,36 +421,21 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
         />
       )}
 
-      {/* Import Book Modal */}
-      {showImport && (
-        <ImportBookModal
-          isOpen={showImport}
-          onClose={() => setShowImport(false)}
-          onImportComplete={(data) => {
-            setImportData(data);
-            setShowImport(false);
-            setShowChapterReview(true);
-          }}
+      {/* Import: upload, then review (full page above), or resume from Recent imports */}
+      {(importView?.mode === 'upload' || importView?.mode === 'watch') && (
+        <ImportUploadDialog
+          resumeId={importView.mode === 'watch' ? importView.id : null}
+          onClose={() => { setImportView(null); loadPendingImports(); }}
+          onReview={(id) => setImportView({ mode: 'review', id })}
+          onOpenBook={openImportedBook}
         />
       )}
-
-      {/* Chapter Review Modal */}
-      {showChapterReview && importData && (
-        <ChapterReviewModal
-          isOpen={showChapterReview}
-          importData={importData}
-          onClose={() => {
-            setShowChapterReview(false);
-            setImportData(null);
-          }}
-          onComplete={(result) => {
-            setShowChapterReview(false);
-            setImportData(null);
-            loadBooks();
-            if (result.bookId) {
-              onSelectBook(result.bookId);
-            }
-          }}
+      {importView?.mode === 'recent' && (
+        <RecentImports
+          onClose={() => { setImportView(null); loadPendingImports(); }}
+          onReview={(id) => setImportView({ mode: 'review', id })}
+          onWatch={(imp) => setImportView({ mode: 'watch', id: imp.id })}
+          onOpenBook={openImportedBook}
         />
       )}
 
