@@ -45,6 +45,7 @@ import { mediaStorage } from './services/mediaStorage.js';
 import { VideoSceneParser } from './services/videoSceneParser.js';
 import { VideoGenerator } from './services/videoGenerator.js';
 import { VideoAssembler, TRANSITIONS, TRANSITION_IDS } from './services/videoAssembler.js';
+import { writeTranscript } from './services/transcriptWriter.js';
 import rateLimit from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -4682,6 +4683,7 @@ const MEDIA_JOB_TARGETS = {
   image: ['character', 'location', 'chapter', 'cover', 'visual'],
   animation: ['animation'],
   'film-join': ['animation'],
+  transcript: ['chapter'],
   analysis: ['book'],
   audiobook: ['audiobook'],
   enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book', 'missing'],
@@ -4697,7 +4699,7 @@ const ENHANCE_NOUN = { characters: 'characters', locations: 'locations', plotlin
 const enhanceBatchMax = (type) => (type === 'timelines' ? 400 : 40);
 
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
-const TEXT_JOBS = new Set(['enhance']);
+const TEXT_JOBS = new Set(['enhance', 'transcript']);
 const mediaFeatureUnlessText = (req, res, next) => (TEXT_JOBS.has(req.body?.type) ? next() : requireFeature('media_generation')(req, res, next));
 // Jobs that call no AI model (rejoining a film's existing clips) cost no AI request.
 const FREE_JOBS = new Set(['film-join']);
@@ -4749,6 +4751,11 @@ async function validateMediaJob(req, res, next) {
     }
     if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
       return res.status(403).json({ error: 'You do not have permission to edit this book' });
+    }
+    if (type === 'transcript') {
+      const chapter = (book.chapters || []).find(c => String(c.id) === String(target.id));
+      if (!chapter) return res.status(404).json({ error: 'That chapter is not in the saved book yet; save and try again' });
+      if (!String(chapter.content || '').replace(/<[^>]+>/g, '').trim()) return res.status(400).json({ error: 'This chapter has no saved text to adapt yet' });
     }
     if (type === 'film-join' && !joinableScenes(filmProject(book, params.projectId)).length) {
       return res.status(404).json({ error: 'That film is not in the saved book, or it has no rendered scenes' });
@@ -4880,6 +4887,14 @@ function mediaJobRunner(req) {
       return { files };
     };
   }
+  if (type === 'transcript') {
+    // the SAVED chapter, with the book's looks and places (services/transcriptWriter.js)
+    return async (report) => {
+      const chapter = (req.mediaJobBook.chapters || []).find(c => String(c.id) === String(target.id));
+      const written = await writeTranscript({ chapter, book: req.mediaJobBook, report });
+      return { transcript: { ...written, chapterId: chapter.id, chapterNumber: chapter.number, chapterTitle: chapter.title } };
+    };
+  }
   if (type === 'film-join') {
     // join a finished film's clips again (new transitions, levelled sound);
     // no clip is rendered, so it is quick and free. The result is a NEW
@@ -4933,6 +4948,7 @@ function mediaJobLabel({ type, target, params }) {
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
   if (type === 'film-join') return 'Rejoining the film';
+  if (type === 'transcript') return 'Writing the transcript';
   return `Image: ${String(params.prompt).slice(0, 40)}`;
 }
 

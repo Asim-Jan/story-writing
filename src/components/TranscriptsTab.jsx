@@ -2,11 +2,21 @@ import React, { useState } from 'react';
 import { Film, Sparkles, ChevronDown, ChevronUp, Download, Trash2, Copy, FileText } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { chapterHeading } from '../utils/chapters';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 
-const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) => {
+// A transcript is written by a book job (type "transcript", target the
+// chapter): the server reads the SAVED chapter with the book's character
+// looks and location descriptions, and the book-level jobs hook adds the
+// result to book.transcripts. It keeps going if you leave this tab.
+const TranscriptsTab = ({ data, setData }) => {
   const [selectedChapter, setSelectedChapter] = useState('');
-  const [generatingFor, setGeneratingFor] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState(null);
   const [expandedTranscripts, setExpandedTranscripts] = useState({});
+  const { jobsFor, startJob } = useMediaJobsContext();
+  const transcriptJobs = jobsFor('chapter').filter(j => j.type === 'transcript');
+  const writing = (chapterId) => transcriptJobs.some(j => j.status === 'running' && String(j.target?.id) === String(chapterId));
+  const generatingAI = starting || (selectedChapter && writing(selectedChapter));
 
   const sortedChapters = [...(data.chapters || [])].sort((a, b) =>
     (parseInt(a.number) || 0) - (parseInt(b.number) || 0)
@@ -16,38 +26,18 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
 
   const handleGenerate = async () => {
     if (!selectedChapter) return;
-
     const chapter = data.chapters.find(c => c.id.toString() === selectedChapter);
     if (!chapter) return;
-
-    setGeneratingFor(chapter.id);
-
-    const prompt = `${chapterHeading(chapter)}\n\n${chapter.summary}\n\nContent:\n${chapter.content}`;
-
-    const result = await onGenerateTranscript('transcript', prompt);
-
-    if (result) {
-      const newTranscript = {
-        id: Date.now(),
-        chapterId: chapter.id,
-        chapterNumber: chapter.number,
-        chapterTitle: chapter.title,
-        title: result.title || `Episode ${chapter.number}`,
-        sceneCount: result.sceneCount || 0,
-        estimatedDuration: result.estimatedDuration || 'TBD',
-        transcript: result.transcript || '',
-        createdAt: new Date().toISOString()
-      };
-
-      setData(prev => ({
-        ...prev,
-        transcripts: [...(prev.transcripts || []), newTranscript]
-      }));
-
+    setStarting(true);
+    setError(null);
+    try {
+      await startJob('transcript', { type: 'chapter', id: chapter.id }, {}, `Transcript: ${chapterHeading(chapter)}`);
       setSelectedChapter('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setStarting(false);
     }
-
-    setGeneratingFor(null);
   };
 
   const handleDelete = (transcriptId) => {
@@ -375,6 +365,9 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
           </button>
         </div>
 
+        <MediaJobList jobs={transcriptJobs} className="mt-3" hint="Writing reads the saved chapter; a long chapter goes in parts and can take a few minutes. You can leave this page." />
+        {error && <p className="mt-3 text-sm text-red-600" role="alert">{error}</p>}
+
         {sortedChapters.length === 0 && (
           <p className="text-sm text-gray-500 mt-3 italic">
             No chapters available. Create chapters first to generate transcripts.
@@ -408,8 +401,8 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
                         <div>
                           <h3 className="text-xl font-bold text-gray-800">{transcript.title}</h3>
                           <div className="flex gap-4 mt-1 text-sm text-gray-600">
-                            <span>⌖ {transcript.sceneCount} scenes</span>
-                            <span>⏱ {transcript.estimatedDuration}</span>
+                            <span>{transcript.sceneCount} scenes</span>
+                            <span>{transcript.estimatedDuration}</span>
                             {transcript.chapterNumber && (
                               <span>{chapterHeading({ number: transcript.chapterNumber, title: transcript.chapterTitle })}</span>
                             )}

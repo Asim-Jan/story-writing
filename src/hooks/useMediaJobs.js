@@ -246,6 +246,29 @@ const applyAnalysis = (book, job) => {
   return changed ? next : book;
 };
 
+// A written transcript joins the book's transcripts once (its jobId marks it).
+const applyTranscript = (book, job) => {
+  const t = job.result?.transcript;
+  if (!t?.transcript) return book;
+  const transcripts = book.transcripts || [];
+  if (transcripts.some(x => x.jobId === job.jobId)) return book;
+  return {
+    ...book,
+    transcripts: [...transcripts, {
+      id: job.jobId,
+      jobId: job.jobId,
+      chapterId: t.chapterId,
+      chapterNumber: t.chapterNumber,
+      chapterTitle: t.chapterTitle,
+      title: t.title,
+      sceneCount: t.sceneCount || 0,
+      estimatedDuration: t.estimatedDuration || '',
+      transcript: t.transcript,
+      createdAt: job.finishedAt || new Date().toISOString(),
+    }],
+  };
+};
+
 // Apply a job's result to a book. Pure and idempotent: when there is nothing
 // (more) to apply it returns the SAME book object, which is how the hook tells
 // "already in the book" apart from "still to apply".
@@ -256,6 +279,7 @@ export const applyJob = (book, job) => {
     case 'image': return applyImage(book, job);
     case 'animation': return applyAnimation(book, job);
     case 'film-join': return applyAnimation(book, job); // a rejoined film is a new project
+    case 'transcript': return applyTranscript(book, job);
     case 'audiobook': return applyAudiobook(book, job);
     case 'analysis': return applyAnalysis(book, job);
     case 'enhance': return applyEnhanceJob(book, job);

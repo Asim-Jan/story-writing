@@ -5,6 +5,9 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { mediaStorage } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
+import { TRANSITIONS, TRANSITION_IDS, transitionOf } from './filmShots.js';
+
+export { TRANSITIONS, TRANSITION_IDS, transitionOf };
 
 // Joins a film's scene clips into one video. Until 2.23.55 this was a plain
 // concat: every scene change was a hard cut (the "fade" option was a stub),
@@ -25,34 +28,12 @@ import { setMediaBookMapping } from '../utils/mediaMapping.js';
 // piece, the pieces are joined without re-encoding, and the (light) sound
 // track is built separately. One join at a time per process.
 
-export const TRANSITIONS = {
-  continue: { xfade: 'fade', seconds: 0.12 },
-  cut: { xfade: 'fade', seconds: 0.25 },
-  dissolve: { xfade: 'fade', seconds: 0.8 },
-  fade: { xfade: 'fadeblack', seconds: 1.2 },
-};
-export const TRANSITION_IDS = Object.keys(TRANSITIONS);
-
 const FPS = 24;
 const ENCODE = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-threads', '2', '-video_track_timescale', '24000', '-an'];
 const TARGET_DB = -20; // mean level every clip is brought to
 const FADE_IN = 0.5;
 const FADE_OUT = 0.8;
 const MAX_HEAD_TRIM = 1.0;
-
-const sameText = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
-
-/**
- * How a scene begins after the previous one. The scene's own transition when
- * it has a valid one; otherwise inferred: the same place is a cut, a new
- * place a dissolve. The first scene has none (the film fades in).
- */
-export function transitionOf(scene, previous) {
-  if (!previous) return null;
-  const own = String(scene?.transition || '').trim().toLowerCase();
-  if (TRANSITIONS[own]) return own;
-  return scene?.location && sameText(scene.location, previous.location) ? 'cut' : 'dissolve';
-}
 
 /**
  * The join plan for the usable clips, in order. A scene after a failed one

@@ -9,7 +9,8 @@ import { mediaStorage } from './mediaStorage.js';
 import { recordMediaOwner } from '../utils/mediaMapping.js';
 import { describeCharacter, mediaUrlToDataUrl } from './characterReferences.js';
 import { VideoGenerator } from './videoGenerator.js';
-import { transitionOf } from './videoAssembler.js';
+import { transitionOf } from './filmShots.js';
+import { matchLocation, describeLocation } from './filmLocations.js';
 
 // Consistent films. Clips made from text alone each invent their own look:
 // one scene lifelike, the next animated, the characters different every time.
@@ -126,10 +127,12 @@ async function closingFrame(videoBuffer) {
   }
 }
 
-function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition }) {
+function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition, place }) {
   const lines = [`${style.prompt}.`, `Opening frame of a film scene: ${scene.visualPrompt || scene.title || ''}`];
   if (scene.cameraDirection) lines.push(`Camera: ${scene.cameraDirection}.`);
-  if (scene.location) lines.push(`Setting: ${scene.location}.`);
+  // the book's own description of the place (it was the bare name)
+  if (place) lines.push(`Setting (the wider place): ${describeLocation(place.location)}.`);
+  else if (scene.location) lines.push(`Setting: ${scene.location}.`);
   if (scene.mood) lines.push(`Mood: ${scene.mood}.`);
   cast.forEach((c, i) => {
     lines.push(c.ref
@@ -139,8 +142,14 @@ function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition 
   if (cast.some(c => c.ref)) {
     lines.push('Keep every character exactly as in their reference image: same face, hair, body, clothes and colours.');
   }
+  const castRefs = cast.filter(c => c.ref).length;
+  if (place?.ref) {
+    // the shot may be a corner or an inside of the place (a workshop in the
+    // Undergrid), so its look, not its layout
+    lines.push(`Image ${castRefs + 1} shows ${place.location.name}, where this shot takes place (this may be a different part of it, closer in or inside): match its look, materials, lighting style and colour palette.`);
+  }
   if (hasPrevious) {
-    const n = cast.filter(c => c.ref).length + 1;
+    const n = castRefs + (place?.ref ? 1 : 0) + 1;
     const sameSetting = previous?.location && scene.location && previous.location === scene.location;
     // a new shot of the same moment must not repeat the framing: the same
     // angle with the character in a new pose is a jump cut
@@ -195,6 +204,18 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
     if (transition === 'continue' && !canContinue) transition = 'cut';
     continues = canContinue ? continues + 1 : 0;
 
+    // the scene's place in the book, with its picture as a reference (the
+    // bridge takes 6 images: up to 4 portraits, the place, the previous shot)
+    const location = matchLocation(scene.location, book.locations);
+    const place = location ? { location, ref: null } : null;
+    if (place && location.imageUrl && !canContinue) {
+      try {
+        place.ref = await mediaUrlToDataUrl(user, location.imageUrl);
+      } catch (err) {
+        console.warn(`Film: no usable picture for ${location.name}:`, err.message);
+      }
+    }
+
     let keyframe = null;
     let keyframeUrl = null;
     if (canContinue) {
@@ -209,8 +230,8 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
       }
     } else try {
       await onProgress({ stage: 'keyframe', ...base });
-      const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(previousFrame ? [previousFrame] : [])];
-      const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition });
+      const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(place?.ref ? [place.ref] : []), ...(previousFrame ? [previousFrame] : [])];
+      const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition, place });
       const image = await saiImage({
         model: 'qwen-image-2.1',
         size: '1280x720',
@@ -253,7 +274,7 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
         previousExact = false;
       }
       previousScene = scene;
-      const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name), ...(transition ? { transition } : {}) };
+      const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name), ...(transition ? { transition } : {}), ...(location ? { place: location.name } : {}) };
       results.push(result);
       await onProgress({ stage: 'scene-complete', ...base, keyframeUrl, result });
     } catch (err) {

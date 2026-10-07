@@ -241,6 +241,8 @@ async function fakeGateway() {
         content = JSON.stringify({ hairColor: 'Copper', age: 'unknown', background: current.background || '', personality: 'Stubborn and curious.',
           relationships: [{ name: 'Tomas', type: 'sibling', description: 'Her older brother' }, { name: 'Nobody Here', type: 'Friend' }],
           aliases: ['Mira Vale', 'Mi'], sources: { hairColor: ['Chapter 1'], personality: [2] } });
+      } else if (/adapt one chapter of a novel into an animation screenplay/.test(sys)) {
+        content = 'TITLE: The Keeper\n\nEXT. THE GULL LIGHTHOUSE - NIGHT\n\nSETTING: Black cliffs, a white tower, rain.\n\nMira Vale (31, copper hair, oilskin coat) climbs the steps.\n\nCUT TO:\n\nINT. THE GULL LIGHTHOUSE - NIGHT\n\nSETTING: The lamp room, brass and glass.\n\nShe lights the lamp.';
       } else if (/one-paragraph overview/.test(sys)) {
         content = JSON.stringify({ overview: 'A cartographer follows a map.' });
       }
@@ -822,13 +824,14 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   // animation: per-scene progress and a project result (the server does not write the book).
   // The book's cast has Mira with a portrait, so her scenes are drawn from it.
   const portraitForFilm = (await refJob(owner.token, { bookId: book.id, kind: 'portrait', character })).json?.reference?.imageUrl;
-  await db.query('UPDATE books SET characters = $2 WHERE id = $1', [book.id, JSON.stringify([{ id: 'c1', name: 'Mira Vale', imageUrl: portraitForFilm }])]);
+  await db.query('UPDATE books SET characters = $2, locations = $3 WHERE id = $1', [book.id, JSON.stringify([{ id: 'c1', name: 'Mira Vale', imageUrl: portraitForFilm }]),
+    JSON.stringify([{ id: 'l1', name: 'Gull Lighthouse', description: 'A white tower on black cliffs.', imageUrl: portraitForFilm }])]);
   const versionBefore = (await db.query('SELECT version FROM books WHERE id = $1', [book.id])).rows[0].version;
   const filmStart = gateway.requests.length;
   r = await call('POST', jobsUrl, owner.token, { type: 'animation', target: { type: 'animation', id: 't1' }, params: {
     options: { style: 'animated' },
     scenes: [{ sceneNumber: 1, title: 'A', visualPrompt: 'Mira climbs the lighthouse stairs', characters: ['Mira'], duration: 1 },
-      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves FAIL_ONCE', characters: ['mira vale'], duration: 1 },
+      { sceneNumber: 2, title: 'B', visualPrompt: 'Mira looks out at the waves FAIL_ONCE', characters: ['mira vale'], duration: 1, location: 'Gull Lighthouse (gallery)' },
       { sceneNumber: 3, title: 'C', visualPrompt: 'Mira keeps watching the waves', characters: ['Mira'], duration: 1, transition: 'continue' }] } });
   const animId = r.json?.job?.jobId;
   let sawProgress = false;
@@ -853,7 +856,9 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     keyframes.length === 2 && keyframes.every(k => k.body.size === '1280x720' && k.body.canvas === 'size'), `${keyframes.length} keyframes`);
   check('film: scene 1 keyframe references the character\'s portrait', /^data:image\//.test(keyframes[0]?.body?.image || '') && /image 1 is Mira Vale/.test(keyframes[0]?.body?.prompt || ''),
     (keyframes[0]?.body?.prompt || '').slice(0, 200));
-  check('film: scene 2 keyframe references the portrait AND the previous clip\'s last frame', keyframes[1]?.body?.images?.length === 2 && /previous shot/.test(keyframes[1]?.body?.prompt || ''));
+  check('film: scene 2 keyframe references the portrait, the PLACE\'s picture and the previous clip\'s last frame', keyframes[1]?.body?.images?.length === 3
+    && /Image 2 shows Gull Lighthouse/.test(keyframes[1]?.body?.prompt || '') && /Setting \(the wider place\): Gull Lighthouse: A white tower/.test(keyframes[1]?.body?.prompt || '')
+    && /Image 3 is the previous shot/.test(keyframes[1]?.body?.prompt || ''), (keyframes[1]?.body?.prompt || '').slice(0, 300));
   check('film: every clip starts from its keyframe, in the locked style, never "realistic"',
     starts.length === 4 && starts.every(v => /^data:image\//.test(v.body?.image || '') && /stylised 3D animated/.test(v.body?.prompt || '') && !/realistic/i.test(v.body?.prompt || '')),
     (starts[0]?.body?.prompt || '').slice(0, 160));
@@ -1112,6 +1117,41 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
     /NEVER reveal the ending/.test(infoCall?.body?.messages?.[0]?.content || '') && !/<p>/.test(infoCall?.body?.messages?.[1]?.content || ''));
   await call('POST', `${jobs}/${info?.jobId}/ack`, owner.token);
   await call('POST', `${jobs}/${place?.jobId}/ack`, owner.token);
+
+  // ── transcripts: a background job that knows how the cast looks and what the places are like ──
+  console.log('\n== transcript from a chapter');
+  await db.query('UPDATE books SET characters = $2, locations = $3 WHERE id = $1', [bookId,
+    JSON.stringify([{ id: 'char-mira', name: 'Mira Vale', age: '31', hairColor: 'copper', appearance: 'Freckled, wears an oilskin coat.' }, { id: 7, name: 'Tomas Reed' }]),
+    JSON.stringify([{ id: 'loc-gull', name: 'The Gull Lighthouse', type: 'building', description: 'A white tower on black cliffs.', atmosphere: 'Lonely and wind-battered.' }, { id: 'loc-x', name: 'Far Market' }])]);
+  r = await call('POST', jobs, owner.token, { type: 'transcript', target: { type: 'chapter', id: 'no-such-chapter' }, params: {} });
+  check('transcript: a chapter not in the saved book = 404', r.status === 404, `status ${r.status}`);
+  const qt = await usedQuota();
+  const beforeTx = gateway.requests.length;
+  r = await call('POST', jobs, owner.token, { type: 'transcript', target: { type: 'chapter', id: ids[0] }, params: {} });
+  const txJob = await wait(r.json?.job?.jobId);
+  const tx = txJob?.result?.transcript || {};
+  check('transcript: written as a job, plain text, scenes counted, the film it makes estimated',
+    txJob?.status === 'done' && tx.title === 'The Keeper' && !/TITLE:/.test(tx.transcript) && /^EXT\. THE GULL LIGHTHOUSE/.test(tx.transcript)
+    && tx.sceneCount === 2 && /of film \(\d+ shots\)/.test(tx.estimatedDuration) && String(tx.chapterId) === String(ids[0]) && (await usedQuota()) === qt + 1,
+    `${txJob?.status} ${txJob?.error || ''} ${JSON.stringify(tx).slice(0, 200)}`);
+  const txCall = gateway.requests.slice(beforeTx).find(q => q.path.endsWith('/chat/completions'));
+  const txUser = String(txCall?.body?.messages?.[1]?.content || '');
+  // (the Writer role: whichever chat model the admin has given it)
+  check('transcript: the writer gets how the cast looks and what the places are like, the chapter as plain text',
+    ['sai-chat', 'sai-chat-fast'].includes(txCall?.body?.model) && /SETTING paragraph/.test(txCall.body.messages[0].content)
+    && /Mira Vale: age 31, hair: copper\. Freckled, wears an oilskin coat\./.test(txUser) && /The Gull Lighthouse \(building\): A white tower on black cliffs\. Lonely and wind-battered\./.test(txUser)
+    && /Other places in the book: Far Market/.test(txUser) && !/<p>|undefined/.test(txUser) && !/Tomas Reed/.test(txUser), `model=${txCall?.body?.model} setting=${/SETTING paragraph/.test(txCall?.body?.messages?.[0]?.content)} p=${/<p>/.test(txUser)} undef=${/undefined/.test(txUser)} tomas=${/Tomas Reed/.test(txUser)}`);
+  await call('POST', `${jobs}/${txJob?.jobId}/ack`, owner.token);
+
+  // the film helpers: book location names, and a "continue" that cannot keep the framing
+  const { matchLocation } = await import('../services/filmLocations.js');
+  const { normaliseTransitions } = await import('../services/filmShots.js');
+  const L = [{ name: 'Shinjuku Undergrid' }, { name: 'The Gull Lighthouse' }];
+  check('film: a scene\'s place snaps to the book\'s location name',
+    matchLocation('Shinjuku Undergrid (Underground City)', L)?.name === 'Shinjuku Undergrid' && matchLocation('gull lighthouse', L)?.name === 'The Gull Lighthouse' && matchLocation('Noodle stall', L) === null);
+  check('film: a wide shot cannot "continue" into a close-up (it becomes a cut); a camera move can',
+    normaliseTransitions([{ cameraDirection: 'wide shot' }, { cameraDirection: 'extreme close-up', transition: 'continue' }, { cameraDirection: 'tracking shot', transition: 'continue' }])
+      .map(x => x.transition).join() === 'fade,cut,continue');
 }
 
 // ─── book import ──────────────────────────────────────────────────────────
