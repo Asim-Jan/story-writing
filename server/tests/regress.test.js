@@ -204,6 +204,12 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/note everything they reveal about ONE place/.test(sys)) {
+        content = JSON.stringify({ facts: /Gull Lighthouse/.test(usr) ? [{ about: 'history', fact: 'her father kept the light', chapter: 1 }] : [] });
+      } else if (/write a location profile for a novel/.test(sys)) {
+        const current = JSON.parse(usr.match(/CURRENT profile: (\{.*\})/)?.[1] || '{}');
+        content = JSON.stringify({ type: 'lighthouse', description: current.description || '', history: 'Her father kept the light until he vanished.', significance: '',
+          aliases: ['the Gull', 'The Gull Lighthouse'], sources: { history: [1] } });
       } else if (/write a character profile for a novel/.test(sys)) {
         // echoes the current background (unchanged = not a suggestion), says
         // "unknown" for age (a blank, dropped), and names someone not in the cast
@@ -869,10 +875,11 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
   };
   const filler = 'The tide turned slowly over the black sand and the gulls cried. '.repeat(60);
   const ids = (await db.query('SELECT id FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number', [bookId])).rows.map(x => x.id);
-  await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[0], `<p>${filler}</p><p>Mira Vale pushed the copper hair out of her eyes.</p><p>${filler}</p>`]);
+  await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[0], `<p>${filler}</p><p>Mira Vale pushed the copper hair out of her eyes and climbed the Gull Lighthouse.</p><p>${filler}</p>`]);
   await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[1], `${filler}\n\nMira argued with her brother Tomas until dawn.\n\n${filler}`]);
   const cast = [{ id: 'char-mira', name: 'Mira Vale', background: 'A cartographer', relationships: [] }, { id: 7, name: 'Tomas Reed', relationships: [] }];
-  await db.query('UPDATE books SET characters = $2 WHERE id = $1', [bookId, JSON.stringify(cast)]);
+  const places = [{ id: 'loc-gull', name: 'The Gull Lighthouse', description: 'A lighthouse.' }];
+  await db.query('UPDATE books SET characters = $2, locations = $3 WHERE id = $1', [bookId, JSON.stringify(cast), JSON.stringify(places)]);
 
   const q0 = await usedQuota();
   let r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'character', id: 'char-mira' }, params: { character: { background: 'x' } } });
@@ -905,6 +912,20 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
   check('enhance: someone the chapters never mention fails with why, and the slot is refunded',
     missing?.status === 'failed' && /not mentioned/.test(missing?.error || '') && (await usedQuota()) === q1, `${missing?.status} ${missing?.error} quota ${q1}->${await usedQuota()}`);
   await call('POST', `${jobs}/${missing?.jobId}/ack`, owner.token);
+
+  // a location: its full name (with or without "The"), same steps, no relationships
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'location', id: 'loc-gull' }, params: { item: places[0] } });
+  const place = await wait(r.json?.job?.jobId);
+  const ps = (place?.result?.suggestions || []).map(x => `${x.field}=${x.value}@${x.chapters.join(',')}`).join('|');
+  check('enhance a location: found by name without "The", suggestions for what changes, other names (not its own)',
+    place?.status === 'done' && ps === 'type=lighthouse@|history=Her father kept the light until he vanished.@1' &&
+    JSON.stringify(place.result.aliases) === '["the Gull"]' && place.result.relationships.length === 0 && place.result.read?.mentions === 1 && place.label === 'Enhancing The Gull Lighthouse from the book',
+    `${place?.status} ${ps} ${JSON.stringify(place?.result?.aliases)} ${place?.error || ''}`);
+  const locCalls = gateway.requests.filter(q => /ONE place|location profile/.test(q.body?.messages?.[0]?.content || ''));
+  check('enhance a location: the place prompts, not the character ones', locCalls.length === 2, `${locCalls.length} calls`);
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'plotline', id: 'p1' }, params: { item: { name: 'x' } } });
+  check('enhance: only characters and locations', r.status === 400, `status ${r.status}`);
+  await call('POST', `${jobs}/${place?.jobId}/ack`, owner.token);
 }
 
 // ─── book import ──────────────────────────────────────────────────────────

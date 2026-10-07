@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { chapterHeading } from '../utils/chapters';
-import { applyEnhanceJob } from '../utils/characterEnhance';
+import { applyEnhanceJob } from '../utils/enhanceFromBook';
 
 // Book media jobs: every image, reference sheet and animation is a SERVER job
 // listed per book. This hook is created once for the open book (in

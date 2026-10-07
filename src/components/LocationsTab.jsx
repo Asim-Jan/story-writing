@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MapPin, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search } from 'lucide-react';
+import { MapPin, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search, BookOpen } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
@@ -7,6 +7,8 @@ import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
+import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 
 const LocationsTab = ({
   data,
@@ -42,6 +44,19 @@ const LocationsTab = ({
   // location) while the user is elsewhere.
   const imageJobs = (locationId) => jobsFor('location', locationId).filter(j => j.type === 'image');
   const imageRunning = (locationId) => imageJobs(locationId).some(j => j.status === 'running');
+  // "Enhance from book": as on Characters, the suggestions land on the location
+  const enhanceJobs = (locationId) => jobsFor('location', locationId).filter(j => j.type === 'enhance');
+  const enhanceRunning = (locationId) => enhanceJobs(locationId).some(j => j.status === 'running');
+  const [enhanceError, setEnhanceError] = useState(null);
+  const hasChapterText = (data.chapters || []).some(c => String(c.content || '').trim());
+  const handleEnhance = async (location) => {
+    setEnhanceError(null);
+    try {
+      await startJob('enhance', { type: 'location', id: location.id }, enhanceParams('location', location));
+    } catch (error) {
+      setEnhanceError({ locationId: location.id, message: error.message });
+    }
+  };
 
   // The detail view renders a snapshot; keep it in step with the book so a
   // finished image shows without re-selecting.
@@ -243,6 +258,11 @@ const LocationsTab = ({
                       {loc.type}
                     </span>
                   )}
+                  {openItems(loc.enhancement) > 0 && (
+                    <span className="inline-block mt-1 ml-1 px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded text-xs" data-testid="enhance-pending">
+                      {openItems(loc.enhancement)} from book
+                    </span>
+                  )}
                 </div>
               </div>
             </button>
@@ -320,6 +340,16 @@ const LocationsTab = ({
               </div>
               <div className="flex flex-wrap gap-2 flex-shrink-0">
                 <button
+                  onClick={() => handleEnhance(selectedLocation)}
+                  disabled={!hasChapterText || enhanceRunning(selectedLocation.id)}
+                  title={hasChapterText ? 'Read the chapters and suggest what the book says about this place' : 'Add or import chapters first'}
+                  data-testid="location-enhance"
+                  className="px-3 sm:px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <BookOpen size={16} className={`flex-shrink-0 ${enhanceRunning(selectedLocation.id) ? 'animate-pulse' : ''}`} />
+                  <span className="hidden sm:inline">{enhanceRunning(selectedLocation.id) ? 'Reading the book...' : 'Enhance from book'}</span>
+                </button>
+                <button
                   onClick={() => handleGenerateImage(selectedLocation)}
                   disabled={generatingImage === selectedLocation.id || imageRunning(selectedLocation.id)}
                   data-testid="location-generate"
@@ -363,6 +393,22 @@ const LocationsTab = ({
             </div>
 
             <MediaJobList jobs={imageJobs(selectedLocation.id)} className="mb-4" />
+            <MediaJobList jobs={enhanceJobs(selectedLocation.id)} className="mb-4"
+              hint="Reading the saved chapters. You can leave this page; the suggestions wait here." />
+            {enhanceError?.locationId === selectedLocation.id && (
+              <p className="mb-4 text-sm text-red-600" role="alert" data-testid="enhance-error">{enhanceError.message}</p>
+            )}
+            <EnhanceFromBookPanel
+              kind="location"
+              item={selectedLocation}
+              onResolve={(items, use) => setData(prev => resolveEnhancement(prev, 'location', selectedLocation.id, items, use))}
+              onClose={() => setData(prev => closeEnhancement(prev, 'location', selectedLocation.id))}
+            />
+            {(selectedLocation.aliases || []).some(a => String(a).trim()) && (
+              <p className="mb-4 text-gray-700" data-testid="location-aliases">
+                <span className="font-medium text-gray-600">Also known as:</span> {selectedLocation.aliases.map(a => String(a).trim()).filter(Boolean).join(', ')}
+              </p>
+            )}
 
             {/* Location Image */}
             {selectedLocation.imageUrl && (
@@ -645,6 +691,14 @@ const LocationsTab = ({
                 value={locationForm.significance}
                 onChange={(e) => setLocationForm(prev => ({ ...prev, significance: e.target.value }))}
                 className="w-full p-3 border border-gray-300 rounded-lg resize-none h-24 focus:ring-2 focus:ring-green-400 outline-none"
+              />
+
+              <input
+                type="text"
+                placeholder="Also known as (other names; comma separated)"
+                value={(locationForm.aliases || []).join(', ')}
+                onChange={(e) => setLocationForm(prev => ({ ...prev, aliases: e.target.value.split(',').map(x => x.trimStart()) }))}
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-400 outline-none"
               />
 
               <div className="flex gap-2 pt-4">

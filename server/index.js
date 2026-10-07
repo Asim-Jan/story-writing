@@ -10,6 +10,7 @@ import { chapterHeading } from './utils/chapters.js';
 import { applyOps, createFromImport, deleteImport, getImport, getImportChapter, listImports, patchImport, pruneImports, startImport } from './import/imports.js';
 import { analyzeBook } from './import/analyze.js';
 import { enhanceCharacter } from './enhance/character.js';
+import { enhanceLocation } from './enhance/location.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4660,8 +4661,12 @@ const MEDIA_JOB_TARGETS = {
   animation: ['animation'],
   analysis: ['book'],
   audiobook: ['audiobook'],
-  enhance: ['character'],
+  enhance: ['character', 'location'],
 };
+
+// The profile an enhance job is about, as the author has it now (params.item;
+// 2.23.49 clients send params.character).
+const enhanceItem = (params) => params?.item || params?.character || null;
 
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
 const TEXT_JOBS = new Set(['enhance']);
@@ -4690,7 +4695,7 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
     }
-    if (type === 'enhance' && !String(params.character?.name || '').trim()) return res.status(400).json({ error: 'The character needs a name' });
+    if (type === 'enhance' && !String(enhanceItem(params)?.name || '').trim()) return res.status(400).json({ error: `The ${target.type} needs a name` });
     if (!minioAvailable && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
     const book = await getBook(bookId);
     if (!book) return res.status(404).json({ error: 'Book not found' });
@@ -4746,17 +4751,16 @@ function mediaJobRunner(req) {
     });
   }
   if (type === 'enhance') {
-    // reads the SAVED chapters (enhance/character.js); returns suggestions the
-    // author accepts or skips in the client
+    // reads the SAVED chapters (enhance/*.js); returns suggestions the author
+    // uses or skips in the client
+    const chapters = (req.mediaJobBook.chapters || []).map(c => ({ number: c.number, title: c.title, content: c.content }));
+    const item = { ...enhanceItem(params), id: target.id };
+    const title = req.mediaJobBook.title;
     return async (report) => ({
-      characterId: target.id,
-      ...(await enhanceCharacter({
-        character: { ...params.character, id: target.id },
-        chapters: (req.mediaJobBook.chapters || []).map(c => ({ number: c.number, title: c.title, content: c.content })),
-        cast: req.mediaJobBook.characters || [],
-        title: req.mediaJobBook.title,
-        report,
-      })),
+      targetId: target.id,
+      ...(target.type === 'location'
+        ? await enhanceLocation({ location: item, chapters, title, report })
+        : await enhanceCharacter({ character: item, chapters, cast: req.mediaJobBook.characters || [], title, report })),
     });
   }
   if (type === 'audiobook') {
@@ -4825,7 +4829,7 @@ function mediaJobRunner(req) {
 
 function mediaJobLabel({ type, params }) {
   if (type === 'analysis') return 'Analysing the book';
-  if (type === 'enhance') return `Enhancing ${String(params.character.name).trim().slice(0, 60)} from the book`;
+  if (type === 'enhance') return `Enhancing ${String(enhanceItem(params).name).trim().slice(0, 60)} from the book`;
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;

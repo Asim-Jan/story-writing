@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { BookOpen, Check, X } from 'lucide-react';
-import { FIELD_LABELS, LONG_FIELDS, openItems } from '../utils/characterEnhance';
+import { ENHANCE_KINDS, openItems } from '../utils/enhanceFromBook';
 
-// The suggestions an "Enhance from book" job found for one character. Nothing
-// changes until the author uses one; each value can be edited before use.
+// The suggestions an "Enhance from book" job found for one character or
+// location. Nothing changes until the author uses one; each value can be
+// edited before use.
 
 const chaptersText = (chapters) => (chapters?.length ? `${chapters.length === 1 ? 'Chapter' : 'Chapters'} ${chapters.join(', ')}` : '');
 
@@ -13,13 +14,13 @@ const readText = (read) => {
   return read.sampled ? `${base} (a sample spread through the book)` : base;
 };
 
-const FieldSuggestion = ({ suggestion, current, onUse, onSkip }) => {
+const FieldSuggestion = ({ kind, suggestion, current, onUse, onSkip }) => {
   const [value, setValue] = useState(suggestion.value);
-  const long = LONG_FIELDS.has(suggestion.field);
+  const long = ENHANCE_KINDS[kind].long.has(suggestion.field);
   return (
     <li className="border-t border-gray-200 pt-3" data-testid="enhance-suggestion" data-field={suggestion.field}>
       <div className="flex items-baseline justify-between gap-2 mb-1">
-        <span className="font-semibold text-gray-900">{FIELD_LABELS[suggestion.field]}</span>
+        <span className="font-semibold text-gray-900">{ENHANCE_KINDS[kind].labels[suggestion.field]}</span>
         <span className="text-xs text-gray-500">{chaptersText(suggestion.chapters)}</span>
       </div>
       {current ? (
@@ -46,8 +47,8 @@ const FieldSuggestion = ({ suggestion, current, onUse, onSkip }) => {
   );
 };
 
-const CharacterEnhancePanel = ({ character, onResolve, onClose }) => {
-  const enh = character.enhancement;
+const EnhanceFromBookPanel = ({ kind = 'character', item, onResolve, onClose }) => {
+  const enh = item.enhancement;
   if (!enh || enh.closed) return null;
   const count = openItems(enh);
   return (
@@ -73,7 +74,7 @@ const CharacterEnhancePanel = ({ character, onResolve, onClose }) => {
       )}
       <ul className="space-y-3">
         {(enh.suggestions || []).map(s => (
-          <FieldSuggestion key={`${enh.jobId}:${s.field}`} suggestion={s} current={character[s.field]}
+          <FieldSuggestion key={`${enh.jobId}:${s.field}`} kind={kind} suggestion={s} current={item[s.field]}
             onUse={(value) => onResolve([{ kind: 'field', field: s.field, value }], true)}
             onSkip={() => onResolve([{ kind: 'field', field: s.field }], false)} />
         ))}
@@ -113,4 +114,4 @@ const CharacterEnhancePanel = ({ character, onResolve, onClose }) => {
   );
 };
 
-export default CharacterEnhancePanel;
+export default EnhanceFromBookPanel;
