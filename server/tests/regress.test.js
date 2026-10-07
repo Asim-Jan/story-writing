@@ -521,6 +521,15 @@ async function mainSuite(gateway) {
     const row = (await db.query('SELECT title, audio_files FROM books WHERE id = $1', [book.id])).rows[0];
     check('applyServerWrite keeps the user\'s newer title and adds the job result',
       row.title === 'Saved mid-job' && row.audio_files?.ch1?.url === 'x', JSON.stringify(row));
+
+    console.log('\n== imported chapter titles');
+    // imported here, after the env above: the module opens a db pool
+    const { stripChapterNumber } = await import('../import/imports.js');
+    const titleCases = [['2. The Map', 'The Map'], ['Chapter 3: The Storm', 'The Storm'], ['One: The Storm', 'The Storm'], ['IV - The Bell', 'The Bell'],
+      ['12 — Night', 'Night'], ['Chapter Twenty-One', 'Chapter Twenty-One'], ['Chapter Twenty-One: Home', 'Home'], ['Twenty-Two', 'Twenty-Two'],
+      ['Chapter 3', 'Chapter 3'], ['Part One: The Sea', 'Part One: The Sea'], ['1984', '1984'], ['One Day in June', 'One Day in June']];
+    const wrongTitles = titleCases.filter(([t, want]) => stripChapterNumber(t) !== want).map(([t, want]) => `${t} -> ${stripChapterNumber(t)} (want ${want})`);
+    check('a title loses only its own number prefix ("Chapter Twenty-One" stays whole)', wrongTitles.length === 0, wrongTitles.join('; '));
   } finally {
     await srv.stop();
     await db.end();

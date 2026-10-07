@@ -81,9 +81,10 @@ export async function startImport({ ownerId, fileName, buffer }) {
 
 // The app shows "Chapter N: <title>", so a title that carries its own number
 // ("2. The Map", "Chapter 3: The Storm", "One: The Storm", "IV - The Bell") would read twice.
-// Only a number prefix with real text after it goes; "Chapter 3" stays.
+// Only a number prefix with real text after it goes; "Chapter 3" stays. A dash
+// separates only with a space before it: "Chapter Twenty-One" is one number.
 const NUMBER_WORD = '(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?';
-const NUMBER_PREFIX = new RegExp(`^\\s*(?:chapter\\s+(?:\\d{1,3}|[ivxlc]{1,7}|${NUMBER_WORD})|\\d{1,3}|[IVXLC]{1,7}|${NUMBER_WORD})\\s*[.:)\\-–—]\\s*(\\S.*)$`, 'i');
+const NUMBER_PREFIX = new RegExp(`^\\s*(?:chapter\\s+(?:\\d{1,3}|[ivxlc]{1,7}|${NUMBER_WORD})|\\d{1,3}|[IVXLC]{1,7}|${NUMBER_WORD})(?:\\s*[.:)]|\\s+[-–—])\\s*(\\S.*)$`, 'i');
 export function stripChapterNumber(title) {
   const m = NUMBER_PREFIX.exec(String(title || ''));
   return m ? m[1].trim() : title;
