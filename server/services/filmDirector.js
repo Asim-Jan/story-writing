@@ -41,6 +41,16 @@ export const FILM_STYLES = {
     prompt: 'painterly storybook illustration, soft watercolour and gouache textures, warm light',
     negative: 'photorealistic, live action, photograph, 3D render, anime',
   },
+  comic: {
+    label: 'Comic book',
+    prompt: 'animated graphic novel, bold ink lines, flat colours with halftone shading',
+    negative: 'photorealistic, live action, photograph, 3D render, watercolour',
+  },
+  painting: {
+    label: 'Painted',
+    prompt: 'animated digital painting, fantasy book illustration come to life, painterly brushwork, dramatic lighting',
+    negative: 'photograph, photorealistic, live action, 3D render, anime, cartoon',
+  },
 };
 
 export function filmStyle(key) {

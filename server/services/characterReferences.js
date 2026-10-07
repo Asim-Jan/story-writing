@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { saiImage } from '../saiClient.js';
 import { mediaStorage } from './mediaStorage.js';
 import { canAccessMedia, recordMediaOwner } from '../utils/mediaMapping.js';
+import { joinNegatives } from './artStyles.js';
 
 // Character reference images on the SAI media bridge.
 //
@@ -103,13 +104,14 @@ export async function mediaUrlToDataUrl(user, url) {
   return `data:${mime};base64,${buffer.toString('base64')}`;
 }
 
-async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUrl, characterId }) {
+async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUrl, characterId, styleNegative }) {
   const result = await saiImage({
     model: spec.model,
     prompt,
     size: spec.size,
     image,
-    negative: spec.negative || undefined,
+    // the sheet recipes (no negative of their own) are left exactly as verified
+    negative: spec.negative ? joinNegatives(spec.negative, styleNegative || '') : undefined,
   });
   const filename = `charref-${spec.kind}-${uuidv4()}.png`;
   await mediaStorage.upload('images', result.buffer, filename, {
@@ -131,9 +133,13 @@ async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUr
 /**
  * Make one reference. Kinds that edit a portrait use sourceImageUrl, else the
  * character's main image; with neither, a portrait is made first and returned
- * too (the caller stores both).
+ * too (the caller stores both). bookStyle (services/artStyles.js) is the
+ * book's art style: used when the request names no style of its own.
  */
-export async function generateReference({ user, bookId, kind, character, sourceImageUrl, style, prompt: promptOverride, onStage = () => {} }) {
+export async function generateReference({ user, bookId, kind, character, sourceImageUrl, style: requested, bookStyle, prompt: promptOverride, onStage = () => {} }) {
+  const own = String(requested || '').trim();
+  const style = own || bookStyle?.prompt || undefined;
+  const styleNegative = own ? '' : bookStyle?.negative || '';
   let source = sourceImageUrl || character.imageUrl || null;
   let portrait = null;
 
@@ -141,7 +147,7 @@ export async function generateReference({ user, bookId, kind, character, sourceI
   if (spec.needsSourceImage && !source) {
     const portraitSpec = buildReferencePrompt('portrait', character, style);
     await onStage('Drawing the base portrait (needed for the sheet)...');
-    portrait = await renderAndStore({ user, bookId, spec: portraitSpec, prompt: portraitSpec.prompt, characterId: character.id });
+    portrait = await renderAndStore({ user, bookId, spec: portraitSpec, prompt: portraitSpec.prompt, characterId: character.id, styleNegative });
     source = portrait.imageUrl;
     spec = buildReferencePrompt(kind, character, style, true);
   }
@@ -159,6 +165,7 @@ export async function generateReference({ user, bookId, kind, character, sourceI
       image,
       sourceImageUrl: image ? source : null,
       characterId: character.id,
+      styleNegative,
     });
     return { reference, portrait };
   } catch (error) {

@@ -565,7 +565,7 @@ async function mainSuite(gateway) {
       .filter(route => !src.split('\n').some(l => l.includes(`app.post('${route}'`) && l.includes('consumeAIQuota')));
     check('the AI routes that used to be free now use AI quota', unmetered.length === 0, unmetered.join(', '));
 
-    await mediaChecks({ call, db, gateway, owner, stranger, book });
+    await mediaChecks({ call, db, gateway, owner, editor, stranger, book });
 
     console.log('\n== chapter numbers and headings');
     const ui = await import('../../src/utils/chapters.js');
@@ -633,7 +633,7 @@ async function mainSuite(gateway) {
 }
 
 // ─── media wiring: images, character references, speech ─────────────────
-async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
+async function mediaChecks({ call, db, gateway, owner, editor, stranger, book }) {
   console.log('\n== media wiring');
   if (!process.env.REGRESS_MINIO_PORT) {
     console.log('  (skipped: set REGRESS_MINIO_PORT/USER/PASSWORD to a throwaway MinIO)');
@@ -749,6 +749,59 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   done = await waitJob(owner.token, r.json?.job?.jobId);
   check('media job: reference done with reference + portrait', done?.status === 'done' && done?.result?.reference?.kind === 'turnaround' && done?.result?.portrait?.kind === 'portrait');
   await call('POST', `${jobsUrl}/${done?.jobId}/ack`, owner.token);
+
+  // ── the book's art style: every image of the book in one look ──
+  // as the book's editor: the owner's 50-per-15-minutes AI limit is spent by now
+  {
+    const setStyle = (st) => db.query(`UPDATE books SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{artStyle}', $2::jsonb) WHERE id = $1`, [book.id, JSON.stringify(st)]);
+    const imagesFrom = (from) => gateway.requests.slice(from).filter(q => q.path.endsWith('/images/generations'));
+    await setStyle({ id: 'live-action' });
+    let from = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'image', target: { type: 'location', id: 'loc1' }, params: { prompt: 'a misty harbour', context: { bookTitle: 'The Keeper' } } });
+    done = await waitJob(editor.token, r.json?.job?.jobId);
+    let img = imagesFrom(from).at(-1);
+    const writer = gateway.requests.slice(from).find(q => /enhance image generation prompts/.test(q.body?.messages?.[0]?.content || ''));
+    check('art style: a book image leads with the style, the other looks in the negative, the prompt writer told it is fixed',
+      done?.status === 'done' && /^photorealistic/.test(img?.body?.prompt || '') && /cartoon/.test(img?.body?.negative || '') && /FIXED: photorealistic/.test(writer?.body?.messages?.[0]?.content || ''),
+      `${done?.status} ${(img?.body?.prompt || '').slice(0, 60)} | ${img?.body?.negative}`);
+    await call('POST', `${jobsUrl}/${done?.jobId}/ack`, editor.token);
+
+    from = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'reference', target: { type: 'character', id: 'c1' }, params: { kind: 'portrait', character: { ...character, imageUrl: undefined } } });
+    done = await waitJob(editor.token, r.json?.job?.jobId);
+    img = imagesFrom(from).at(-1);
+    check('art style: a portrait is drawn in it, its own negative kept and the style\'s added',
+      done?.status === 'done' && /^photorealistic/.test(img?.body?.prompt || '') && /deformed hands/.test(img?.body?.negative || '') && /cartoon/.test(img?.body?.negative || ''),
+      `${(img?.body?.prompt || '').slice(0, 60)} | ${img?.body?.negative}`);
+    await call('POST', `${jobsUrl}/${done?.jobId}/ack`, editor.token);
+
+    from = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'reference', target: { type: 'character', id: 'c1' }, params: { kind: 'portrait', character: { ...character, imageUrl: undefined }, style: 'oil painting' } });
+    done = await waitJob(editor.token, r.json?.job?.jobId);
+    img = imagesFrom(from).at(-1);
+    check('art style: a style typed for one image wins, without the book style\'s negative',
+      /^oil painting/.test(img?.body?.prompt || '') && !/cartoon/.test(img?.body?.negative || ''), `${(img?.body?.prompt || '').slice(0, 40)} | ${img?.body?.negative}`);
+    await call('POST', `${jobsUrl}/${done?.jobId}/ack`, editor.token);
+
+    from = gateway.requests.length;
+    r = await call('POST', '/api/generate-comic-panel', editor.token, { bookId: book.id, sceneDescription: 'she opens the door', characters: [] });
+    img = imagesFrom(from).at(-1);
+    check('art style: a comic panel is the book\'s style as a panel', r.status === 200 && /^photorealistic.*comic panel composition/.test(img?.body?.prompt || '') && /cartoon/.test(img?.body?.negative || ''),
+      `${r.status} ${(img?.body?.prompt || '').slice(0, 120)}`);
+    from = gateway.requests.length;
+    r = await call('POST', '/api/generate-comic-panel', stranger.token, { bookId: book.id, sceneDescription: 'x', characters: [] });
+    img = imagesFrom(from).at(-1);
+    check('art style: someone else\'s book lends no style', !/photorealistic/.test(img?.body?.prompt || ''), (img?.body?.prompt || '').slice(0, 80));
+
+    await setStyle({ id: 'custom', custom: '1920s pulp magazine illustration' });
+    from = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'image', target: { type: 'cover', id: null }, params: { prompt: 'a lighthouse' } });
+    done = await waitJob(editor.token, r.json?.job?.jobId);
+    img = imagesFrom(from).at(-1);
+    check('art style: the author\'s own words work too', /^1920s pulp magazine illustration\. a lighthouse/.test(img?.body?.prompt || '') && !img?.body?.negative, (img?.body?.prompt || '').slice(0, 80));
+    await call('POST', `${jobsUrl}/${done?.jobId}/ack`, editor.token);
+    await db.query(`UPDATE books SET metadata = metadata - 'artStyle' WHERE id = $1`, [book.id]);
+  }
 
   // a job whose process died (no heartbeat for minutes) reads as interrupted
   {

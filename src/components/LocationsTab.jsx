@@ -217,7 +217,7 @@ const LocationsTab = ({
           </div>
           <DuplicatesNotice kind="location" data={data} setData={setData}
             onMerged={(keepId, dropId) => { if (selectedLocation && String(selectedLocation.id) === String(dropId)) setSelectedLocation(data.locations.find(l => String(l.id) === String(keepId)) || null); }} />
-          <EnhanceAllBar noun="locations" kind="location" items={data.locations} hasChapterText={hasChapterText} />
+          <EnhanceAllBar noun="locations" kind="location" items={data.locations} setData={setData} hasChapterText={hasChapterText} />
           <MissingFromBook which="places" data={data} setData={setData} />
           {/* Search Input */}
           {data.locations.length > 0 && (

@@ -59,10 +59,11 @@ const copyText = async (text) => {
   }
 };
 
-const CharacterReferences = ({ character, setData, onOpenImage }) => {
+const CharacterReferences = ({ character, setData, onOpenImage, bookStyle = null }) => {
   const { jobsFor, startJob } = useMediaJobsContext();
   const [kind, setKind] = useState('turnaround');
-  const [style, setStyle] = useState('cinematic illustration');
+  // empty: the book's art style (the server applies it); typed: this sheet only
+  const [style, setStyle] = useState('');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState(null);
   const [promptInfo, setPromptInfo] = useState(null);
@@ -103,7 +104,7 @@ const CharacterReferences = ({ character, setData, onOpenImage }) => {
     setPromptBusy(promptKind);
     setCopyState(null);
     try {
-      const info = await postJson('/api/characters/reference-prompt', { kind: promptKind, character: characterFields(character), style });
+      const info = await postJson('/api/characters/reference-prompt', { kind: promptKind, character: characterFields(character), style: style || bookStyle?.prompt });
       setPromptInfo(info);
       setCopyState((await copyText(info.prompt)) ? 'copied' : 'failed');
     } catch (err) {
@@ -135,12 +136,12 @@ const CharacterReferences = ({ character, setData, onOpenImage }) => {
             </select>
           </label>
           <label className="block">
-            <span className="lbl block mb-1">Style (optional)</span>
+            <span className="lbl block mb-1">Style (optional, this image only)</span>
             <input
               type="text"
               value={style}
               onChange={(e) => setStyle(e.target.value)}
-              placeholder="cinematic illustration"
+              placeholder={bookStyle ? `Book style: ${bookStyle.label}` : 'cinematic illustration'}
               disabled={running}
               className="w-full"
             />
