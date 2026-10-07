@@ -45,7 +45,7 @@ import { mediaStorage } from './services/mediaStorage.js';
 import { VideoSceneParser } from './services/videoSceneParser.js';
 import { VideoGenerator } from './services/videoGenerator.js';
 import { VideoAssembler, TRANSITIONS, TRANSITION_IDS } from './services/videoAssembler.js';
-import { writeTranscript } from './services/transcriptWriter.js';
+import { writeTranscript, cleanGuidance, GUIDANCE, GUIDANCE_NOTES_MAX } from './services/transcriptWriter.js';
 import rateLimit from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -4752,6 +4752,15 @@ async function validateMediaJob(req, res, next) {
     if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
       return res.status(403).json({ error: 'You do not have permission to edit this book' });
     }
+    if (type === 'transcript' && params.guidance !== undefined && params.guidance !== null) {
+      const g = params.guidance;
+      const bad = typeof g !== 'object' || Array.isArray(g)
+        || Object.keys(GUIDANCE).some(k => g[k] !== undefined && g[k] !== '' && !GUIDANCE[k][g[k]])
+        || (g.notes !== undefined && (typeof g.notes !== 'string' || g.notes.length > GUIDANCE_NOTES_MAX));
+      if (bad) {
+        return res.status(400).json({ error: `guidance: ${Object.entries(GUIDANCE).map(([k, v]) => `${k} is one of ${Object.keys(v).join(', ')}`).join('; ')}; notes up to ${GUIDANCE_NOTES_MAX} characters` });
+      }
+    }
     if (type === 'transcript') {
       const chapter = (book.chapters || []).find(c => String(c.id) === String(target.id));
       if (!chapter) return res.status(404).json({ error: 'That chapter is not in the saved book yet; save and try again' });
@@ -4891,7 +4900,7 @@ function mediaJobRunner(req) {
     // the SAVED chapter, with the book's looks and places (services/transcriptWriter.js)
     return async (report) => {
       const chapter = (req.mediaJobBook.chapters || []).find(c => String(c.id) === String(target.id));
-      const written = await writeTranscript({ chapter, book: req.mediaJobBook, report });
+      const written = await writeTranscript({ chapter, book: req.mediaJobBook, guidance: cleanGuidance(params.guidance), report });
       return { transcript: { ...written, chapterId: chapter.id, chapterNumber: chapter.number, chapterTitle: chapter.title } };
     };
   }

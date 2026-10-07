@@ -41,6 +41,49 @@ SCENES
 OUTPUT
 Plain screenplay text only: no JSON, no markdown. The first line is TITLE: followed by the episode title.`;
 
+// The author's optional direction for a transcript. Each choice becomes a
+// concrete instruction for the writer and is kept on the transcript, so the
+// shot breakdown follows it too (videoSceneParser: a slow pace = longer takes).
+export const GUIDANCE = {
+  pace: {
+    slow: 'Slow and lingering: let moments breathe. Hold on faces, places and silences; give quiet beats their own action lines; favour long takes and gentle camera moves.',
+    brisk: 'Brisk: keep it moving. Enter scenes late and leave early, cut between beats, keep action lines short and energetic.',
+  },
+  dialogue: {
+    little: 'Little dialogue: tell the story visually. Keep only the lines that matter most, shortened; show the rest through action, looks and behaviour.',
+    lots: 'Plenty of dialogue: keep most of the book\'s spoken lines, with reactions between them.',
+  },
+  shots: {
+    cinematic: 'Cinematic: sweeping establishing shots, dramatic light and silhouettes, crane and dolly moves, strong composition and scale.',
+    intimate: 'Intimate: close-ups and medium shots, faces and hands, small gestures, shallow focus, quiet light.',
+    action: 'Action-driven: dynamic camera, tracking and handheld moves, impacts and motion in every shot.',
+    documentary: 'Observational: naturalistic, handheld feel, available light, the camera watching rather than staging.',
+  },
+  narration: {
+    none: 'No narrator and no voice-over: everything is shown or spoken in the scene.',
+    narrator: 'A narrator: add a short voice-over (NARRATOR (V.O.)) that carries the book\'s voice between scenes and over key moments.',
+  },
+};
+export const GUIDANCE_NOTES_MAX = 600;
+
+/** The author's direction as cleaned values (unknown keys dropped), or null. */
+export function cleanGuidance(input) {
+  if (!input || typeof input !== 'object') return null;
+  const out = {};
+  for (const key of Object.keys(GUIDANCE)) if (GUIDANCE[key][input[key]]) out[key] = input[key];
+  const notes = String(input.notes || '').replace(/\s+/g, ' ').trim().slice(0, GUIDANCE_NOTES_MAX);
+  if (notes) out.notes = notes;
+  return Object.keys(out).length ? out : null;
+}
+
+/** The direction block for the writer's prompt ('' when there is none). */
+export function guidanceText(guidance) {
+  if (!guidance) return '';
+  const lines = Object.keys(GUIDANCE).filter(k => guidance[k]).map(k => `- ${GUIDANCE[k][guidance[k]]}`);
+  if (guidance.notes) lines.push(`- The author's notes: ${guidance.notes}`);
+  return lines.length ? `DIRECTION FROM THE AUTHOR (follow it; it overrides the defaults above, but never drop story events):\n${lines.join('\n')}` : '';
+}
+
 const words = (s) => String(s || '').split(/\s+/).filter(Boolean).length;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const mentions = (text, variants) => variants.some(v => v.length >= 3 && new RegExp(`(^|[^\\p{L}])${escape(v)}($|[^\\p{L}])`, 'iu').test(text));
@@ -105,7 +148,7 @@ export function screenplayStats(screenplay) {
  * report({ message, current, total }) per part. Returns the transcript record
  * fields: { title, transcript, sceneCount, estimatedDuration, parts }.
  */
-export async function writeTranscript({ chapter, book, report = () => {} }) {
+export async function writeTranscript({ chapter, book, guidance = null, report = () => {} }) {
   const prose = plainText(chapter.content).trim();
   if (!prose) throw Object.assign(new Error('This chapter has no text to adapt yet'), { status: 400 });
   const heading = chapterHeading(chapter);
@@ -123,6 +166,7 @@ export async function writeTranscript({ chapter, book, report = () => {} }) {
       `Book: ${book.title || 'Untitled'}`,
       style ? `The film is drawn as: ${style} (fit the settings and lighting to it, but do not name it).` : '',
       `Chapter: ${heading}`,
+      guidanceText(guidance),
       chapter.summary ? `Chapter summary: ${String(chapter.summary).slice(0, 800)}` : '',
       cast.length ? `Characters in this passage (how they look):\n${cast.join('\n')}` : '',
       places.length ? `Places:\n${places.join('\n')}` : '',
@@ -145,5 +189,5 @@ export async function writeTranscript({ chapter, book, report = () => {} }) {
     out.push(text);
   }
   const transcript = out.join('\n\n');
-  return { title: title || heading, transcript, ...screenplayStats(transcript), parts: parts.length };
+  return { title: title || heading, transcript, ...screenplayStats(transcript), parts: parts.length, ...(guidance ? { guidance } : {}) };
 }

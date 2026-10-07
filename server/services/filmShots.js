@@ -52,3 +52,22 @@ export function normaliseTransitions(scenes) {
   });
 }
 
+// The author's direction for the transcript, as shot-making instructions.
+const SHOT_DIRECTION = {
+  pace: {
+    slow: 'Slow pace: longer takes (7 to 8 seconds), gentle camera moves, and "continue" where a moment carries on.',
+    brisk: 'Brisk pace: shorter takes (4 to 5 seconds) and more cuts.',
+  },
+  shots: {
+    cinematic: 'Cinematic: wide establishing shots, crane and dolly moves, dramatic light and scale.',
+    intimate: 'Intimate: mostly close-ups and medium shots of faces and hands, shallow focus.',
+    action: 'Action-driven: tracking and handheld shots with motion in every take.',
+    documentary: 'Observational: handheld, naturalistic framing and available light.',
+  },
+};
+export function shotDirection(guidance) {
+  if (!guidance || typeof guidance !== 'object') return '';
+  const lines = Object.keys(SHOT_DIRECTION).map(k => SHOT_DIRECTION[k][guidance[k]]).filter(Boolean);
+  if (guidance.notes) lines.push(`The author's notes on this screenplay: ${String(guidance.notes).slice(0, 600)}`);
+  return lines.length ? `Direction from the author:\n${lines.map(l => `- ${l}`).join('\n')}` : '';
+}
