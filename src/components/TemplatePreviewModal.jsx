@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, BookOpen, Copy, ChevronDown, ChevronUp } from 'lucide-react';
+import { chapterBadge } from '../utils/chapters';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -152,9 +153,11 @@ const TemplatePreviewModal = ({ isOpen, templateId, onClose, onClone }) => {
                           className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors text-left"
                         >
                           <div className="flex items-center gap-3">
-                            <span className="text-sm font-semibold text-gray-500">
-                              Ch. {chapter.chapter_number}
-                            </span>
+                            {chapterBadge({ number: chapter.chapter_number, title: chapter.title }) && (
+                              <span className="text-sm font-semibold text-gray-500">
+                                {chapterBadge({ number: chapter.chapter_number, title: chapter.title })}
+                              </span>
+                            )}
                             <span className="font-semibold text-gray-900">{chapter.title}</span>
                             <span className="text-sm text-gray-500">
                               ({(chapter.word_count || 0).toLocaleString()} words)

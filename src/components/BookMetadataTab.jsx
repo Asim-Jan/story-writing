@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { BookOpen, Image as ImageIcon, Upload, X, Users, Plus, Trash2, Mail, Key, Sparkles, Loader } from 'lucide-react';
 import ImagePreviewModal from './ImagePreviewModal';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
+import { chapterHeading } from '../utils/chapters';
 
 const BookMetadataTab = ({ data, setData, visuals }) => {
   const [selectedPreviewImage, setSelectedPreviewImage] = useState(null);
@@ -382,8 +383,7 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
               <div key={chapter.id} className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
                 <div className="flex-1">
                   <h4 className="font-semibold text-gray-800">
-                    {chapter.number && `Chapter ${chapter.number}: `}
-                    {chapter.title}
+                    {chapterHeading(chapter)}
                   </h4>
                 </div>
 

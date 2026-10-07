@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FileText, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search, History } from 'lucide-react';
+import { FileText, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Search, History, ListOrdered } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
@@ -9,6 +9,64 @@ import ImagePreviewModal from './ImagePreviewModal';
 import RichTextEditor from './RichTextEditor';
 import VersionHistory from './VersionHistory';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
+import { chapterHeading, chapterLabel, chapterBadge, sortChapters, needsRenumber, renumberChapters, deleteChapter } from '../utils/chapters';
+
+// Delete a chapter, optionally renumbering the ones after it; or renumber the
+// whole book 1..N in its current order. Both only change the book in memory;
+// the book's normal save writes it.
+const ChapterNumbersDialog = ({ mode, chapter, chapters, onConfirm, onCancel }) => {
+  const [renumber, setRenumber] = useState(true);
+  const after = mode === 'delete'
+    ? sortChapters(chapters).filter(c => c.id !== chapter.id && parseInt(c.number, 10) > parseInt(chapter.number, 10))
+    : [];
+  const changes = mode === 'renumber'
+    ? renumberChapters(chapters).filter(c => String(c.number) !== String(chapters.find(o => o.id === c.id)?.number)).length
+    : 0;
+  const first = after[0];
+  const last = after[after.length - 1];
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" role="dialog" aria-modal="true" aria-labelledby="chapter-numbers-title" data-testid={`chapter-${mode}-dialog`}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+        <h3 id="chapter-numbers-title" className="text-lg font-bold text-gray-900 mb-2">
+          {mode === 'delete' ? `Delete ${chapterHeading(chapter)}?` : 'Renumber the chapters?'}
+        </h3>
+        {mode === 'delete' ? (
+          <>
+            <p className="text-sm text-gray-600 mb-4">The chapter and its text are removed from the book.</p>
+            {after.length > 0 && (
+              <label className="flex items-start gap-2 text-sm text-gray-800 mb-4">
+                <input type="checkbox" checked={renumber} onChange={(e) => setRenumber(e.target.checked)} className="mt-0.5" data-testid="renumber-after" />
+                <span>
+                  Renumber the {after.length} chapter{after.length === 1 ? '' : 's'} after it
+                  <span className="block text-xs text-gray-500">
+                    {after.length === 1
+                      ? `${first.number} becomes ${parseInt(first.number, 10) - 1}`
+                      : `${first.number} to ${last.number} become ${parseInt(first.number, 10) - 1} to ${parseInt(last.number, 10) - 1}`}
+                  </span>
+                </span>
+              </label>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-gray-600 mb-4">
+            The chapters are numbered 1 to {chapters.length} in their current order. {changes} chapter{changes === 1 ? '' : 's'} change number.
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">Cancel</button>
+          <button
+            type="button"
+            onClick={() => onConfirm(mode === 'delete' ? renumber && after.length > 0 : true)}
+            className={`px-4 py-2 text-white rounded-lg ${mode === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+            data-testid="chapter-numbers-confirm"
+          >
+            {mode === 'delete' ? 'Delete chapter' : 'Renumber'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const ChaptersTabView = ({
   data,
@@ -52,15 +110,25 @@ const ChaptersTabView = ({
     }
   }, [data.chapters]);
   const [selectedImage, setSelectedImage] = useState(null);
+  const [numbersDialog, setNumbersDialog] = useState(null); // { mode: 'delete', chapter } | { mode: 'renumber' }
   const [searchQuery, setSearchQuery] = useState('');
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const fileInputRef = useRef(null);
 
-  const sortedChapters = [...data.chapters].sort((a, b) => {
-    const numA = parseInt(a.number) || 0;
-    const numB = parseInt(b.number) || 0;
-    return numA - numB;
-  });
+  const sortedChapters = sortChapters(data.chapters);
+  const showRenumber = data.chapters.length > 1 && needsRenumber(data.chapters);
+
+  const confirmNumbersDialog = (renumber) => {
+    const dialog = numbersDialog;
+    setNumbersDialog(null);
+    if (!dialog) return;
+    if (dialog.mode === 'delete') {
+      setData(prev => ({ ...prev, chapters: deleteChapter(prev.chapters, dialog.chapter.id, { renumber }) }));
+      if (selectedChapter?.id === dialog.chapter.id) setSelectedChapter(null);
+    } else {
+      setData(prev => ({ ...prev, chapters: renumberChapters(prev.chapters) }));
+    }
+  };
 
   // Filter chapters based on search query
   const filteredChapters = sortedChapters.filter(chap => {
@@ -96,7 +164,7 @@ const ChaptersTabView = ({
     setGeneratingImage(chapter.id);
     try {
       // Build context-aware prompt based on chapter details
-      const prompt = `Create a cover image for Chapter ${chapter.number}: ${chapter.title}. ${chapter.summary || ''}`;
+      const prompt = `Create a cover image for ${chapterHeading(chapter)}. ${chapter.summary || ''}`;
       await startJob('image', { type: 'chapter', id: chapter.id }, {
         prompt,
         context: {
@@ -112,7 +180,7 @@ const ChaptersTabView = ({
             content: chapter.content ? chapter.content.substring(0, 500) : '' // First 500 chars for context
           }
         }
-      }, `Chapter ${chapter.number} cover`);
+      }, `${chapterHeading(chapter)} cover`);
     } catch (error) {
       if (error.status === 403 && onUpgrade) {
         // tier-gated: open the upgrade modal instead of a dead-end alert
@@ -206,7 +274,7 @@ const ChaptersTabView = ({
       });
       if (!response.ok) throw new Error('Upload failed');
       const { url, filename } = await response.json();
-      setPendingImage({ chapterId: chapter.id, imageUrl: url, filename, description: `Chapter ${chapter.number}: ${chapter.title}`, isUpload: true });
+      setPendingImage({ chapterId: chapter.id, imageUrl: url, filename, description: chapterHeading(chapter), isUpload: true });
     } catch (error) {
       alert(`Failed to upload image: ${error.message}`);
     } finally {
@@ -246,6 +314,16 @@ const ChaptersTabView = ({
             >
               {viewMode === 'list' ? <><Grid3x3 size={18} /> Grid View</> : <><List size={18} /> List View</>}
             </button>
+            {showRenumber && (
+              <button
+                onClick={() => setNumbersDialog({ mode: 'renumber' })}
+                className="w-full px-4 py-2 border border-amber-400 bg-amber-50 text-amber-900 rounded-lg hover:bg-amber-100 transition-colors flex items-center justify-center gap-2 text-sm"
+                title="The chapter numbers have gaps or repeats"
+                data-testid="renumber-chapters"
+              >
+                <ListOrdered size={16} /> Renumber chapters 1 to {data.chapters.length}
+              </button>
+            )}
           </div>
           {/* Search Input */}
           {data.chapters.length > 0 && (
@@ -288,9 +366,9 @@ const ChaptersTabView = ({
                 <FileText className="text-indigo-600 mt-1 flex-shrink-0" size={20} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    {chap.number && (
+                    {chap.number && chapterBadge(chap) && (
                       <span className="px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded text-xs font-semibold">
-                        Ch. {chap.number}
+                        {chapterBadge(chap)}
                       </span>
                     )}
                   </div>
@@ -310,9 +388,9 @@ const ChaptersTabView = ({
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        {chap.number && (
+                        {chap.number && chapterBadge(chap) && (
                           <span className="px-2 py-0.5 bg-indigo-600 text-white rounded text-xs font-semibold">
-                            Ch. {chap.number}
+                            {chapterBadge(chap)}
                           </span>
                         )}
                       </div>
@@ -332,7 +410,8 @@ const ChaptersTabView = ({
                         <Edit3 size={16} />
                       </button>
                       <button
-                        onClick={() => deleteItem('chapters', chap.id)}
+                        onClick={() => setNumbersDialog({ mode: 'delete', chapter: chap })}
+                        data-testid="chapter-delete"
                         className="text-red-500 hover:text-red-700"
                       >
                         <Trash2 size={16} />
@@ -368,9 +447,9 @@ const ChaptersTabView = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                     </svg>
                   </button>
-                  {selectedChapter.number && (
+                  {selectedChapter.number && chapterLabel(selectedChapter) && (
                     <span className="px-2 sm:px-3 py-1 bg-indigo-600 text-white rounded-full text-xs sm:text-sm font-bold">
-                      Chapter {selectedChapter.number}
+                      {chapterLabel(selectedChapter)}
                     </span>
                   )}
                   <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-800 truncate">{selectedChapter.title}</h2>
@@ -419,10 +498,8 @@ const ChaptersTabView = ({
                   <span className="hidden sm:inline">Edit</span>
                 </button>
                 <button
-                  onClick={() => {
-                    deleteItem('chapters', selectedChapter.id);
-                    setSelectedChapter(null);
-                  }}
+                  onClick={() => setNumbersDialog({ mode: 'delete', chapter: selectedChapter })}
+                  data-testid="chapter-delete-detail"
                   className="px-3 sm:px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm sm:text-base"
                 >
                   <Trash2 size={16} className="flex-shrink-0" />
@@ -438,9 +515,9 @@ const ChaptersTabView = ({
               <div className="mb-6">
                 <img
                   src={selectedChapter.coverImage}
-                  alt={`Chapter ${selectedChapter.number} Cover`}
+                  alt={`${chapterHeading(selectedChapter)} cover`}
                   className="w-full max-h-96 object-cover rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity"
-                  onClick={() => setSelectedImage({ imageUrl: selectedChapter.coverImage, description: `Chapter ${selectedChapter.number}: ${selectedChapter.title}` })}
+                  onClick={() => setSelectedImage({ imageUrl: selectedChapter.coverImage, description: chapterHeading(selectedChapter) })}
                 />
               </div>
             )}
@@ -666,6 +743,15 @@ const ChaptersTabView = ({
           chapterId={selectedChapter.id}
           onRestore={handleVersionRestore}
           onClose={() => setShowVersionHistory(false)}
+        />
+      )}
+      {numbersDialog && (
+        <ChapterNumbersDialog
+          mode={numbersDialog.mode}
+          chapter={numbersDialog.chapter}
+          chapters={data.chapters}
+          onCancel={() => setNumbersDialog(null)}
+          onConfirm={confirmNumbersDialog}
         />
       )}
     </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { chapterHeading } from '../utils/chapters';
 
 // Book media jobs: every image, reference sheet and animation is a SERVER job
 // listed per book. This hook is created once for the open book (in
@@ -101,7 +102,7 @@ const applyImage = (book, job) => {
     case 'chapter': {
       const chapter = (book.chapters || []).find(ch => sameId(ch.id, id));
       if (chapter) {
-        visual.description = `Chapter ${chapter.number}: ${chapter.title}`;
+        visual.description = chapterHeading(chapter);
         visual.chapterId = chapter.id;
         next.chapters = book.chapters.map(ch => (ch === chapter ? { ...ch, coverImage: url, coverImageFilename: filename } : ch));
       }
