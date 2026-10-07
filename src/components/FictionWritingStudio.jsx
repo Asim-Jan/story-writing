@@ -4,6 +4,7 @@ import { useBook } from '../hooks/useBook';
 import { useMediaJobs } from '../hooks/useMediaJobs';
 import { MediaJobsProvider, MediaJobList } from '../contexts/MediaJobsContext';
 import { getMediaUrl } from '../utils/mediaUrl';
+import { removeVisual, visualOwner } from '../utils/pictures';
 import { useSubscription } from '../contexts/SubscriptionContext';
 import UpgradeModal from './UpgradeModal';
 import AISuggestionBox from './AISuggestionBox';
@@ -1144,8 +1145,15 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
                       <div className="flex justify-between items-center">
                         <span className="text-xs text-gray-500">{new Date(visual.createdAt).toLocaleDateString()}</span>
                         <button
-                          onClick={() => deleteItem('visuals', visual.id)}
+                          onClick={() => {
+                            // a visual made for a character or location is its picture too
+                            const owner = visualOwner(data, visual);
+                            if (!confirm(owner ? `Delete this picture? It is also removed from ${owner}.` : 'Delete this picture?')) return;
+                            setData(prev => removeVisual(prev, visual.id));
+                          }}
                           className="text-red-500 hover:text-red-700"
+                          title="Delete picture"
+                          aria-label="Delete picture"
                         >
                           <Trash2 size={16} />
                         </button>

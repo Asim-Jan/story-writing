@@ -5,6 +5,7 @@ import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
 import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
+import ItemPictures from './ItemPictures';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
@@ -417,17 +418,8 @@ const LocationsTab = ({
               </p>
             )}
 
-            {/* Location Image */}
-            {selectedLocation.imageUrl && (
-              <div className="mb-6">
-                <img
-                  src={selectedLocation.imageUrl}
-                  alt={selectedLocation.name}
-                  className="w-full max-h-96 object-cover rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity"
-                  onClick={() => setSelectedImage({ imageUrl: selectedLocation.imageUrl, description: selectedLocation.name })}
-                />
-              </div>
-            )}
+            {/* Location pictures: the main one, and every earlier one to use or delete */}
+            <ItemPictures kind="location" item={selectedLocation} book={data} setData={setData} onOpenImage={setSelectedImage} />
 
             <div className="space-y-6">
               {selectedLocation.description && (

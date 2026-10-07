@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
+import { removePicture } from '../utils/pictures';
 import { Image as ImageIcon, Loader, Trash2, UserCheck, Copy, Check, Wand2, FileText } from 'lucide-react';
 
 // Character reference sheets: portrait, turnarounds, expressions, Qwen sheet.
@@ -119,7 +120,8 @@ const CharacterReferences = ({ character, setData, onOpenImage, bookStyle = null
 
   const deleteReference = (ref) => {
     if (!confirm(`Delete this ${kindLabel(ref.kind).toLowerCase()} reference?`)) return;
-    updateCharacter(c => ({ ...c, referenceImages: (c.referenceImages || []).filter(r => r.id !== ref.id) }));
+    // removePicture also moves the main picture off it when it was the main one
+    setData(prev => removePicture(prev, 'character', character.id, ref.imageUrl));
   };
 
   return (
