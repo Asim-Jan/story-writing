@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Users, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Network, Search } from 'lucide-react';
+import { Plus, Users, Edit3, Trash2, Sparkles, Grid3x3, List, Image, Check, X, Upload, Network, Search, BookOpen } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
@@ -7,6 +7,8 @@ import ImproveButton from './ImproveButton';
 import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
 import CharacterReferences from './CharacterReferences';
+import CharacterEnhancePanel from './CharacterEnhancePanel';
+import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/characterEnhance';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
 
@@ -67,6 +69,12 @@ const CharactersTab = ({
   // the character) while the user looks at another character or tab.
   const portraitJobs = (characterId) => jobsFor('character', characterId).filter(j => j.type === 'image');
   const portraitRunning = (characterId) => portraitJobs(characterId).some(j => j.status === 'running');
+  // "Enhance from book": a job reads the saved chapters; its suggestions land
+  // on the character (character.enhancement) for the author to use or skip
+  const enhanceJobs = (characterId) => jobsFor('character', characterId).filter(j => j.type === 'enhance');
+  const enhanceRunning = (characterId) => enhanceJobs(characterId).some(j => j.status === 'running');
+  const [enhanceError, setEnhanceError] = useState(null);
+  const hasChapterText = (data.chapters || []).some(c => String(c.content || '').trim());
   const [selectedImage, setSelectedImage] = useState(null);
   const [showRelationshipGraph, setShowRelationshipGraph] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -100,6 +108,15 @@ const CharactersTab = ({
 
   // The result is applied by the book-level jobs hook as the old accept step
   // did: the image becomes the portrait and joins the visuals library.
+  const handleEnhance = async (character) => {
+    setEnhanceError(null);
+    try {
+      await startJob('enhance', { type: 'character', id: character.id }, enhanceParams(character));
+    } catch (error) {
+      setEnhanceError({ characterId: character.id, message: error.message });
+    }
+  };
+
   const handleGenerateImage = async (character) => {
     setGeneratingImage(character.id);
     try {
@@ -272,6 +289,11 @@ const CharactersTab = ({
                       {char.role}
                     </span>
                   )}
+                  {openItems(char.enhancement) > 0 && (
+                    <span className="ml-1 text-xs px-2 py-1 bg-emerald-100 text-emerald-800 rounded-full" data-testid="enhance-pending">
+                      {openItems(char.enhancement)} from book
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -358,7 +380,17 @@ const CharactersTab = ({
                 </div>
 
                 {/* Action buttons - full width on mobile */}
-                <div className="grid grid-cols-2 lg:flex gap-2">
+                <div className="grid grid-cols-2 lg:flex lg:flex-wrap gap-2">
+                  <button
+                    onClick={() => handleEnhance(selectedCharacter)}
+                    disabled={!hasChapterText || enhanceRunning(selectedCharacter.id)}
+                    title={hasChapterText ? 'Read the chapters and suggest what the book says about this character' : 'Add or import chapters first'}
+                    data-testid="character-enhance"
+                    className="px-4 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base font-medium"
+                  >
+                    <BookOpen size={18} className={`flex-shrink-0 ${enhanceRunning(selectedCharacter.id) ? 'animate-pulse' : ''}`} />
+                    <span>{enhanceRunning(selectedCharacter.id) ? 'Reading the book...' : 'Enhance from book'}</span>
+                  </button>
                   <button
                     onClick={() => handleGenerateImage(selectedCharacter)}
                     disabled={generatingImage === selectedCharacter.id || portraitRunning(selectedCharacter.id)}
@@ -406,7 +438,18 @@ const CharactersTab = ({
                   </button>
                 </div>
                 <MediaJobList jobs={portraitJobs(selectedCharacter.id)} className="mt-3" />
+                <MediaJobList jobs={enhanceJobs(selectedCharacter.id)} className="mt-3"
+                  hint="Reading the saved chapters. You can leave this page; the suggestions wait here." />
+                {enhanceError?.characterId === selectedCharacter.id && (
+                  <p className="mt-3 text-sm text-red-600" role="alert" data-testid="enhance-error">{enhanceError.message}</p>
+                )}
               </div>
+
+              <CharacterEnhancePanel
+                character={selectedCharacter}
+                onResolve={(items, use) => setData(prev => resolveEnhancement(prev, selectedCharacter.id, items, use))}
+                onClose={() => setData(prev => closeEnhancement(prev, selectedCharacter.id))}
+              />
 
               {/* Character Image */}
               {selectedCharacter.imageUrl && (
@@ -421,7 +464,13 @@ const CharactersTab = ({
               )}
 
               <div className="space-y-6 sm:space-y-8">
-                {(selectedCharacter.gender || selectedCharacter.skinColor || selectedCharacter.hairColor || selectedCharacter.eyeColor) && (
+                {(selectedCharacter.aliases || []).some(a => String(a).trim()) && (
+                  <p className="text-gray-700 text-base" data-testid="character-aliases">
+                    <span className="font-medium text-gray-600">Also known as:</span> {selectedCharacter.aliases.map(a => String(a).trim()).filter(Boolean).join(', ')}
+                  </p>
+                )}
+
+                {['gender', 'skinColor', 'hairColor', 'eyeColor', 'height', 'weight', 'build', 'appearance'].some(f => String(selectedCharacter[f] || '').trim()) && (
                   <div className="pb-6 sm:pb-8 border-b border-gray-200">
                     <h3 className="font-bold text-gray-900 text-xl sm:text-2xl mb-4">Appearance</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 text-base">
@@ -474,6 +523,9 @@ const CharactersTab = ({
                         </div>
                       )}
                     </div>
+                    {selectedCharacter.appearance && (
+                      <p className="text-gray-700 text-base sm:text-lg leading-relaxed mt-4">{selectedCharacter.appearance}</p>
+                    )}
                   </div>
                 )}
 
@@ -786,6 +838,22 @@ const CharactersTab = ({
                 />
               </div>
 
+              <div className="grid grid-cols-1 gap-4 mb-4">
+                <textarea
+                  placeholder="Appearance details (face, clothes, marks)"
+                  value={characterForm.appearance || ''}
+                  onChange={(e) => setCharacterForm(prev => ({ ...prev, appearance: e.target.value }))}
+                  className="p-3 border border-gray-300 rounded-lg resize-none h-20 focus:ring-2 focus:ring-amber-400 outline-none"
+                />
+                <input
+                  type="text"
+                  placeholder="Also known as (other names, nicknames; comma separated)"
+                  value={(characterForm.aliases || []).join(', ')}
+                  onChange={(e) => setCharacterForm(prev => ({ ...prev, aliases: e.target.value.split(',').map(x => x.trimStart()) }))}
+                  className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-400 outline-none"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <textarea
                   placeholder="Background"
@@ -844,7 +912,9 @@ const CharactersTab = ({
                             value={rel.characterId || ''}
                             onChange={(e) => {
                               const newRels = [...characterForm.relationships];
-                              newRels[index] = { ...newRels[index], characterId: parseInt(e.target.value) };
+                              // ids are numbers for characters made here, strings for imported ones
+                              const picked = data.characters.find(c => String(c.id) === e.target.value);
+                              newRels[index] = { ...newRels[index], characterId: picked ? picked.id : '' };
                               setCharacterForm(prev => ({ ...prev, relationships: newRels }));
                             }}
                             className="p-2 border border-gray-300 rounded focus:ring-2 focus:ring-amber-400 outline-none text-sm"
@@ -872,6 +942,8 @@ const CharactersTab = ({
                             <option value="Parent">Parent</option>
                             <option value="Child">Child</option>
                             <option value="Spouse">Spouse</option>
+                            <option value="Partner">Partner</option>
+                            <option value="Love interest">Love interest</option>
                             <option value="Rival">Rival</option>
                             <option value="Enemy">Enemy</option>
                             <option value="Mentor">Mentor</option>

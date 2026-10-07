@@ -196,6 +196,21 @@ async function fakeGateway() {
         const merges = rows.filter((x, i) => x.kind === 'chapter' && rows[i + 1]?.kind === 'chapter' && !/[.!?"”’]$/.test(x.ends)).map(x => ({ index: x.index, reason: 'ends mid-sentence' }));
         const kinds = rows.filter(x => /bonus/i.test(x.title) && x.kind !== 'back').map(x => ({ index: x.index, kind: 'back', reason: 'a bonus scene, not the story' }));
         content = JSON.stringify({ kinds: [...kinds, { index: 99, kind: 'back' }, { index: 0, kind: rows[0]?.kind }], merges, titles: [{ index: 0, title: 'Not generic so ignored' }] });
+      } else if (/note everything they reveal about ONE character/.test(sys)) {
+        // notes per batch of passages: a fact per chapter heading it was shown
+        const heads = [...usr.matchAll(/^\[#(\d+) [^\]]*\]$/gm)].map(m => Number(m[1]));
+        content = JSON.stringify({ facts: [
+          ...(/copper/.test(usr) ? [{ about: 'looks', fact: 'copper hair', chapter: heads[0] }] : []),
+          ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
+          { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
+        ] });
+      } else if (/write a character profile for a novel/.test(sys)) {
+        // echoes the current background (unchanged = not a suggestion), says
+        // "unknown" for age (a blank, dropped), and names someone not in the cast
+        const current = JSON.parse(usr.match(/CURRENT profile: (\{.*\})/)?.[1] || '{}');
+        content = JSON.stringify({ hairColor: 'Copper', age: 'unknown', background: current.background || '', personality: 'Stubborn and curious.',
+          relationships: [{ name: 'Tomas', type: 'sibling', description: 'Her older brother' }, { name: 'Nobody Here', type: 'Friend' }],
+          aliases: ['Mira Vale', 'Mi'], sources: { hairColor: ['Chapter 1'], personality: [2] } });
       } else if (/one-paragraph overview/.test(sys)) {
         content = JSON.stringify({ overview: 'A cartographer follows a map.' });
       }
@@ -839,6 +854,59 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   }
 }
 
+// ─── enhance a character from the book ────────────────────────────────────
+async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
+  console.log('\n== enhance a character from the book');
+  const usedQuota = async () => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [owner.id])).rows[0].ai_requests_today;
+  const jobs = `/api/books/${bookId}/media-jobs`;
+  const wait = async (jobId) => {
+    for (let i = 0; i < 300; i++) {
+      const j = ((await call('GET', jobs, owner.token)).json?.jobs || []).find(x => x.jobId === jobId);
+      if (j && j.status !== 'running') return j;
+      await new Promise(res => setTimeout(res, 200));
+    }
+    return null;
+  };
+  const filler = 'The tide turned slowly over the black sand and the gulls cried. '.repeat(60);
+  const ids = (await db.query('SELECT id FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number', [bookId])).rows.map(x => x.id);
+  await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[0], `<p>${filler}</p><p>Mira Vale pushed the copper hair out of her eyes.</p><p>${filler}</p>`]);
+  await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[1], `${filler}\n\nMira argued with her brother Tomas until dawn.\n\n${filler}`]);
+  const cast = [{ id: 'char-mira', name: 'Mira Vale', background: 'A cartographer', relationships: [] }, { id: 7, name: 'Tomas Reed', relationships: [] }];
+  await db.query('UPDATE books SET characters = $2 WHERE id = $1', [bookId, JSON.stringify(cast)]);
+
+  const q0 = await usedQuota();
+  let r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'character', id: 'char-mira' }, params: { character: { background: 'x' } } });
+  check('enhance: a character without a name = 400, no quota', r.status === 400 && (await usedQuota()) === q0, `status ${r.status}`);
+  r = await call('POST', jobs, stranger.token, { type: 'enhance', target: { type: 'character', id: 'char-mira' }, params: { character: cast[0] } });
+  check('enhance: someone without edit rights is refused', r.status === 403, `status ${r.status}`);
+
+  const before = gateway.requests.length;
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'character', id: 'char-mira' }, params: { character: cast[0] } });
+  const job = await wait(r.json?.job?.jobId);
+  const res = job?.result || {};
+  const sugg = (res.suggestions || []).map(x => `${x.field}=${x.value}@${x.chapters.join(',')}`).join('|');
+  check('enhance: suggestions only where the book adds something (no "unknown", no unchanged field)',
+    r.status === 202 && job?.status === 'done' && sugg === 'hairColor=Copper@1|personality=Stubborn and curious.@2', `${job?.status} ${sugg} ${job?.error || ''}`);
+  check('enhance: a relationship to someone in the cast, by their id, type normalised; unknown names dropped',
+    JSON.stringify(res.relationships) === JSON.stringify([{ characterId: 7, name: 'Tomas Reed', type: 'Sibling', description: 'Her older brother' }]), JSON.stringify(res.relationships));
+  check('enhance: new names only (the full name is not an alias)', JSON.stringify(res.aliases) === '["Mi"]' && res.read?.mentions === 2 && res.read?.chapters === 2,
+    `${JSON.stringify(res.aliases)} ${JSON.stringify(res.read)}`);
+  const calls = gateway.requests.slice(before).filter(q => q.path.endsWith('/chat/completions'));
+  check('enhance: sai-chat-fast in JSON mode, notes from the passages (HTML read as text), then the profile',
+    calls.length === 2 && calls.every(c => c.body?.model === 'sai-chat-fast' && c.body?.response_format?.type === 'json_object') &&
+    /Mira Vale pushed the copper hair/.test(calls[0].body.messages[1].content) && !/<p>/.test(calls[0].body.messages[1].content) &&
+    /CURRENT profile: \{"background":"A cartographer"\}/.test(calls[1].body.messages[1].content),
+    calls.map(c => c.body?.model).join(','));
+  await call('POST', `${jobs}/${job?.jobId}/ack`, owner.token);
+
+  const q1 = await usedQuota();
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'character', id: 7 }, params: { character: { name: 'Ezra Nobody' } } });
+  const missing = await wait(r.json?.job?.jobId);
+  check('enhance: someone the chapters never mention fails with why, and the slot is refunded',
+    missing?.status === 'failed' && /not mentioned/.test(missing?.error || '') && (await usedQuota()) === q1, `${missing?.status} ${missing?.error} quota ${q1}->${await usedQuota()}`);
+  await call('POST', `${jobs}/${missing?.jobId}/ack`, owner.token);
+}
+
 // ─── book import ──────────────────────────────────────────────────────────
 async function importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJob }) {
   console.log('\n== book import');
@@ -967,6 +1035,8 @@ async function importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJ
     analysed?.status === 'done' && analysed.result.characters[0]?.name === 'Mira Vale' && analysed.result.characters[0]?.mentions === 2 &&
     analysed.result.locations.length === 1 && Object.keys(analysed.result.chapterSummaries).length === 2 && analysed.result.overview,
     JSON.stringify(analysed).slice(0, 220));
+
+  await enhanceChecks({ call, db, gateway, owner, stranger, bookId });
 
   r = await upload(owner.token, 'The Keeper.epub', epubBuf);
   check('duplicate: the same file again says which book it made', r.json?.import?.duplicateOf?.bookId === bookId);

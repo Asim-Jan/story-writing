@@ -9,6 +9,7 @@ import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './servic
 import { chapterHeading } from './utils/chapters.js';
 import { applyOps, createFromImport, deleteImport, getImport, getImportChapter, listImports, patchImport, pruneImports, startImport } from './import/imports.js';
 import { analyzeBook } from './import/analyze.js';
+import { enhanceCharacter } from './enhance/character.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4659,7 +4660,12 @@ const MEDIA_JOB_TARGETS = {
   animation: ['animation'],
   analysis: ['book'],
   audiobook: ['audiobook'],
+  enhance: ['character'],
 };
+
+// Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
+const TEXT_JOBS = new Set(['enhance']);
+const mediaFeatureUnlessText = (req, res, next) => (TEXT_JOBS.has(req.body?.type) ? next() : requireFeature('media_generation')(req, res, next));
 
 // Validate before the quota middleware, so a bad request costs nothing.
 async function validateMediaJob(req, res, next) {
@@ -4684,9 +4690,13 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
     }
-    if (!minioAvailable) return res.status(503).json({ error: 'Media storage is unavailable right now' });
+    if (type === 'enhance' && !String(params.character?.name || '').trim()) return res.status(400).json({ error: 'The character needs a name' });
+    if (!minioAvailable && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
     const book = await getBook(bookId);
     if (!book) return res.status(404).json({ error: 'Book not found' });
+    if (type === 'enhance' && !(book.chapters || []).some(c => String(c.content || '').trim())) {
+      return res.status(400).json({ error: 'The book has no saved chapter text to read yet' });
+    }
     if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
       return res.status(403).json({ error: 'You do not have permission to edit this book' });
     }
@@ -4733,6 +4743,20 @@ function mediaJobRunner(req) {
       chapters: (req.mediaJobBook.chapters || []).map(c => ({ id: c.id, number: c.number, title: c.title, content: c.content })),
       title: req.mediaJobBook.title,
       report,
+    });
+  }
+  if (type === 'enhance') {
+    // reads the SAVED chapters (enhance/character.js); returns suggestions the
+    // author accepts or skips in the client
+    return async (report) => ({
+      characterId: target.id,
+      ...(await enhanceCharacter({
+        character: { ...params.character, id: target.id },
+        chapters: (req.mediaJobBook.chapters || []).map(c => ({ number: c.number, title: c.title, content: c.content })),
+        cast: req.mediaJobBook.characters || [],
+        title: req.mediaJobBook.title,
+        report,
+      })),
     });
   }
   if (type === 'audiobook') {
@@ -4801,13 +4825,14 @@ function mediaJobRunner(req) {
 
 function mediaJobLabel({ type, params }) {
   if (type === 'analysis') return 'Analysing the book';
+  if (type === 'enhance') return `Enhancing ${String(params.character.name).trim().slice(0, 60)} from the book`;
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
   return `Image: ${String(params.prompt).slice(0, 40)}`;
 }
 
-app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, requireFeature('media_generation'), validateMediaJob, consumeAIQuota, async (req, res) => {
+app.post('/api/books/:bookId/media-jobs', authenticateToken, aiLimiter, mediaFeatureUnlessText, validateMediaJob, consumeAIQuota, async (req, res) => {
   try {
     const userId = req.user.userId;
     const job = await startMediaJob({

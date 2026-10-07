@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { chapterHeading } from '../utils/chapters';
+import { applyEnhanceJob } from '../utils/characterEnhance';
 
 // Book media jobs: every image, reference sheet and animation is a SERVER job
 // listed per book. This hook is created once for the open book (in
@@ -256,6 +257,7 @@ export const applyJob = (book, job) => {
     case 'animation': return applyAnimation(book, job);
     case 'audiobook': return applyAudiobook(book, job);
     case 'analysis': return applyAnalysis(book, job);
+    case 'enhance': return applyEnhanceJob(book, job);
     default: return book;
   }
 };
