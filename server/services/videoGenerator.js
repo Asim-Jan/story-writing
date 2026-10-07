@@ -33,7 +33,7 @@ export class VideoGenerator {
     try {
       // Build the motion prompt. options.stylePrompt locks the film's look;
       // options.image (a data: URL) is the keyframe the clip starts from.
-      const videoPrompt = this.buildVeo3Prompt(scene, options.stylePrompt);
+      const videoPrompt = this.buildVeo3Prompt(scene, options.stylePrompt, { fromImage: Boolean(options.image) });
 
       console.log('Video prompt:', videoPrompt.substring(0, 200) + '...');
 
@@ -124,7 +124,7 @@ export class VideoGenerator {
   /**
    * Build optimized prompt for the video model
    */
-  buildVeo3Prompt(scene, stylePrompt = '') {
+  buildVeo3Prompt(scene, stylePrompt = '', { fromImage = false } = {}) {
     let prompt = stylePrompt ? `${stylePrompt}. ` : '';
 
     // Camera direction
@@ -143,6 +143,12 @@ export class VideoGenerator {
     // Motion only: "realistic" here pushed every clip toward live action
     // whatever the film's style. The style prompt sets the look.
     prompt += '. Smooth natural motion, steady cinematic camera.';
+
+    // the keyframe already shows the cast: "the door bursts open and Olive
+    // stumbles in" must not bring in a second Olive
+    if (fromImage && (scene.characters || []).length) {
+      prompt += ' The characters are already in the opening frame: animate them; never add a second copy of anyone.';
+    }
 
     // Audio cues (Veo 3 generates audio natively)
     if (scene.audioPrompt) {

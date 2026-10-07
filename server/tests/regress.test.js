@@ -204,6 +204,14 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/check the opening frame of a film scene/.test(sys)) {
+        // the frame has the scene's text and a JPEG; "TWIN_ONCE" = the first draw shows someone twice
+        const parts = Array.isArray(parsed?.messages?.[1]?.content) ? parsed.messages[1].content : [];
+        const text = parts.filter(x => x.type === 'text').map(x => x.text).join(' ');
+        const jpeg = /^data:image\/jpeg;base64,/.test(parts.find(x => x.type === 'image_url')?.image_url?.url || '');
+        const twin = jpeg && /TWIN_ONCE/.test(text) && !failedOnce.has('twin');
+        if (twin) failedOnce.add('twin');
+        content = JSON.stringify(twin ? { figures: 2, duplicated: true, note: 'Olive appears twice.' } : { figures: jpeg ? 1 : 0, duplicated: false, note: jpeg ? 'fine' : 'no image' });
       } else if (/check a novel's list of locations for duplicates/.test(sys)) {
         // Mira's flat and the cottage on Harrow Lane are one home; plus a group with a bad index
         const rows = [...usr.matchAll(/^\[(\d+)\] ([^|]+?) \|/gm)].map(m => ({ i: Number(m[1]), name: m[2] }));
@@ -901,6 +909,39 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       && p2.finalVideo?.filename !== film.filename && p2.finalVideo?.transitions?.map(t => t.transition).join() === 'fade,cut',
       `${joined?.status} ${joined?.error || ''} ${JSON.stringify(p2?.finalVideo?.transitions)}`);
     check('film rejoin: costs no AI quota', (await editorQuota()) === e0, `${e0} -> ${await editorQuota()}`);
+
+    // one person drawn twice: two entries for one person (one portrait), a
+    // sheet as the main picture (the portrait is used), clothes from the
+    // scene, and a keyframe that shows her twice is checked and redrawn once
+    const sheetUrl = done.result.project.scenes[0].keyframeUrl;
+    await db.query('UPDATE books SET characters = $2 WHERE id = $1', [book.id, JSON.stringify([
+      { id: 'o1', name: 'Olive' },
+      { id: 'o2', name: 'Olive Smith', imageUrl: sheetUrl, referenceImages: [{ kind: 'turnaround', imageUrl: sheetUrl }, { kind: 'portrait', imageUrl: portraitForFilm }] },
+      { id: 'o3', name: 'Anh Pham', aliases: ['Anh'] }])]);
+    const twinStart = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't2' }, params: {
+      options: { style: 'animated' },
+      scenes: [{ sceneNumber: 1, title: 'Bathroom', visualPrompt: 'The door bursts open and Olive stumbles in wearing a wrap dress TWIN_ONCE', characters: ['Olive Smith', 'Olive', 'Anh'], duration: 1 }] } });
+    const twin = await waitJob(editor.token, r.json?.job?.jobId);
+    const twinCalls = gateway.requests.slice(twinStart);
+    const twinKeys = twinCalls.filter(q => q.path.endsWith('/images/generations') && q.body?.model === 'qwen-image-2.1');
+    const frameChecks = twinCalls.filter(q => /check the opening frame of a film scene/.test(q.body?.messages?.[0]?.content || ''));
+    const k0 = twinKeys[0]?.body || {};
+    check('film: one person in two book entries is ONE portrait, and the portrait (not the sheet that is her main picture)',
+      twin?.result?.project?.scenes?.[0]?.cast?.join() === 'Olive Smith,Anh Pham' && /^data:image\//.test(k0.image || '') && !k0.images &&
+      /The person in image 1 is Olive Smith/.test(k0.prompt || '') && !/character sheet/.test(k0.prompt || ''),
+      `${twin?.status} ${twin?.error || ''} cast ${twin?.result?.project?.scenes?.[0]?.cast} images ${k0.images?.length} ${(k0.prompt || '').slice(0, 300)}`);
+    check('film: clothes from the scene, each named character once (prompt and negative)',
+      /Dress them as this scene describes/.test(k0.prompt || '') && !/same face, hair, body, clothes/.test(k0.prompt || '') &&
+      /\(Olive Smith, Anh Pham\) appears in the frame exactly once/.test(k0.prompt || '') && /the same person twice/.test(k0.negative || ''), (k0.prompt || '').slice(0, 600));
+    check('film: a keyframe showing someone twice is checked (small JPEG), redrawn once saying so, and the redraw checked',
+      twinKeys.length === 2 && frameChecks.length === 2 && /^IMPORTANT: draw each person ONCE\. A first attempt showed the same person twice \(Olive appears twice\.\)/.test(twinKeys[1]?.body?.prompt || '') &&
+      JSON.stringify(twin?.result?.project?.scenes?.[0]?.keyframeCheck) === JSON.stringify({ figures: 1, duplicated: false, note: 'fine', redrawn: true }),
+      `${twinKeys.length} keyframes, ${frameChecks.length} checks, ${JSON.stringify(twin?.result?.project?.scenes?.[0]?.keyframeCheck)}`);
+    const twinVideo = twinCalls.find(q => q.path.endsWith('/video/generations'));
+    check('film: the clip is told the characters are already in its first frame (no second Olive coming in)',
+      /already in the opening frame: animate them; never add a second copy of anyone/.test(twinVideo?.body?.prompt || ''), (twinVideo?.body?.prompt || '').slice(-200));
+    await call('POST', `${jobsUrl}/${twin?.jobId}/ack`, editor.token);
   }
 
   // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──

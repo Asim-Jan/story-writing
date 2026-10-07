@@ -11,6 +11,7 @@ import { describeCharacter, mediaUrlToDataUrl } from './characterReferences.js';
 import { VideoGenerator } from './videoGenerator.js';
 import { transitionOf } from './filmShots.js';
 import { matchLocation, describeLocation } from './filmLocations.js';
+import { checkKeyframe } from './keyframeCheck.js';
 
 // Consistent films. Clips made from text alone each invent their own look:
 // one scene lifelike, the next animated, the characters different every time.
@@ -66,25 +67,55 @@ export function filmStyle(key) {
   return FILM_STYLES[key] || FILM_STYLES.animated;
 }
 
-// A scene names its characters; find them in the book: full name, then first name.
+// A scene names its characters; find them in the book: full name, an "also
+// known as" name, then first name. One person is one portrait: two forms of a
+// name ("Olive", "Olive Smith"), even as two entries in the book, match once
+// (the entry with a picture wins), or the keyframe draws her twice.
+const lowerName = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const nameWords = (s) => lowerName(s).replace(/[^\p{L}\p{N}' -]/gu, ' ').split(/\s+/).filter(w => w.length > 1);
+const formsOf = (c) => [c.name, ...(Array.isArray(c.aliases) ? c.aliases : [])].map(lowerName).filter(Boolean);
+// "olive" and "olive smith" (or "dr. olive smith"): one's words are all in the other's
+const sameNameForm = (a, b) => {
+  const x = nameWords(a);
+  const y = nameWords(b);
+  if (!x.length || !y.length) return false;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return short.every(w => long.includes(w));
+};
+
 export function matchCast(names = [], bookCharacters = []) {
   const found = [];
   for (const raw of names) {
-    const name = String(raw || '').trim().toLowerCase();
+    const name = lowerName(raw);
     if (!name) continue;
-    const character = bookCharacters.find(c => String(c.name || '').trim().toLowerCase() === name)
-      || bookCharacters.find(c => String(c.name || '').trim().toLowerCase().split(/\s+/)[0] === name.split(/\s+/)[0]);
-    if (character && !found.some(f => f.character === character)) found.push({ name: raw, character });
+    const character = bookCharacters.find(c => lowerName(c.name) === name)
+      || bookCharacters.find(c => formsOf(c).includes(name))
+      || bookCharacters.find(c => lowerName(c.name).split(' ')[0] === name.split(' ')[0]);
+    if (!character) continue;
+    const same = found.findIndex(f => f.character === character
+      || formsOf(f.character).some(a => formsOf(character).some(b => sameNameForm(a, b))));
+    if (same === -1) found.push({ name: raw, character });
+    else if (!referenceImageOf(found[same].character) && referenceImageOf(character)) found[same] = { name: raw, character };
   }
   return found;
 }
 
-// The picture that stands for a character: the main portrait, else the newest
-// portrait reference.
+// The picture that stands for a character: one picture of ONE person. A
+// reference sheet (turnaround, expressions) shows them several times over and
+// the keyframe copies that, so a portrait is preferred over a sheet, even when
+// the sheet is the main picture.
+const SHEET_KINDS = new Set(['turnaround', 'turnaround-quad', 'expressions', 'qwen-sheet']);
+export function castReference(character) {
+  const refs = Array.isArray(character?.referenceImages) ? character.referenceImages : [];
+  const portrait = refs.find(r => r.kind === 'portrait' && r.imageUrl);
+  const main = character?.imageUrl || null;
+  const mainIsSheet = Boolean(main && refs.some(r => r.imageUrl === main && SHEET_KINDS.has(r.kind)));
+  if (main && !mainIsSheet) return { url: main, sheet: false };
+  if (portrait) return { url: portrait.imageUrl, sheet: false };
+  return main ? { url: main, sheet: true } : null;
+}
 export function referenceImageOf(character) {
-  if (character?.imageUrl) return character.imageUrl;
-  const portrait = (character?.referenceImages || []).find(r => r.kind === 'portrait');
-  return portrait?.imageUrl || null;
+  return castReference(character)?.url || null;
 }
 
 const run = (cmd, args) => new Promise((resolve, reject) => {
@@ -134,36 +165,49 @@ function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition,
   if (place) lines.push(`Setting (the wider place): ${describeLocation(place.location)}.`);
   else if (scene.location) lines.push(`Setting: ${scene.location}.`);
   if (scene.mood) lines.push(`Mood: ${scene.mood}.`);
-  cast.forEach((c, i) => {
-    lines.push(c.ref
-      ? `The person in image ${i + 1} is ${c.character.name} (${describeCharacter(c.character)}).`
-      : `${c.character.name}: ${describeCharacter(c.character)}.`);
+  // the image numbers follow the references actually sent
+  let n = 0;
+  cast.forEach((c) => {
+    if (!c.ref) {
+      lines.push(`${c.character.name}: ${describeCharacter(c.character)}.`);
+      return;
+    }
+    n += 1;
+    lines.push(c.sheet
+      ? `Image ${n} is a character sheet of ${c.character.name} (${describeCharacter(c.character)}): ONE person shown from several angles; draw them once.`
+      : `The person in image ${n} is ${c.character.name} (${describeCharacter(c.character)}).`);
   });
   if (cast.some(c => c.ref)) {
-    lines.push('Keep every character exactly as in their reference image: same face, hair, body, clothes and colours.');
+    // clothes from the scene: a portrait in a lab coat and a scene in a wrap
+    // dress made the model draw her twice, once in each
+    lines.push('Keep each character\'s face, hair, skin and build exactly as in their reference image. Dress them as this scene describes; where it does not say, as in their reference image.');
   }
-  const castRefs = cast.filter(c => c.ref).length;
+  if (cast.length) {
+    lines.push(`Each named character (${cast.map(c => c.character.name).join(', ')}) appears in the frame exactly once: never two copies of the same person.`);
+  }
+  const castRefs = n;
   if (place?.ref) {
     // the shot may be a corner or an inside of the place (a workshop in the
     // Undergrid), so its look, not its layout
     lines.push(`Image ${castRefs + 1} shows ${place.location.name}, where this shot takes place (this may be a different part of it, closer in or inside): match its look, materials, lighting style and colour palette.`);
   }
   if (hasPrevious) {
-    const n = castRefs + (place?.ref ? 1 : 0) + 1;
+    const m = castRefs + (place?.ref ? 1 : 0) + 1;
     const sameSetting = previous?.location && scene.location && previous.location === scene.location;
     // a new shot of the same moment must not repeat the framing: the same
     // angle with the character in a new pose is a jump cut
     if (sameSetting && (transition === 'cut' || transition === 'continue')) {
-      lines.push(`Image ${n} is the previous shot. This is a NEW camera angle on the same moment, in the same place, lighting and time of day: use a clearly different shot size and angle from image ${n} (for example wide to close-up, or a reverse angle); do not repeat its framing.`);
+      lines.push(`Image ${m} is the previous shot. This is a NEW camera angle on the same moment, in the same place, lighting and time of day: use a clearly different shot size and angle from image ${m} (for example wide to close-up, or a reverse angle); do not repeat its framing.`);
     } else if (sameSetting) {
-      lines.push(`Image ${n} is the previous shot: a little later, in the same place; keep its lighting, art style and character designs, with a different framing.`);
+      lines.push(`Image ${m} is the previous shot: a little later, in the same place; keep its lighting, art style and character designs, with a different framing.`);
     } else {
-      lines.push(`Image ${n} is the previous shot: match its art style, colour palette and character designs.`);
+      lines.push(`Image ${m} is the previous shot: match its art style, colour palette and character designs.`);
     }
+    if (cast.length) lines.push(`The people in image ${m} are the same characters, not additional ones.`);
   }
   if (previous?.action || previous?.title) lines.push(`Just before this: ${previous.action || previous.title}.`);
   lines.push('No text, captions or watermarks.');
-  return lines.join(' ').slice(0, 2400);
+  return lines.join(' ').slice(0, 2800);
 }
 
 /**
@@ -188,10 +232,11 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
     // references; one is kept for the previous shot)
     const cast = matchCast(scene.characters || [], book.characters || []).slice(0, 4);
     for (const c of cast) {
-      const url = referenceImageOf(c.character);
-      if (!url) continue;
+      const pick = castReference(c.character);
+      if (!pick) continue;
       try {
-        c.ref = await mediaUrlToDataUrl(user, url);
+        c.ref = await mediaUrlToDataUrl(user, pick.url);
+        c.sheet = pick.sheet;
       } catch (err) {
         console.warn(`Film: no usable portrait for ${c.character.name}:`, err.message);
       }
@@ -218,6 +263,7 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
 
     let keyframe = null;
     let keyframeUrl = null;
+    let keyframeCheck = null; // { figures, duplicated, note, redrawn }
     if (canContinue) {
       keyframe = previousFrame;
       try {
@@ -232,15 +278,28 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
       await onProgress({ stage: 'keyframe', ...base });
       const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(place?.ref ? [place.ref] : []), ...(previousFrame ? [previousFrame] : [])];
       const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition, place });
-      const image = await saiImage({
+      const draw = (extra = '') => saiImage({
         model: 'qwen-image-2.1',
         size: '1280x720',
         canvas: 'size', // 16:9 whatever the portraits' shape
-        prompt,
-        negative: style.negative,
+        prompt: `${extra}${prompt}`,
+        negative: `${style.negative}, the same person twice, duplicated person, clone, twins`,
         ...(refs.length === 1 ? { image: refs[0] } : {}),
         ...(refs.length > 1 ? { images: refs } : {}),
       });
+      let image = await draw();
+      // someone drawn twice: redraw once, saying so (keyframeCheck.js)
+      if (cast.length) {
+        const castLooks = cast.map(c => ({ name: c.character.name, look: describeCharacter(c.character).slice(0, 200) }));
+        let check = await checkKeyframe({ pngBuffer: image.buffer, scene, cast: castLooks });
+        keyframeCheck = check ? { ...check, redrawn: false } : null;
+        if (check?.duplicated) {
+          await onProgress({ stage: 'keyframe', ...base, redraw: true });
+          image = await draw(`IMPORTANT: draw each person ONCE. A first attempt showed the same person twice (${check.note || 'a duplicate'}). `);
+          check = await checkKeyframe({ pngBuffer: image.buffer, scene, cast: castLooks });
+          keyframeCheck = { ...(check || {}), redrawn: true };
+        }
+      }
       const filename = `keyframe-${uuidv4()}.png`;
       await mediaStorage.upload('images', image.buffer, filename, { 'x-amz-meta-type': 'film-keyframe' });
       await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
@@ -274,7 +333,7 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
         previousExact = false;
       }
       previousScene = scene;
-      const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name), ...(transition ? { transition } : {}), ...(location ? { place: location.name } : {}) };
+      const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name), ...(keyframeCheck ? { keyframeCheck } : {}), ...(transition ? { transition } : {}), ...(location ? { place: location.name } : {}) };
       results.push(result);
       await onProgress({ stage: 'scene-complete', ...base, keyframeUrl, result });
     } catch (err) {
