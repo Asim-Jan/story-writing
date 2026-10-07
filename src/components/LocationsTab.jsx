@@ -10,6 +10,7 @@ import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext'
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
 import EnhanceAllBar from './EnhanceAllBar';
 import MissingFromBook from './MissingFromBook';
+import DuplicatesNotice from './DuplicatesNotice';
 import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 
 const LocationsTab = ({
@@ -214,6 +215,8 @@ const LocationsTab = ({
               {viewMode === 'list' ? <Grid3x3 size={20} /> : <List size={20} />}
             </button>
           </div>
+          <DuplicatesNotice kind="location" data={data} setData={setData}
+            onMerged={(keepId, dropId) => { if (selectedLocation && String(selectedLocation.id) === String(dropId)) setSelectedLocation(data.locations.find(l => String(l.id) === String(keepId)) || null); }} />
           <EnhanceAllBar noun="locations" kind="location" items={data.locations} hasChapterText={hasChapterText} />
           <MissingFromBook which="places" data={data} setData={setData} />
           {/* Search Input */}

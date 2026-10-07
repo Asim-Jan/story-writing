@@ -29,11 +29,15 @@ const HONORIFICS = new Set(['mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'doctor', 'si
   'king', 'queen', 'prince', 'princess', 'the', 'of', 'de', 'la', 'le', 'van', 'von', 'der', 'jr', 'sr']);
 const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
-/** The names a person goes by: the full name, its parts (first name, surname), aliases. */
+/** The names a person goes by: the full name, without a title, its parts (first name, surname), aliases. */
 export function nameVariants(name, aliases = []) {
   const full = clean(name);
   const out = new Set([full, ...(Array.isArray(aliases) ? aliases : []).map(clean)].filter(v => v.length >= 2));
-  const parts = full.split(' ').filter(p => p.length >= 3 && !HONORIFICS.has(p.toLowerCase().replace(/\.$/, '')));
+  const words = full.split(' ');
+  const bare = words.filter(p => !HONORIFICS.has(p.toLowerCase().replace(/\.$/, '')));
+  // "Dr. Aslan" is also "Aslan"
+  if (bare.length && bare.length < words.length && bare.join(' ').length >= 3) out.add(bare.join(' '));
+  const parts = bare.filter(p => p.length >= 3);
   if (parts.length > 1) parts.forEach(p => out.add(p));
   return [...out];
 }

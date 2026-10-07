@@ -185,7 +185,7 @@ async function fakeGateway() {
         const nums = [...usr.matchAll(/^\[(\d+)\]/gm)].map(m => Number(m[1]));
         content = JSON.stringify({ chapters: nums.length > 4 ? [{ start: nums[0], title: 'Chapter 1' }, { start: nums[Math.floor(nums.length / 2)], title: 'Chapter 2' }, { start: 99999, title: 'bogus' }] : [] });
       } else if (/read one chapter of a novel/.test(sys)) {
-        content = JSON.stringify({ summary: 'Mira finds a map.', characters: [{ name: 'Mira Vale', role: 'protagonist', description: 'A cartographer', appearance: 'copper hair' }],
+        content = JSON.stringify({ summary: 'Mira finds a map.', characters: [{ name: 'Mira Vale', role: 'protagonist', description: 'A cartographer', appearance: 'copper hair' }, { name: 'Mira', role: 'supporting', description: 'Short form' }],
           locations: [{ name: 'The Lighthouse', type: 'building', description: 'On a cliff' }], events: [{ title: 'Map found', description: 'She finds it.' }], plot: [{ title: 'The map', description: 'It leads somewhere.' }] });
       } else if (/check how an imported book was split/.test(sys)) {
         // a rule-based stand-in for the model: a chapter that ends mid-sentence
@@ -1157,8 +1157,9 @@ async function importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJ
     }
     return null;
   })() : null;
-  check('analysis job: characters, locations, plotlines, summaries per chapter, overview',
-    analysed?.status === 'done' && analysed.result.characters[0]?.name === 'Mira Vale' && analysed.result.characters[0]?.mentions === 2 &&
+  check('analysis job: characters (one person named two ways is one), locations, plotlines, summaries per chapter, overview',
+    analysed?.status === 'done' && analysed.result.characters[0]?.name === 'Mira Vale' && analysed.result.characters[0]?.mentions === 4 &&
+    analysed.result.characters.length === 1 && analysed.result.characters[0].aliases?.join() === 'Mira' && analysed.result.characters[0].role === 'protagonist' &&
     analysed.result.locations.length === 1 && Object.keys(analysed.result.chapterSummaries).length === 2 && analysed.result.overview,
     JSON.stringify(analysed).slice(0, 220));
 
