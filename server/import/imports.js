@@ -79,6 +79,16 @@ export async function startImport({ ownerId, fileName, buffer }) {
   return row2import(record);
 }
 
+// The app shows "Chapter N: <title>", so a title that carries its own number
+// ("2. The Map", "Chapter 3: The Storm", "One: The Storm", "IV - The Bell") would read twice.
+// Only a number prefix with real text after it goes; "Chapter 3" stays.
+const NUMBER_WORD = '(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?';
+const NUMBER_PREFIX = new RegExp(`^\\s*(?:chapter\\s+(?:\\d{1,3}|[ivxlc]{1,7}|${NUMBER_WORD})|\\d{1,3}|[IVXLC]{1,7}|${NUMBER_WORD})\\s*[.:)\\-–—]\\s*(\\S.*)$`, 'i');
+export function stripChapterNumber(title) {
+  const m = NUMBER_PREFIX.exec(String(title || ''));
+  return m ? m[1].trim() : title;
+}
+
 async function parseInBackground(id, format, buffer, fileName = '') {
   const fileTitle = path.basename(fileName, path.extname(fileName)).replace(/[_-]+/g, ' ').trim() || null;
   try {
@@ -112,7 +122,8 @@ async function parseInBackground(id, format, buffer, fileName = '') {
       // untitled text before the first heading reads as an opening, not "Chapter 1"
       const fallback = i === 0 && othersTitled ? 'Opening'
         : s.kind === 'chapter' ? `Chapter ${n}` : s.kind === 'front' ? 'Front matter' : 'Back matter';
-      return { title: s.title || fallback, kind: s.kind, content: s.content, source: s.source || 'whole' };
+      const title = s.kind === 'chapter' ? stripChapterNumber(s.title) : s.title;
+      return { title: title || fallback, kind: s.kind, content: s.content, source: s.source || 'whole' };
     });
     const short = chapters.filter(c => c.kind === 'chapter' && wordCount(c.content) < 100).length;
     if (short) warnings.push(`${short} very short chapter${short === 1 ? '' : 's'} (under 100 words): check ${short === 1 ? 'it' : 'them'}`);

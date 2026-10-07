@@ -806,8 +806,8 @@ async function importChecks({ call, db, owner, stranger, jobsUrl, waitJob }) {
   let imp = await settle(owner.token, r.json?.import?.id);
   const kinds = (imp?.chapters || []).map(c => `${c.kind}:${c.title}`);
   check('ePub: title and author from the package', imp?.status === 'review' && imp.title === 'The Keeper' && imp.author === 'Ada Writer', JSON.stringify(imp).slice(0, 200));
-  check('ePub: spine order, TOC titles, front/back matter classified, image-only cover skipped',
-    kinds.join('|') === 'front:Copyright|chapter:One: The Storm|chapter:Two: The Map|back:About the Author', kinds.join('|'));
+  check('ePub: spine order, TOC titles (their "One:" numbering dropped), front/back matter classified, image-only cover skipped',
+    kinds.join('|') === 'front:Copyright|chapter:The Storm|chapter:The Map|back:About the Author', kinds.join('|'));
   const ch1 = await call('GET', `/api/imports/${imp?.id}/chapters/1`, owner.token);
   check('ePub: entities decoded, paragraphs kept', /keeper’s lamp/.test(ch1.json?.chapter?.content || '') && (ch1.json?.chapter?.content || '').split('\n\n').length >= 30);
   r = await call('GET', `/api/imports/${imp?.id}`, stranger.token);
@@ -913,6 +913,10 @@ async function prodShapedSuite() {
     await db.query(`INSERT INTO books (owner_id, title) VALUES ($1, 'Prod book')`, [u]);
     const snapshot = async () => JSON.stringify((await db.query('SELECT id, title, version FROM books ORDER BY id')).rows);
     const before = await snapshot();
+    // like prod: 09 counted as applied, yet ai_generations has none of its columns or trigger
+    await db.query(`DROP TRIGGER IF EXISTS trg_update_cost_summary ON ai_generations;
+      ALTER TABLE ai_generations DROP COLUMN IF EXISTS prompt_tokens, DROP COLUMN IF EXISTS completion_tokens,
+        DROP COLUMN IF EXISTS total_tokens, DROP COLUMN IF EXISTS estimated_cost_usd`);
 
     let srv = await bootServer('rg_prod');
     const applied = (await db.query('SELECT name FROM schema_migrations ORDER BY name')).rows.map(r => r.name);
@@ -924,6 +928,11 @@ async function prodShapedSuite() {
     check('first boot: z98 applied (token_version exists)',
       (await db.query(`SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='token_version'`)).rowCount === 1);
     check('first boot: existing book rows untouched', (await snapshot()) === before);
+    await db.query(`INSERT INTO ai_generations (user_id, tool_type, prompt, result, model, prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
+      VALUES ($1, 'character', 'p', '{}', 'sai-chat-fast', 10, 5, 15, 0.001)`, [u]);
+    const summary = (await db.query('SELECT total_tokens, text_requests FROM ai_cost_summary WHERE user_id = $1', [u])).rows[0];
+    check('first boot: z103 restored the ai_generations cost columns and the daily summary trigger',
+      summary?.total_tokens === 15 && summary?.text_requests === 1, JSON.stringify(summary));
     await srv.stop();
 
     srv = await bootServer('rg_prod');
