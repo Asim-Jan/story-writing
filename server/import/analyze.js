@@ -9,7 +9,7 @@ import { chapterHeading } from '../utils/chapters.js';
 
 const MAX_CHAPTER_CHARS = 60000; // ~15k tokens: one chapter, comfortably inside the model's window
 
-async function askJson(system, user, maxTokens) {
+export async function askJson(system, user, maxTokens) {
   const completion = await getSAIClient().chat.completions.create({
     model: SAI_CHAT_FAST,
     response_format: { type: 'json_object' },
