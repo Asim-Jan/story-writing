@@ -52,8 +52,19 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, bookId, autosave }) 
   const chaptersRef = useRef(chapters);
   chaptersRef.current = chapters;
 
+  // a book that never picked a voice uses the one set in Profile > Preferences
+  const [profileVoice, setProfileVoice] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/users/settings', { headers: authHeaders(), credentials: 'include' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(body => { if (!cancelled && body?.preferences?.defaultVoice) setProfileVoice(body.preferences.defaultVoice); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const settings = data.metadata?.audiobook || {};
-  const spec = normalizeVoiceSpec(settings.voice);
+  const spec = normalizeVoiceSpec(settings.voice || profileVoice);
   const speed = SPEEDS.includes(settings.speed) ? settings.speed : 1.0;
   const audioFiles = data.audioFiles || {};
   const sortedChapters = useMemo(() => [...chapters].sort(byNumber), [chapters]);

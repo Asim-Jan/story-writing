@@ -490,6 +490,13 @@ async function mainSuite(gateway) {
 
     await mediaChecks({ call, db, gateway, owner, stranger, book });
 
+    console.log('\n== profile preferences');
+    const voicePref = { engine: 'qwen', voice: 'Serena' };
+    r = await call('PUT', '/api/users/settings', owner.token, { preferences: { defaultVoice: voicePref, autoSave: true, enableNotifications: true, theme: 'light' } });
+    const prefs = (await call('GET', '/api/users/settings', owner.token)).json?.preferences;
+    check('profile preferences come back after saving (they never did); the voice is a spec; no per-user model setting',
+      r.status === 200 && prefs?.defaultVoice?.engine === 'qwen' && prefs?.defaultVoice?.voice === 'Serena' && !('defaultModel' in (prefs || {})), JSON.stringify(prefs));
+
     console.log('\n== a database built from scratch has the same structure as prod (z104)');
     const tpl = await db.query(`INSERT INTO books (owner_id, title, is_template) VALUES (NULL, 'Template', TRUE) RETURNING id`).catch(e => ({ error: e.message }));
     check('a template book (no owner) can be stored', !tpl.error, tpl.error);
@@ -821,6 +828,44 @@ async function importChecks({ call, db, owner, stranger, jobsUrl, waitJob }) {
   check('ePub: entities decoded, paragraphs kept', /keeper’s lamp/.test(ch1.json?.chapter?.content || '') && (ch1.json?.chapter?.content || '').split('\n\n').length >= 30);
   r = await call('GET', `/api/imports/${imp?.id}`, stranger.token);
   check('import: another user cannot see it', r.status === 404);
+
+  // An ePub 2 whose package and TOC prefix every tag (<opf:item>, <opf:itemref>):
+  // what Penguin's tools wrote for "The Love Hypothesis", which failed with
+  // "No readable text" (2026-10-07). Its fonts are obfuscated (harmless), and
+  // it ends with long back matter (an author's note, an excerpt of the next
+  // book) that must not be read as story.
+  const words = (n, w) => `<p>${Array.from({ length: n }, () => w).join(' ')}.</p>`;
+  const buildPrefixed = async (encryption) => {
+    const z = new JSZip();
+    z.file('mimetype', 'application/epub+zip');
+    z.file('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
+    if (encryption) z.file('META-INF/encryption.xml', encryption);
+    const pages = [['copyright', 'Copyright', words(40, 'rights')], ['ch1', 'Chapter One', words(900, 'storm')], ['ch2', 'Chapter Two', words(900, 'map')],
+      ['epilogue', 'Epilogue', words(300, 'dawn')], ['note', 'Author\u2019s Note', words(450, 'thanks')], ['ack', 'Acknowledgments', words(120, 'grateful')],
+      ['excerpt', 'Excerpt from THE NEXT ONE', words(2000, 'preview')], ['about', 'About the Author', words(60, 'lives')]];
+    z.file('OEBPS/content.opf', `<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0"><opf:metadata><dc:title>Prefixed Tale</dc:title><dc:creator opf:role="aut">Pen Author</dc:creator></opf:metadata><opf:manifest>${
+      pages.map(([id]) => `<opf:item id="${id}" href="xhtml/${id}.xhtml" media-type="application/xhtml+xml"/>`).join('')
+    }<opf:item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><opf:item id="font" href="fonts/a.otf" media-type="font/otf"/></opf:manifest><opf:spine toc="ncx">${
+      pages.map(([id]) => `<opf:itemref idref="${id}"/>`).join('')}</opf:spine></opf:package>`);
+    z.file('OEBPS/toc.ncx', `<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${
+      pages.map(([id, title], i) => `<navPoint id="n${i}"><navLabel><text>${title}</text></navLabel><content src="xhtml/${id}.xhtml"/></navPoint>`).join('')}</navMap></ncx>`);
+    for (const [id, , body] of pages) z.file(`OEBPS/xhtml/${id}.xhtml`, xhtml(id, body));
+    z.file('OEBPS/fonts/a.otf', 'font bytes');
+    return z.generateAsync({ type: 'nodebuffer' });
+  };
+  const encryptionOf = (algorithm, uri) => `<?xml version="1.0"?><encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData><enc:EncryptionMethod Algorithm="${algorithm}"/><enc:CipherData><enc:CipherReference URI="${uri}"/></enc:CipherData></enc:EncryptedData></encryption>`;
+  r = await upload(owner.token, 'Prefixed Tale.epub', await buildPrefixed(encryptionOf('http://www.idpf.org/2008/embedding', 'OEBPS/fonts/a.otf')));
+  const pre = await settle(owner.token, r.json?.import?.id);
+  check('ePub with prefixed package tags (<opf:itemref>) and obfuscated fonts: read, title + author found',
+    pre?.status === 'review' && pre.title === 'Prefixed Tale' && pre.author === 'Pen Author', JSON.stringify({ status: pre?.status, error: pre?.error, title: pre?.title }));
+  check('...long back matter (author\'s note, excerpt of the next book) stays back matter',
+    (pre?.chapters || []).map(c => `${c.kind[0]}:${c.title}`).join('|') === 'f:Copyright|c:Chapter One|c:Chapter Two|c:Epilogue|b:Author’s Note|b:Acknowledgments|b:Excerpt from THE NEXT ONE|b:About the Author',
+    (pre?.chapters || []).map(c => `${c.kind[0]}:${c.title}`).join('|'));
+  r = await upload(owner.token, 'Locked.epub', await buildPrefixed(encryptionOf('http://www.w3.org/2001/04/xmlenc#aes128-cbc', 'OEBPS/xhtml/ch1.xhtml')));
+  const locked = await settle(owner.token, r.json?.import?.id);
+  check('a DRM-encrypted ePub says it is DRM-protected (not "no readable text")', locked?.status === 'failed' && /DRM-protected/.test(locked.error || ''), locked?.error);
+  if (pre?.id) await call('DELETE', `/api/imports/${pre.id}`, owner.token);
+  if (locked?.id) await call('DELETE', `/api/imports/${locked.id}`, owner.token);
 
   // review ops: small edits, never the whole book
   r = await call('PATCH', `/api/imports/${imp?.id}/chapters`, owner.token, { ops: [{ op: 'nonsense' }] });
