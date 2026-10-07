@@ -178,8 +178,15 @@ export const VOICE_MAP = {
   shimmer: 'en-grace_woman', // soft female
 };
 
-export async function saiSpeech({ text, voice = 'en-davis_man', speed = 1.0 }) {
+export async function saiSpeech({ text, voice = 'en-davis_man', speed = undefined, model = undefined, ref_audio = undefined, ref_text = undefined }) {
   if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  // model: a bridge speech recipe ('vibevoice-tts' default, 'qwen3-tts');
+  // ref_audio + ref_text clone a voice from a sample (Qwen3-TTS only)
+  const body = { voice, input: text, response_format: 'wav' };
+  if (model) body.model = model;
+  if (speed) body.speed = speed;
+  if (ref_audio) body.ref_audio = ref_audio;
+  if (ref_text) body.ref_text = ref_text;
 
   const res = await fetch(`${BASE_URL()}/audio/speech`, {
     method: 'POST',
@@ -187,7 +194,7 @@ export async function saiSpeech({ text, voice = 'en-davis_man', speed = 1.0 }) {
       'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ voice, input: text, speed, response_format: 'wav' }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -195,6 +202,43 @@ export async function saiSpeech({ text, voice = 'en-davis_man', speed = 1.0 }) {
     throw new Error(`SAI_SPEECH_${res.status}: ${detail.slice(0, 200)}`);
   }
   return Buffer.from(await res.arrayBuffer());
+}
+
+/** Speech to text (the bridge's ASR): a WAV buffer → its transcript. */
+export async function saiTranscribe(wav) {
+  if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  const form = new FormData();
+  form.append('file', new Blob([wav], { type: 'audio/wav' }), 'sample.wav');
+  form.append('model', 'whisper-1');
+  const res = await fetch(`${BASE_URL()}/audio/transcriptions`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${API_KEY()}` }, body: form,
+  });
+  if (!res.ok) throw new Error(`SAI_TRANSCRIBE_${res.status}`);
+  const payload = await res.json();
+  return String(payload.text || '');
+}
+
+const LANGUAGES = { de: 'German', en: 'English', fr: 'French', in: 'Indonesian', it: 'Italian', jp: 'Japanese', kr: 'Korean', nl: 'Dutch', pl: 'Polish', pt: 'Portuguese', sp: 'Spanish' };
+
+/** A speech recipe's voices as [{ id, name, language }]. */
+export async function saiVoices(model) {
+  if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  const res = await fetch(`${BASE_URL()}/audio/voices?model=${encodeURIComponent(model)}`, {
+    headers: { 'Authorization': `Bearer ${API_KEY()}` },
+  });
+  if (!res.ok) throw new Error(`SAI_VOICES_${res.status}`);
+  const payload = await res.json();
+  if (Array.isArray(payload.data)) {
+    // Qwen3-TTS: presets only (registered clones on the shared engine are not ours to list)
+    return payload.data.filter(v => !v.kind || v.kind === 'preset').map(v => ({ id: v.id, name: v.name || v.id, language: v.language || '' }));
+  }
+  // VibeVoice: ids like 'en-emma_woman' → "Emma (English, woman)"
+  return (payload.voices || []).map(id => {
+    const [lang, rest = ''] = String(id).split('-');
+    const [who, gender] = rest.split('_');
+    const name = who.startsWith('spk') ? `Speaker ${Number(who.slice(3)) + 1}` : who.charAt(0).toUpperCase() + who.slice(1);
+    return { id, name: `${name} (${LANGUAGES[lang] || lang}${gender ? `, ${gender}` : ''})`, language: LANGUAGES[lang] || lang };
+  });
 }
 
 /**
