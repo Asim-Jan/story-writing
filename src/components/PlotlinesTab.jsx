@@ -1,10 +1,14 @@
-import React, { useState } from 'react';
-import { Route, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Search, Link, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Route, Plus, Edit3, Trash2, Sparkles, Grid3x3, List, Search, Link, X, BookOpen, Users, MapPin } from 'lucide-react';
 import AIHelper from './AIHelper';
 import AISuggestionBox from './AISuggestionBox';
 import BatchAISuggestionBox from './BatchAISuggestionBox';
 import ImproveButton from './ImproveButton';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
+import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import EnhanceAllBar from './EnhanceAllBar';
+import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 
 const PlotlinesTab = ({
   data,
@@ -36,6 +40,30 @@ const PlotlinesTab = ({
 
   const isMobile = useIsMobile();
   const showingDetail = selectedPlotline !== null || editingId;
+
+  // The detail view renders a snapshot; keep it in step with the book so
+  // used suggestions (and other edits) show without re-selecting.
+  useEffect(() => {
+    if (!selectedPlotline) return;
+    const live = data.plotlines.find(p => p.id === selectedPlotline.id);
+    if (live && live !== selectedPlotline) setSelectedPlotline(live);
+  }, [data.plotlines]);
+
+  // "Enhance from book": reads the chapters the plotline runs through
+  const { jobsFor, startJob } = useMediaJobsContext();
+  const enhanceJobs = (id) => jobsFor('plotline', id).filter(j => j.type === 'enhance');
+  const enhanceRunning = (id) => enhanceJobs(id).some(j => j.status === 'running');
+  const [enhanceError, setEnhanceError] = useState(null);
+  const hasChapterText = (data.chapters || []).some(c => String(c.content || '').trim());
+  const handleEnhance = async (plot) => {
+    setEnhanceError(null);
+    try {
+      await startJob('enhance', { type: 'plotline', id: plot.id }, enhanceParams('plotline', plot));
+    } catch (error) {
+      setEnhanceError({ id: plot.id, message: error.message });
+    }
+  };
+  const nameIn = (list, id) => (list || []).find(x => String(x.id) === String(id))?.name;
 
   // Filter plotlines based on search query
   const filteredPlotlines = data.plotlines.filter(plot => {
@@ -118,6 +146,8 @@ const PlotlinesTab = ({
               {viewMode === 'list' ? <Grid3x3 size={20} /> : <List size={20} />}
             </button>
           </div>
+          <EnhanceAllBar noun="plotlines" kind="plotline" items={data.plotlines} hasChapterText={hasChapterText}
+            note="SAI reads the chapters each plotline runs through and suggests what the book says. It runs in the background (about 10 to 30 seconds each); the suggestions wait on each one for you to use or skip." />
           {/* Search Input */}
           {data.plotlines.length > 0 && (
             <div className="relative">
@@ -174,6 +204,11 @@ const PlotlinesTab = ({
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs font-semibold">
                         <Link size={12} />
                         {plot.linkedPlotlines.length}
+                      </span>
+                    )}
+                    {openItems(plot.enhancement) > 0 && (
+                      <span className="inline-block px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded text-xs" data-testid="enhance-pending">
+                        {openItems(plot.enhancement)} from book
                       </span>
                     )}
                   </div>
@@ -272,6 +307,16 @@ const PlotlinesTab = ({
               </div>
               <div className="flex flex-wrap gap-2 flex-shrink-0">
                 <button
+                  onClick={() => handleEnhance(selectedPlotline)}
+                  disabled={!hasChapterText || enhanceRunning(selectedPlotline.id)}
+                  title={hasChapterText ? 'Read the chapters this plotline runs through and suggest what the book says' : 'Add or import chapters first'}
+                  data-testid="plotline-enhance"
+                  className="px-3 sm:px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <BookOpen size={16} className={`flex-shrink-0 ${enhanceRunning(selectedPlotline.id) ? 'animate-pulse' : ''}`} />
+                  <span className="hidden sm:inline">{enhanceRunning(selectedPlotline.id) ? 'Reading the book...' : 'Enhance from book'}</span>
+                </button>
+                <button
                   onClick={() => handleEdit(selectedPlotline)}
                   className="px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
                 >
@@ -291,7 +336,32 @@ const PlotlinesTab = ({
               </div>
             </div>
 
+            <MediaJobList jobs={enhanceJobs(selectedPlotline.id)} className="mb-4"
+              hint="Reading the chapters this plotline runs through. You can leave this page; the suggestions wait here." />
+            {enhanceError?.id === selectedPlotline.id && (
+              <p className="mb-4 text-sm text-red-600" role="alert" data-testid="enhance-error">{enhanceError.message}</p>
+            )}
+            <EnhanceFromBookPanel
+              kind="plotline"
+              item={selectedPlotline}
+              onResolve={(items, use) => setData(prev => resolveEnhancement(prev, 'plotline', selectedPlotline.id, items, use))}
+              onClose={() => setData(prev => closeEnhancement(prev, 'plotline', selectedPlotline.id))}
+            />
+
             <div className="space-y-6">
+              {((selectedPlotline.chapters || []).length > 0 || (selectedPlotline.linkedCharacters || []).length > 0 || (selectedPlotline.linkedLocations || []).length > 0) && (
+                <div className="flex flex-col gap-2 text-sm text-gray-700" data-testid="plotline-links">
+                  {(selectedPlotline.chapters || []).length > 0 && (
+                    <p><span className="font-semibold text-gray-600">Chapters:</span> {[...selectedPlotline.chapters].sort((a, b) => Number(a) - Number(b)).join(', ')}</p>
+                  )}
+                  {(selectedPlotline.linkedCharacters || []).some(id => nameIn(data.characters, id)) && (
+                    <p className="flex items-center gap-1 flex-wrap"><Users size={14} className="text-gray-500" /><span className="font-semibold text-gray-600">People:</span> {selectedPlotline.linkedCharacters.map(id => nameIn(data.characters, id)).filter(Boolean).join(', ')}</p>
+                  )}
+                  {(selectedPlotline.linkedLocations || []).some(id => nameIn(data.locations, id)) && (
+                    <p className="flex items-center gap-1 flex-wrap"><MapPin size={14} className="text-gray-500" /><span className="font-semibold text-gray-600">Places:</span> {selectedPlotline.linkedLocations.map(id => nameIn(data.locations, id)).filter(Boolean).join(', ')}</p>
+                  )}
+                </div>
+              )}
               {selectedPlotline.description && (
                 <div>
                   <div className="flex items-center justify-between mb-2">

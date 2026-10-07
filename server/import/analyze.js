@@ -1,5 +1,6 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import { chapterHeading } from '../utils/chapters.js';
+import { mergeNameForms } from '../enhance/duplicates.js';
 
 // Book analysis (a book media job, type 'analysis'): read the book chapter by
 // chapter with the Assistant model in JSON mode, then merge in CODE. The old
@@ -97,8 +98,9 @@ export async function analyzeBook({ chapters, title, report }) {
     }
   }
 
+  // one person named two ways ("Olive", "Olive Smith") is one character;
   // main characters first; drop one-off mentions when the cast is large
-  const cast = [...characters.values()].sort((a, b) => b.mentions - a.mentions);
+  const cast = mergeNameForms([...characters.values()]).sort((a, b) => b.mentions - a.mentions);
   const result = { ...partial(), characters: cast.length > 40 ? cast.filter(c => c.mentions > 1 || c.role !== 'minor') : cast };
   if (rows.every(r => r.status === 'failed')) throw Object.assign(new Error('No chapter could be analysed'), { partial: null });
 

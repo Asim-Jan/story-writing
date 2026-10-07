@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { BookOpen } from 'lucide-react';
-import { neverEnhanced } from '../utils/enhanceFromBook';
+import { neverEnhanced, nameOf } from '../utils/enhanceFromBook';
 
 // "Enhance all from book": pick which characters (or locations) one background
 // job reads the book for. The ones never enhanced are ticked to begin with.
 
-const EnhanceAllDialog = ({ noun, items, max = 40, onStart, onCancel }) => {
+const EnhanceAllDialog = ({ noun, items, max = 40, note, onStart, onCancel }) => {
   const [picked, setPicked] = useState(() => new Set(items.filter(neverEnhanced).slice(0, max).map(it => String(it.id))));
   const toggle = (id) => setPicked(prev => {
     const next = new Set(prev);
@@ -18,8 +18,7 @@ const EnhanceAllDialog = ({ noun, items, max = 40, onStart, onCancel }) => {
       <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
         <h3 id="enhance-all-title" className="text-lg font-bold text-gray-900 mb-1 flex items-center gap-2"><BookOpen size={18} className="text-emerald-600" />Enhance {noun} from the book</h3>
         <p className="text-sm text-gray-600 mb-3">
-          SAI reads the passages about each one and suggests what the book says. It runs in the background (about 5 to 20 seconds each);
-          the suggestions wait on each one for you to use or skip. One AI request for the whole run.
+          {note || 'SAI reads the passages about each one and suggests what the book says. It runs in the background (about 5 to 20 seconds each); the suggestions wait on each one for you to use or skip.'} One AI request for the whole run.
         </p>
         <div className="flex gap-3 text-sm mb-2">
           <button type="button" className="text-blue-600 hover:underline" onClick={() => setPicked(new Set(items.slice(0, max).map(it => String(it.id))))}>Select all</button>
@@ -31,7 +30,7 @@ const EnhanceAllDialog = ({ noun, items, max = 40, onStart, onCancel }) => {
             <li key={it.id}>
               <label className="flex items-center gap-2 px-3 py-2 text-sm text-gray-800 cursor-pointer hover:bg-gray-50">
                 <input type="checkbox" checked={picked.has(String(it.id))} onChange={() => toggle(String(it.id))} data-testid="enhance-all-item" />
-                <span className="flex-1">{it.name}</span>
+                <span className="flex-1">{nameOf(it)}</span>
                 {!neverEnhanced(it) && <span className="text-xs text-gray-500">enhanced before</span>}
               </label>
             </li>

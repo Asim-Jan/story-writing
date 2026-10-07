@@ -206,9 +206,9 @@ const applyAnalysis = (book, job) => {
   const set = (field, value) => { if (value !== book[field]) { next[field] = value; changed = true; } };
 
   set('characters', mergeByName(book.characters, r.characters, c => c.name,
-    c => ({ role: c.role, description: c.description, background: c.description, appearance: c.appearance, firstChapter: c.firstChapter, mentions: c.mentions }),
+    c => ({ role: c.role, description: c.description, background: c.description, appearance: c.appearance, firstChapter: c.firstChapter, mentions: c.mentions, aliases: c.aliases }),
     c => ({ id: importId('char'), name: String(c.name).trim(), role: c.role || '', description: c.description || '', background: c.description || '',
-      appearance: c.appearance || '', firstChapter: c.firstChapter ?? null, mentions: c.mentions ?? null, relationships: [], referenceImages: [], fromImport: true })));
+      appearance: c.appearance || '', aliases: c.aliases || [], firstChapter: c.firstChapter ?? null, mentions: c.mentions ?? null, relationships: [], referenceImages: [], fromImport: true })));
   set('locations', mergeByName(book.locations, r.locations, l => l.name,
     l => ({ type: l.type, description: l.description, firstChapter: l.firstChapter }),
     l => ({ id: importId('loc'), name: String(l.name).trim(), type: l.type || '', description: l.description || '', significance: '', atmosphere: '', history: '',
