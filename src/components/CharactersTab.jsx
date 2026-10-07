@@ -8,6 +8,7 @@ import ImagePreviewModal from './ImagePreviewModal';
 import RelationshipGraph from './RelationshipGraph';
 import CharacterReferences from './CharacterReferences';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import EnhanceAllBar from './EnhanceAllBar';
 import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
@@ -235,6 +236,7 @@ const CharactersTab = ({
               {viewMode === 'list' ? <Grid3x3 size={20} /> : <List size={20} />}
             </button>
           </div>
+          <EnhanceAllBar noun="characters" kind="character" items={data.characters} hasChapterText={hasChapterText} />
           {data.characters.length > 1 && (
             <button
               onClick={() => setShowRelationshipGraph(true)}

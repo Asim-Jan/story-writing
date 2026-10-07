@@ -3,6 +3,8 @@ import { BookOpen, Image as ImageIcon, Upload, X, Users, Plus, Trash2, Mail, Key
 import ImagePreviewModal from './ImagePreviewModal';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { chapterHeading } from '../utils/chapters';
+import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import { resolveEnhancement, closeEnhancement, enhanceParams } from '../utils/enhanceFromBook';
 
 const BookMetadataTab = ({ data, setData, visuals }) => {
   const [selectedPreviewImage, setSelectedPreviewImage] = useState(null);
@@ -14,6 +16,20 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
   // while the user is on another tab.
   const coverJobs = jobsFor('cover').filter(j => j.type === 'image');
   const generatingCover = startingCover || coverJobs.some(j => j.status === 'running');
+  // "Fill from book": genre, audience, tagline and blurb suggested from the
+  // chapters; the suggestions wait on book.metadata for the author
+  const infoJobs = jobsFor('book').filter(j => j.type === 'enhance');
+  const fillingInfo = infoJobs.some(j => j.status === 'running');
+  const hasChapterText = (data.chapters || []).some(c => String(c.content || '').trim());
+  const [infoError, setInfoError] = useState(null);
+  const handleFillInfo = async () => {
+    setInfoError(null);
+    try {
+      await startJob('enhance', { type: 'book', id: data.id ?? null }, enhanceParams('book', data.metadata || {}));
+    } catch (error) {
+      setInfoError(error.message);
+    }
+  };
 
   const handleMetadataChange = (field, value) => {
     setData(prev => ({
@@ -173,10 +189,31 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
 
       {/* Book Information */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-        <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-          <BookOpen size={24} className="text-green-600" />
-          Book Information
-        </h3>
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+            <BookOpen size={24} className="text-green-600" />
+            Book Information
+          </h3>
+          <button
+            type="button"
+            onClick={handleFillInfo}
+            disabled={!hasChapterText || fillingInfo}
+            title={hasChapterText ? 'Suggest the genre, audience, tagline and blurb from the chapters' : 'Add or import chapters first'}
+            className="ml-auto px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="book-info-enhance"
+          >
+            <BookOpen size={16} className={fillingInfo ? 'animate-pulse' : ''} />
+            {fillingInfo ? 'Reading the book...' : 'Fill from book'}
+          </button>
+        </div>
+        <MediaJobList jobs={infoJobs} className="mb-4" />
+        {infoError && <p className="mb-4 text-sm text-red-600" role="alert">{infoError}</p>}
+        <EnhanceFromBookPanel
+          kind="book"
+          item={metadata}
+          onResolve={(items, use) => setData(prev => resolveEnhancement(prev, 'book', null, items, use))}
+          onClose={() => setData(prev => closeEnhancement(prev, 'book', null))}
+        />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
