@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Clock, Plus, Trash2, Sparkles, GitBranch, MapPin, BookOpen, Lock, Unlock, Edit3, Save, X, Search, GripVertical, Download, Check, Wand2 } from 'lucide-react';
 import ChapterGeneratorModal from './ChapterGeneratorModal';
 import { jsPDF } from 'jspdf';
+import TimelineEnhanceReview from './TimelineEnhanceReview';
 
 const TimelineTab = ({ data, setData, onGenerateTimeline, generatingAI }) => {
   const [showGenerator, setShowGenerator] = useState(false);
@@ -593,6 +594,8 @@ const TimelineTab = ({ data, setData, onGenerateTimeline, generatingAI }) => {
           </div>
         )}
       </div>
+
+      <TimelineEnhanceReview data={data} setData={setData} />
 
       {/* Add/Edit Scene Form */}
       {(showAddForm || editingEvent) && (

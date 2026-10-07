@@ -12,6 +12,8 @@ import { analyzeBook } from './import/analyze.js';
 import { enhanceCharacter } from './enhance/character.js';
 import { enhanceLocation } from './enhance/location.js';
 import { enhanceBookInfo } from './enhance/book.js';
+import { enhancePlotline } from './enhance/plotline.js';
+import { enhanceEvents } from './enhance/events.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4662,15 +4664,17 @@ const MEDIA_JOB_TARGETS = {
   animation: ['animation'],
   analysis: ['book'],
   audiobook: ['audiobook'],
-  enhance: ['character', 'location', 'characters', 'locations', 'book'],
+  enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book'],
 };
 
 // The profile an enhance job is about, as the author has it now (params.item;
 // 2.23.49 clients send params.character).
 const enhanceItem = (params) => params?.item || params?.character || null;
-// A whole list in one job ("Enhance all"): at most this many, one after another.
-const ENHANCE_BATCH_MAX = 40;
-const ENHANCE_ONE = { characters: 'character', locations: 'location' };
+// A whole list in one job ("Enhance all"): at most this many, one after
+// another. Timeline events go a chapter at a time, so many more fit.
+const ENHANCE_ONE = { characters: 'character', locations: 'location', plotlines: 'plotline', timelines: 'event' };
+const ENHANCE_NOUN = { characters: 'characters', locations: 'locations', plotlines: 'plotlines', timelines: 'timeline events' };
+const enhanceBatchMax = (type) => (type === 'timelines' ? 400 : 40);
 
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
 const TEXT_JOBS = new Set(['enhance']);
@@ -4701,9 +4705,9 @@ async function validateMediaJob(req, res, next) {
     }
     if (type === 'enhance' && ENHANCE_ONE[target.type]) {
       const items = params.items;
-      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: `Choose at least one of the ${target.type}` });
-      if (items.length > ENHANCE_BATCH_MAX) return res.status(400).json({ error: `At most ${ENHANCE_BATCH_MAX} ${target.type} per job` });
-      if (items.some(it => it?.id == null || !String(it?.name || '').trim())) return res.status(400).json({ error: `Each of the ${target.type} needs an id and a name` });
+      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: `Choose at least one of the ${ENHANCE_NOUN[target.type]}` });
+      if (items.length > enhanceBatchMax(target.type)) return res.status(400).json({ error: `At most ${enhanceBatchMax(target.type)} ${ENHANCE_NOUN[target.type]} per job` });
+      if (items.some(it => it?.id == null || !String(it?.name || '').trim())) return res.status(400).json({ error: `Each of the ${ENHANCE_NOUN[target.type]} needs an id and a name` });
     } else if (type === 'enhance' && target.type !== 'book' && !String(enhanceItem(params)?.name || '').trim()) {
       return res.status(400).json({ error: `The ${target.type} needs a name` });
     }
@@ -4766,11 +4770,17 @@ function mediaJobRunner(req) {
     // uses or skips in the client
     const book = req.mediaJobBook;
     const chapters = (book.chapters || []).map(c => ({ number: c.number, title: c.title, content: c.content }));
-    const one = (kind, item, report) => (kind === 'location'
-      ? enhanceLocation({ location: item, chapters, title: book.title, report })
-      : enhanceCharacter({ character: item, chapters, cast: book.characters || [], title: book.title, report }));
+    const one = (kind, item, report) => {
+      if (kind === 'location') return enhanceLocation({ location: item, chapters, title: book.title, report });
+      if (kind === 'plotline') return enhancePlotline({ plotline: item, book, report });
+      return enhanceCharacter({ character: item, chapters, cast: book.characters || [], title: book.title, report });
+    };
     if (target.type === 'book') {
       return async (report) => ({ targetId: target.id, ...(await enhanceBookInfo({ book, item: params.item || {}, report })) });
+    }
+    if (target.type === 'timelines') {
+      // events go a chapter at a time (enhance/events.js)
+      return async (report) => enhanceEvents({ events: params.items, book, report });
     }
     if (ENHANCE_ONE[target.type]) {
       // "Enhance all": one after another; one that is not in the book (or
@@ -4866,7 +4876,7 @@ function mediaJobRunner(req) {
 function mediaJobLabel({ type, target, params }) {
   if (type === 'analysis') return 'Analysing the book';
   if (type === 'enhance' && target.type === 'book') return 'Filling Book Info from the book';
-  if (type === 'enhance' && ENHANCE_ONE[target.type]) return `Enhancing ${params.items.length} ${params.items.length === 1 ? ENHANCE_ONE[target.type] : target.type} from the book`;
+  if (type === 'enhance' && ENHANCE_ONE[target.type]) return `Enhancing ${params.items.length} ${params.items.length === 1 ? ENHANCE_NOUN[target.type].replace(/s$/, '') : ENHANCE_NOUN[target.type]} from the book`;
   if (type === 'enhance') return `Enhancing ${String(enhanceItem(params).name).trim().slice(0, 60)} from the book`;
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;

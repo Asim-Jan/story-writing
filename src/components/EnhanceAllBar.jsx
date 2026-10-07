@@ -8,7 +8,7 @@ import { enhanceAllParams, neverEnhanced, openItems } from '../utils/enhanceFrom
 // job over the ones the author picks. After an import (items marked
 // fromImport and never enhanced) it says why it is worth a click.
 
-const EnhanceAllBar = ({ noun, kind, items, hasChapterText }) => {
+const EnhanceAllBar = ({ noun, kind, items, hasChapterText, label = noun, singular = kind, max = 40, note, waitingHint = '(marked "from book" below)' }) => {
   const { jobsFor, startJob } = useMediaJobsContext();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState(null);
@@ -32,14 +32,14 @@ const EnhanceAllBar = ({ noun, kind, items, hasChapterText }) => {
     <div className="mb-3" data-testid={`enhance-all-${noun}`}>
       {imported > 0 && !running && (
         <p className="text-xs text-gray-600 mb-2" data-testid="enhance-all-hint">
-          {imported} {imported === 1 ? kind : noun} came from the import with only the basics. Enhancing reads what the book says about them.
+          {imported} {imported === 1 ? singular : label} came from the import with only the basics. Enhancing reads what the book says about them.
         </p>
       )}
       <button
         type="button"
         onClick={() => setOpen(true)}
         disabled={!hasChapterText || running}
-        title={hasChapterText ? `Read the chapters and suggest what the book says about each of the ${noun}` : 'Add or import chapters first'}
+        title={hasChapterText ? `Read the chapters and suggest what the book says about each of the ${label}` : 'Add or import chapters first'}
         className="w-full px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
         data-testid="enhance-all-open"
       >
@@ -49,9 +49,9 @@ const EnhanceAllBar = ({ noun, kind, items, hasChapterText }) => {
       <MediaJobList jobs={jobs} className="mt-2" hint="You can keep working; each one's suggestions appear on it as the run finishes." />
       {error && <p className="mt-2 text-sm text-red-600" role="alert">{error}</p>}
       {waiting > 0 && !running && (
-        <p className="mt-2 text-xs text-emerald-800" data-testid="enhance-all-waiting">{waiting} {waiting === 1 ? kind : noun} with suggestions to review (marked "from book" below).</p>
+        <p className="mt-2 text-xs text-emerald-800" data-testid="enhance-all-waiting">{waiting} {waiting === 1 ? singular : label} with suggestions to review {waitingHint}.</p>
       )}
-      {open && <EnhanceAllDialog noun={noun} items={items} onStart={start} onCancel={() => setOpen(false)} />}
+      {open && <EnhanceAllDialog noun={label} items={items} max={max} note={note} onStart={start} onCancel={() => setOpen(false)} />}
     </div>
   );
 };

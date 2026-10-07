@@ -204,6 +204,19 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/how ONE storyline develops/.test(sys)) {
+        const heads = [...usr.matchAll(/^\[#(\d+) [^\]]*\]$/gm)].map(m => Number(m[1]));
+        content = JSON.stringify({ facts: heads.map(n => ({ about: 'event', fact: `the map matters in chapter ${n}`, chapter: n })) });
+      } else if (/profile of one storyline/.test(sys)) {
+        const current = JSON.parse(usr.match(/CURRENT profile: (\{.*\})/)?.[1] || '{}');
+        content = JSON.stringify({ type: 'Main', description: 'Mira follows her father\'s chart to the sea cave.', themes: 'Grief and trust.', conflicts: current.conflicts || 'Tomas against Mira.',
+          people: ['Mira Vale', 'Nobody Here'], places: ['Gull Lighthouse'], related: ['A plot that is not there'], sources: { description: [1, 2], themes: [2] } });
+      } else if (/fill in the timeline events of one chapter/.test(sys)) {
+        // one reply per chapter: a time that moves on, a place from the list, a scene type to normalise
+        const rows = [...usr.matchAll(/^\[(\d+)\] "([^"]*)"/gm)].map(m => ({ index: Number(m[1]), title: m[2] }));
+        const date = /copper hair/.test(usr) ? 'Day one' : /her brother Tomas/.test(usr) ? 'That night' : 'Some day';
+        content = JSON.stringify({ events: rows.map(r => (/NOT HERE/.test(r.title) ? { index: r.index, missing: true }
+          : { index: r.index, date, location: 'The Gull Lighthouse', sceneType: 'Dialogue', description: `About ${r.title}` })) });
       } else if (/catalogue details of a novel/.test(sys)) {
         // keeps the author's genre, says "Young Adult" (normalised by the server), adds a tagline and a blurb
         const current = JSON.parse(usr.match(/CURRENT details: (\{.*\})/)?.[1] || '{}');
@@ -928,8 +941,8 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
     `${place?.status} ${ps} ${JSON.stringify(place?.result?.aliases)} ${place?.error || ''}`);
   const locCalls = gateway.requests.filter(q => /ONE place|location profile/.test(q.body?.messages?.[0]?.content || ''));
   check('enhance a location: the place prompts, not the character ones', locCalls.length === 2, `${locCalls.length} calls`);
-  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'plotline', id: 'p1' }, params: { item: { name: 'x' } } });
-  check('enhance: only characters, locations, their lists and the book', r.status === 400, `status ${r.status}`);
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'chapter', id: 'c1' }, params: { item: { name: 'x' } } });
+  check('enhance: only the kinds it knows (not chapters)', r.status === 400, `status ${r.status}`);
 
   // "Enhance all": one job, one quota slot, one item after another; one the
   // book never mentions is noted and the rest go on
@@ -945,6 +958,42 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
     /not mentioned/.test(items.ghost?.error || '') && (await usedQuota()) === q2 + 1,
     `${all?.status} ${all?.label} ${JSON.stringify(Object.fromEntries(Object.entries(items).map(([k, v]) => [k, v.error || (v.suggestions || []).length])))} quota ${q2}->${await usedQuota()}`);
   await call('POST', `${jobs}/${all?.jobId}/ack`, owner.token);
+
+  // a plotline: read by its chapters; links to people, places, plotlines in the book only
+  const plots = [{ id: 'plot-map', title: 'The map', description: 'It leads somewhere.', chapters: [1, 2], conflicts: 'Tomas against Mira.' }];
+  const events = [{ id: 'evt-1', event: 'Map found', description: 'She finds it.', chapter: 1, sceneType: 'action' }, { id: 'evt-2', event: 'The argument', chapter: 2 }, { id: 'evt-3', event: 'Somewhere in the book', chapterHint: '' }, { id: 'evt-4', event: 'NOT HERE: placed in the wrong chapter', chapter: 1, description: 'Keep me.' }];
+  await db.query('UPDATE books SET plotlines = $2, timelines = $3 WHERE id = $1', [bookId, JSON.stringify(plots), JSON.stringify(events)]);
+  let b0 = gateway.requests.length;
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'plotline', id: 'plot-map' }, params: { item: { ...plots[0], name: plots[0].title } } });
+  const plot = await wait(r.json?.job?.jobId);
+  const pls = (plot?.result?.suggestions || []).map(x => `${x.field}=${x.value}@${x.chapters.join(',')}`).join('|');
+  check('plotline: type normalised, the unchanged conflict not suggested, chapters cited',
+    plot?.status === 'done' && pls === "type=main@|description=Mira follows her father's chart to the sea cave.@1,2|themes=Grief and trust.@2" && plot.result.read?.chapters === 2,
+    `${plot?.status} ${pls} ${plot?.error || ''}`);
+  check('plotline: links only to people, places and plotlines that are in the book',
+    JSON.stringify(plot?.result?.links) === JSON.stringify([{ list: 'linkedCharacters', id: 'char-mira', name: 'Mira Vale' }, { list: 'linkedLocations', id: 'loc-gull', name: 'The Gull Lighthouse' }]),
+    JSON.stringify(plot?.result?.links));
+  const plotNotes = gateway.requests.slice(b0).find(q => /how ONE storyline develops/.test(q.body?.messages?.[0]?.content || ''));
+  check('plotline: its chapters are read (both, as plain text)', /copper hair/.test(plotNotes?.body?.messages?.[1]?.content || '') && /her brother Tomas/.test(plotNotes?.body?.messages?.[1]?.content || '') && !/<p>/.test(plotNotes?.body?.messages?.[1]?.content || ''));
+  await call('POST', `${jobs}/${plot?.jobId}/ack`, owner.token);
+
+  // the timeline: one call per chapter, in order, each told the last known time
+  b0 = gateway.requests.length;
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'timelines', id: null }, params: { items: events.map(e => ({ ...e, name: e.event })) } });
+  const tl = await wait(r.json?.job?.jobId);
+  const ev1 = (tl?.result?.items?.['evt-1']?.suggestions || []).map(x => `${x.field}=${x.value}@${x.chapters.join(',')}`).join('|');
+  const tlCalls = gateway.requests.slice(b0).filter(q => /fill in the timeline events of one chapter/.test(q.body?.messages?.[0]?.content || ''));
+  check('timeline: date, place from the Locations list, scene type normalised, description; per event, its chapter cited',
+    tl?.status === 'done' && tl.label === 'Enhancing 4 timeline events from the book' &&
+    ev1 === 'date=Day one@1|location=The Gull Lighthouse@1|sceneType=dialogue@1|description=About Map found@1' &&
+    tl.result.items['evt-2']?.suggestions?.some(x => x.field === 'date' && x.value === 'That night') && Array.isArray(tl.result.items['evt-3']?.suggestions),
+    `${tl?.status} ${tl?.label} ${ev1} ${tl?.error || ''}`);
+  check('timeline: an event that is not in its chapter is flagged, with nothing suggested (never a different scene)',
+    tl?.result?.items?.['evt-4']?.missing === true && tl.result.items['evt-4'].suggestions.length === 0, JSON.stringify(tl?.result?.items?.['evt-4']));
+  check('timeline: one call per chapter (+1 for events with no chapter), in order, with the last known time',
+    tlCalls.length === 3 && /Last known time: none yet/.test(tlCalls[0].body.messages[1].content) && /Last known time: Day one/.test(tlCalls[1].body.messages[1].content),
+    `${tlCalls.length} calls`);
+  await call('POST', `${jobs}/${tl?.jobId}/ack`, owner.token);
 
   // Book Info from the chapters: the author's genre kept, the audience normalised
   await db.query(`UPDATE books SET metadata = metadata || '{"genre": "Gothic mystery"}'::jsonb WHERE id = $1`, [bookId]);

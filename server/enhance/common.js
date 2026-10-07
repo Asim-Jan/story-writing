@@ -14,14 +14,14 @@ const NOTHING = /^(the (book|text|notes|story) (gives|does not|doesn't|never|say
 const chapterList = (v) => [...new Set((Array.isArray(v) ? v : [v]).map(x => String(x ?? '').match(/\d+/)?.[0]).filter(Boolean).map(Number))].slice(0, 12);
 
 /**
- * Find the passages for `variants`, take notes on each batch with
- * notesPrompt. Returns { facts: ['- [about] fact (chapter)'], read, steps }
+ * Find the passages for `variants` (or take `found`, passages chosen another
+ * way), take notes on each batch with notesPrompt. Returns { facts: ['- [about] fact (chapter)'], read, steps }
  * (steps = the batches plus the profile, for progress).
  * Throws 422 when the chapters never mention the item.
  */
-export async function takeNotes({ name, variants, chapters, title, notesPrompt, report }) {
-  const found = findPassages(chapters, variants);
-  const read = { mentions: found.mentions, chapters: found.chapters.length, passages: found.passages.length, sampled: found.sampled };
+export async function takeNotes({ name, variants, found: given, chapters, title, notesPrompt, report }) {
+  const found = given || findPassages(chapters, variants);
+  const read = { mentions: found.mentions ?? null, chapters: found.chapters.length, passages: found.passages.length, sampled: found.sampled };
   if (!found.passages.length) {
     throw Object.assign(new Error(`"${name}" is not mentioned in the saved chapters`), { status: 422 });
   }

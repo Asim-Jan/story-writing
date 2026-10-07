@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { BookOpen, Check, X } from 'lucide-react';
-import { ENHANCE_KINDS, openItems } from '../utils/enhanceFromBook';
+import { ENHANCE_KINDS, LINK_LABELS, openItems } from '../utils/enhanceFromBook';
 
 // The suggestions an "Enhance from book" job found for one character or
 // location. Nothing changes until the author uses one; each value can be
@@ -57,14 +57,14 @@ const FieldSuggestion = ({ kind, suggestion, current, onUse, onSkip }) => {
   );
 };
 
-const EnhanceFromBookPanel = ({ kind = 'character', item, onResolve, onClose }) => {
+const EnhanceFromBookPanel = ({ kind = 'character', item, title = 'From the book', className = 'mb-6 sm:mb-8', onResolve, onClose }) => {
   const enh = item.enhancement;
   if (!enh || enh.closed) return null;
   const count = openItems(enh);
   return (
-    <section className="mb-6 sm:mb-8 p-4 border border-blue-200 bg-blue-50/40 rounded-lg" data-testid="enhance-panel">
+    <section className={`${className} p-4 border border-blue-200 bg-blue-50/40 rounded-lg`} data-testid="enhance-panel">
       <div className="flex flex-wrap items-center gap-2 mb-1">
-        <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2"><BookOpen size={18} className="text-blue-600" />From the book</h3>
+        <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2"><BookOpen size={18} className="text-blue-600" />{title}</h3>
         {count > 0 && (
           <div className="ml-auto flex gap-2">
             <button type="button" onClick={() => onResolve('all', true)} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm flex items-center gap-1" data-testid="enhance-use-all">
@@ -102,6 +102,20 @@ const EnhanceFromBookPanel = ({ kind = 'character', item, onResolve, onClose }) 
               <button type="button" onClick={() => onResolve([{ kind: 'relationship', characterId: rel.characterId }], false)} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm flex items-center gap-1" data-testid="enhance-skip">
                 <X size={14} />Skip
               </button>
+            </div>
+          </li>
+        ))}
+        {Object.keys(LINK_LABELS).filter(list => (enh.links || []).some(l => l.list === list)).map(list => (
+          <li key={list} className="border-t border-gray-200 pt-3" data-testid="enhance-links" data-list={list}>
+            <span className="font-semibold text-gray-900 block mb-2">{LINK_LABELS[list]}</span>
+            <div className="flex flex-wrap gap-2">
+              {enh.links.filter(l => l.list === list).map(l => (
+                <span key={`${list}:${l.id}`} className="inline-flex items-center gap-1 pl-3 pr-1 py-1 bg-white border border-gray-300 rounded-full text-sm">
+                  {l.name}
+                  <button type="button" onClick={() => onResolve([{ kind: 'link', list, id: l.id }], true)} className="p-1 text-blue-600 hover:bg-blue-50 rounded-full" title={`Link ${l.name}`} data-testid="enhance-link-use"><Check size={13} /></button>
+                  <button type="button" onClick={() => onResolve([{ kind: 'link', list, id: l.id }], false)} className="p-1 text-gray-500 hover:bg-gray-100 rounded-full" title="Skip"><X size={13} /></button>
+                </span>
+              ))}
             </div>
           </li>
         ))}
