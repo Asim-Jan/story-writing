@@ -18,6 +18,7 @@ import { findMissing } from './enhance/missing.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
+import { artStyleOf } from './services/artStyles.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
 import { extractJSON } from './utils/extractJSON.js';
@@ -4232,7 +4233,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // One image for a book: optional prompt rewrite with the book's context, then
 // the SAI bridge (text-to-image, or an edit of one of the app's own images),
 // stored in MinIO. Used by POST /api/generate-image and the book media jobs.
-async function generateBookImage({ user, bookId, prompt, context, size, model, sourceImageUrl }) {
+async function generateBookImage({ user, bookId, prompt, context, size, model, sourceImageUrl, bookStyle }) {
   if (!prompt) throw Object.assign(new Error('Prompt is required'), { status: 400 });
 
   // The bridge renders up to 1536 px a side. The old DALL-E sizes (1792 px)
@@ -4285,7 +4286,7 @@ async function generateBookImage({ user, bookId, prompt, context, size, model, s
 
 Your enhanced prompt should be clear, descriptive, and optimized for image generation. Include:
 - Visual details (colors, lighting, composition)
-- Style references if appropriate
+- ${bookStyle ? `The book's art style, which is FIXED: ${bookStyle.prompt}. Name no other style, medium or look.` : 'Style references if appropriate'}
 - Relevant context from the book (character appearances, location details, atmosphere)
 
 Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt text, nothing else.`
@@ -4308,11 +4309,15 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
   // Step 2: Generate image via the SAI media bridge
   console.log('Generating image via SAI media bridge...');
 
+  // The book's art style leads the prompt, and what it is not goes in the
+  // negative: the same look for every image of the book
+  const finalPrompt = bookStyle ? `${bookStyle.prompt}. ${enhancedPrompt}`.slice(0, 2000) : enhancedPrompt;
   const imageResult = await saiImage({
-    prompt: enhancedPrompt,
+    prompt: finalPrompt,
     model: imageModel,
     size: imageSize,
     image: sourceImage,
+    negative: bookStyle?.negative || undefined,
   });
   const buffer = imageResult.buffer;
 
@@ -4332,14 +4337,27 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
     filename,
     storageKey: uploadResult.storageKey,
     bucket: uploadResult.bucket,
-    prompt: enhancedPrompt,
+    prompt: finalPrompt,
   };
+}
+
+// The art style of a book the user may open (null when none is set, or the
+// book is not theirs): for the routes that name a book in the body.
+async function bookStyleFor(bookId, userId) {
+  if (!bookId) return null;
+  try {
+    if (!(await checkBookAccess(bookId, userId))) return null;
+    return artStyleOf(await getBook(bookId));
+  } catch {
+    return null;
+  }
 }
 
 app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
   try {
     const { prompt, context, size, model, sourceImageUrl, bookId } = req.body;
-    res.json(await generateBookImage({ user: req.user, bookId, prompt, context, size, model, sourceImageUrl }));
+    const bookStyle = await bookStyleFor(bookId, req.user.userId);
+    res.json(await generateBookImage({ user: req.user, bookId, prompt, context, size, model, sourceImageUrl, bookStyle }));
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });
     console.error('Error generating image:', error);
@@ -4739,7 +4757,7 @@ function mediaJobRunner(req) {
       try {
         return await generateReference({
           user, bookId, kind: params.kind, character: params.character, sourceImageUrl: params.sourceImageUrl,
-          style: params.style, prompt: params.prompt, onStage: (message) => report({ message }),
+          style: params.style, bookStyle: artStyleOf(req.mediaJobBook), prompt: params.prompt, onStage: (message) => report({ message }),
         });
       } catch (error) {
         if (error.portrait) error.partial = { reference: null, portrait: error.portrait };
@@ -4752,7 +4770,7 @@ function mediaJobRunner(req) {
       await report({ message: 'Drawing the image...' });
       const image = await generateBookImage({
         user, bookId, prompt: params.prompt, context: params.context, size: params.size,
-        model: params.model, sourceImageUrl: params.sourceImageUrl,
+        model: params.model, sourceImageUrl: params.sourceImageUrl, bookStyle: artStyleOf(req.mediaJobBook),
       });
       return { imageUrl: image.imageUrl, prompt: image.prompt };
     };
@@ -4942,6 +4960,7 @@ app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeatu
     }
     if (!(await checkReferenceRequest(req, res))) return;
     const userId = req.user.userId;
+    const bookStyle = await bookStyleFor(bookId, userId);
     const job = await startMediaJob({
       redis: await getRedisClient(),
       userId,
@@ -4951,7 +4970,7 @@ app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeatu
       label: `${kind}: ${character.name}`,
       run: async (report) => {
         try {
-          return await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, prompt, onStage: (message) => report({ message }) });
+          return await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, bookStyle, prompt, onStage: (message) => report({ message }) });
         } catch (error) {
           if (error.portrait) error.partial = { reference: null, portrait: error.portrait };
           throw error;
@@ -4997,7 +5016,8 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
   try {
     const { bookId, characterId, character, style } = req.body || {};
     if (!(await checkReferenceRequest(req, res))) return;
-    const { reference, portrait } = await generateReference({ user: req.user, bookId, kind: 'turnaround', character, style });
+    const bookStyle = await bookStyleFor(bookId, req.user.userId);
+    const { reference, portrait } = await generateReference({ user: req.user, bookId, kind: 'turnaround', character, style, bookStyle });
     res.json({
       imageUrl: reference.imageUrl,
       filename: reference.imageUrl.split('/').pop(),
@@ -5015,7 +5035,11 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
 
 app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
   try {
-    const { sceneDescription, characters, location, style = 'comic book art, dynamic composition' } = req.body;
+    const { sceneDescription, characters, location } = req.body;
+    // the book's art style, drawn as a comic panel; a style sent with the
+    // request wins (older clients send one)
+    const bookStyle = req.body.style ? null : await bookStyleFor(req.body.bookId, req.user.userId);
+    const style = req.body.style || (bookStyle ? `${bookStyle.prompt}, comic panel composition` : 'comic book art, dynamic composition');
 
     if (!sceneDescription) {
       return res.status(400).json({ error: 'Scene description is required' });
@@ -5051,7 +5075,7 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
     }
 
     promptParts.push(sceneDescription);
-    promptParts.push('dramatic lighting, professional comic book illustration, detailed background');
+    promptParts.push(bookStyle ? 'dramatic lighting, detailed background' : 'dramatic lighting, professional comic book illustration, detailed background');
 
     const fullPrompt = promptParts.join(', ');
 
@@ -5076,11 +5100,13 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
           image: reference,
           size: '1024x1024',
           prompt: `Draw the character from the image in a new comic panel. Keep their face, hairstyle, skin tone and outfit exactly as in the image. ${fullPrompt}`.slice(0, 2000),
+          negative: bookStyle?.negative || undefined,
         })
       : await saiImage({
           prompt: fullPrompt,
           model: 'flux2-klein-9b',
           size: '1024x1024',
+          negative: bookStyle?.negative || undefined,
         });
     const buffer = imageResult.buffer;
 
@@ -6200,7 +6226,8 @@ async function renderAnimation({ user, bookId, book, transcriptId, scenes, optio
   onProgress({ stage: 'starting', message: `Generating ${scenes.length} video scenes...` });
   // keyframe per scene from the cast's portraits + the previous shot, one
   // locked style (services/filmDirector.js)
-  const style = FILM_STYLES[options.style] ? options.style : 'animated';
+  // the film's own style, else the book's art style when it is a film style
+  const style = FILM_STYLES[options.style] ? options.style : FILM_STYLES[artStyleOf(book)?.id] ? artStyleOf(book).id : 'animated';
   const results = await directFilm({ user, bookId, book, scenes, styleKey: style, onProgress });
   const completed = results.filter(r => r.status === 'completed');
   if (completed.length === 0) throw new Error('All scenes failed to generate');

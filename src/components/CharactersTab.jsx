@@ -11,6 +11,7 @@ import EnhanceFromBookPanel from './EnhanceFromBookPanel';
 import EnhanceAllBar from './EnhanceAllBar';
 import MissingFromBook from './MissingFromBook';
 import DuplicatesNotice from './DuplicatesNotice';
+import { bookArtStyle } from '../utils/artStyles';
 import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
@@ -543,6 +544,7 @@ const CharactersTab = ({
                   bookId={data.id}
                   setData={setData}
                   onOpenImage={setSelectedImage}
+                  bookStyle={bookArtStyle(data)}
                 />
 
                 {selectedCharacter.background && (

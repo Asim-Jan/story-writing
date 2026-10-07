@@ -225,7 +225,9 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const transcriptTitle = (id) => transcripts.find(t => String(t.id) === String(id))?.title || 'Untitled transcript';
   const draft = selectedTranscript ? drafts[selectedTranscript] : null;
   const parsedScenes = draft?.scenes?.length ? draft.scenes : null;
-  const styleId = FILM_STYLES.some(st => st.id === draft?.style) ? draft.style : DEFAULT_FILM_STYLE;
+  // a film's own style, else the book's art style when it is one of the film styles
+  const bookFilmStyle = FILM_STYLES.some(st => st.id === data.metadata?.artStyle?.id) ? data.metadata.artStyle.id : DEFAULT_FILM_STYLE;
+  const styleId = FILM_STYLES.some(st => st.id === draft?.style) ? draft.style : bookFilmStyle;
 
   const jobsHere = animationJobs.filter(j => String(j.target?.id) === String(selectedTranscript));
   const filmJob = jobsHere.find(j => j.status === 'running' && !isSceneJob(j));

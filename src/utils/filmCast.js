@@ -10,6 +10,8 @@ export const FILM_STYLES = [
   { id: 'anime', label: 'Anime', description: '2D anime with cel shading and clean line art.', portraitStyle: '2D anime, cel shading' },
   { id: 'live-action', label: 'Live action', description: 'Photoreal, like a live-action film shot on camera.', portraitStyle: 'photoreal cinematic photograph' },
   { id: 'storybook', label: 'Storybook', description: 'Painterly illustration, like a picture book come to life.', portraitStyle: 'painterly storybook illustration' },
+  { id: 'comic', label: 'Comic book', description: 'Graphic novel art in motion: bold ink lines, flat colour.', portraitStyle: 'graphic novel comic art, bold ink lines, flat colours' },
+  { id: 'painting', label: 'Painted', description: 'Digital painting, like a fantasy book illustration come to life.', portraitStyle: 'digital painting, fantasy book illustration' },
 ];
 
 export const DEFAULT_FILM_STYLE = 'animated';

@@ -4,6 +4,7 @@ import ImagePreviewModal from './ImagePreviewModal';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { chapterHeading } from '../utils/chapters';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
+import ArtStylePicker from './ArtStylePicker';
 import { resolveEnhancement, closeEnhancement, enhanceParams } from '../utils/enhanceFromBook';
 
 const BookMetadataTab = ({ data, setData, visuals }) => {
@@ -100,6 +101,8 @@ const BookMetadataTab = ({ data, setData, visuals }) => {
         <h2 className="text-3xl font-bold text-gray-800 mb-3">Book Metadata</h2>
         <p className="text-gray-600">Manage your book's cover images, information, and publishing details</p>
       </div>
+
+      <ArtStylePicker data={data} setData={setData} />
 
       {/* Cover Image Section */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">

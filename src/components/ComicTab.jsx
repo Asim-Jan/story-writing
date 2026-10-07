@@ -56,7 +56,7 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
       await startJob('reference', { type: 'character', id: character.id }, {
         kind: 'turnaround',
         character: characterFields(character),
-        style: 'professional comic book art style'
+        // no style: the book's art style (the server applies it)
       }, `${COMIC_REFERENCE_LABEL}${character.name || 'character'}`);
     } catch (error) {
       alert('Failed to generate character reference: ' + error.message);
@@ -218,7 +218,7 @@ const ComicTab = ({ chapters, characters, locations, data, setData, saveBook }) 
           sceneDescription: panel.sceneDescription,
           characters: panelCharacters,
           location: panelLocation,
-          style: 'dynamic comic book panel, professional manga style'
+          // no style: the book's art style as a comic panel (the server applies it)
         }),
       });
 
