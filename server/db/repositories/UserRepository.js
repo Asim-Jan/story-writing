@@ -25,13 +25,22 @@ export class UserRepository {
     );
 
     const user = result.rows[0];
+    await this.initDefaults(user.id, tier);
 
+    return user;
+  }
+
+  /**
+   * The quota row and the (empty) settings row every account starts with.
+   * Shared by create() and createPortalUser().
+   */
+  static async initDefaults(userId, tier) {
     // Initialize quota for the user
     await query(
       `INSERT INTO quotas (user_id, max_books, max_words, max_chapters, max_ai_requests_per_day, max_concurrent_jobs)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
-        user.id,
+        userId,
         tier === 'free' ? 3 : tier === 'basic' ? 10 : 999999,
         tier === 'free' ? 50000 : tier === 'basic' ? 200000 : 999999999,
         tier === 'free' ? 30 : tier === 'basic' ? 100 : 999999,
@@ -44,10 +53,79 @@ export class UserRepository {
     await query(
       `INSERT INTO user_settings (user_id, ai_config, preferences)
        VALUES ($1, $2, $3)`,
-      [user.id, {}, {}]
+      [userId, {}, {}]
     );
+  }
 
-    return user;
+  // ============ SIGN IN WITH SAI CLOUD (see server/portalAuth) ============
+
+  /**
+   * Find the user linked to a SAI Cloud account id (the OIDC `sub`).
+   * @param {string} sub
+   * @returns {Promise<object|null>}
+   */
+  static async findByPortalSub(sub) {
+    const result = await query(
+      'SELECT * FROM users WHERE portal_sub = $1 AND deleted_at IS NULL',
+      [String(sub || '')]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Link an existing user to a SAI Cloud account. Atomic: only an UNLINKED user is touched, and the unique
+   * index refuses a sub that already belongs to someone else. user id, books and password are not changed.
+   * @param {string} userId
+   * @param {string} sub
+   * @param {{markEmailVerified?: boolean}} [opts] the portal asserted this email is verified
+   * @returns {Promise<{ok: true, user: object} | {ok: false, reason: 'already_linked'|'sub_in_use'|'not_found'}>}
+   */
+  static async linkPortal(userId, sub, { markEmailVerified = false } = {}) {
+    try {
+      const result = await query(
+        `UPDATE users
+         SET portal_sub = $1,
+             portal_linked_at = NOW(),
+             email_verified = CASE WHEN $3::boolean THEN true ELSE email_verified END,
+             email_verification_token = CASE WHEN $3::boolean THEN NULL ELSE email_verification_token END,
+             email_verification_token_expires = CASE WHEN $3::boolean THEN NULL ELSE email_verification_token_expires END,
+             updated_at = NOW()
+         WHERE id = $2 AND portal_sub IS NULL AND deleted_at IS NULL
+         RETURNING *`,
+        [sub, userId, markEmailVerified]
+      );
+      if (result.rowCount === 1) return { ok: true, user: result.rows[0] };
+    } catch (err) {
+      if (err.code === '23505') return { ok: false, reason: 'sub_in_use' };
+      throw err;
+    }
+    const row = await this.findById(userId);
+    if (!row) return { ok: false, reason: 'not_found' };
+    return { ok: false, reason: row.portal_sub === sub ? 'already_linked' : 'sub_in_use' };
+  }
+
+  /**
+   * Create a Stories account for a SAI Cloud user (tier free, email verified by the portal). The password hash is
+   * a bcrypt hash of random bytes nobody has: the account signs in through SAI Cloud, or after "Forgot password".
+   * @param {{email: string, name: string, sub: string, passwordHash: string}} data
+   * @returns {Promise<{ok: true, user: object} | {ok: false, reason: 'sub_in_use'|'email_in_use'}>}
+   */
+  static async createPortalUser({ email, name, sub, passwordHash }) {
+    let user;
+    try {
+      const result = await query(
+        `INSERT INTO users (email, name, password_hash, tier, email_verified, portal_sub, portal_linked_at)
+         VALUES ($1, $2, $3, 'free', true, $4, NOW())
+         RETURNING *`,
+        [email, name, passwordHash, sub]
+      );
+      user = result.rows[0];
+    } catch (err) {
+      if (err.code !== '23505') throw err;
+      return { ok: false, reason: /portal_sub/.test(String(err.constraint || err.detail)) ? 'sub_in_use' : 'email_in_use' };
+    }
+    await this.initDefaults(user.id, 'free');
+    return { ok: true, user };
   }
 
   /**
@@ -128,7 +206,8 @@ export class UserRepository {
     const result = await query(
       `UPDATE users
        SET deleted_at = NOW(),
-           email = 'deleted_' || id || '@deleted.invalid'
+           email = 'deleted_' || id || '@deleted.invalid',
+           portal_sub = NULL   -- frees the SAI Cloud account to sign up again
        WHERE id = $1 AND deleted_at IS NULL`,
       [userId]
     );

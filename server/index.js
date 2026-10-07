@@ -53,6 +53,10 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { runMigrations } from './db/migrate.js';
 import { readFileSync } from 'fs';
 import { initializeAuthorization } from './middleware/authorization.js';
+import { features } from './config/features.js';
+import { loadPortalConfig } from './portalAuth/config.js';
+import { createPortalAuth } from './portalAuth/routes.js';
+import { pgStore as portalStore } from './portalAuth/store.js';
 import { ApiResponse } from './utils/responses.js';
 import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
@@ -829,8 +833,21 @@ async function searchWeb(query) {
 
 // ============ AUTHENTICATION ROUTES ============
 
+// Sign in with SAI Cloud (OpenID Connect). OFF unless PORTAL_OIDC=1; see server/portalAuth and STORIES-SAI-CLOUD.md.
+// PORTAL_ONLY=1 turns the password routes below off (the final cutover); SIGNUPS_CLOSED=1 refuses new accounts.
+const portalCfg = loadPortalConfig(process.env);
+if (portalCfg.enabled && !features.shouldReadFromPostgres()) {
+  portalCfg.enabled = false; portalCfg.only = false; portalCfg.reason = 'needs PostgreSQL user storage (READ_FROM_POSTGRES)';
+}
+if (portalCfg.requested && !portalCfg.enabled) console.error('[portal-auth] PORTAL_OIDC=1 but SAI Cloud sign-in is DISABLED:', portalCfg.reason);
+const portalAuth = createPortalAuth({
+  cfg: portalCfg, store: portalStore, jwtSecret: JWT_SECRET,
+  audit: (email, userId, ok, reason, req) => logLoginAttempt(email, userId, ok, reason, req),
+});
+app.use(portalAuth.router);
+
 // Register new user
-app.post('/api/auth/register', registrationLimiter, async (req, res) => {
+app.post('/api/auth/register', portalAuth.blockPasswordAuth, portalAuth.blockSignups, registrationLimiter, async (req, res) => {
   try {
     const { password } = req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -963,7 +980,7 @@ async function logUserActivity(userId, activityType, details = {}, req) {
   }
 }
 
-app.post('/api/auth/login', authLimiter, async (req, res) => {
+app.post('/api/auth/login', portalAuth.blockPasswordAuth, authLimiter, async (req, res) => {
   try {
     console.log('Login attempt for:', req.body?.email);
     const { email, password } = req.body;
@@ -1050,6 +1067,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
       tier: req.user.tier || 'free',
       status: req.user.status || 'active',
       emailVerified: !!(req.user.email_verified ?? req.user.emailVerified),
+      portalLinked: !!req.user.portal_sub,
       books: req.user.books,
       createdAt: req.user.createdAt
     }
@@ -1069,7 +1087,7 @@ app.get('/api/quotas', authenticateToken, async (req, res) => {
 });
 
 // Request password reset
-app.post('/api/auth/forgot-password', emailSendLimiter, async (req, res) => {
+app.post('/api/auth/forgot-password', portalAuth.blockPasswordAuth, emailSendLimiter, async (req, res) => {
   const generic = { message: 'If an account exists with this email, you will receive password reset instructions.' };
   try {
     const email = String(req.body?.email || '').trim();
@@ -1109,7 +1127,7 @@ app.post('/api/auth/forgot-password', emailSendLimiter, async (req, res) => {
 });
 
 // Reset password with token
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', portalAuth.blockPasswordAuth, async (req, res) => {
   try {
     const { token, newPassword } = req.body;
 
@@ -5383,6 +5401,7 @@ app.get('/api/health', async (req, res) => {
   };
 
   health.services.email = { configured: isEmailConfigured() };
+  health.services.portalAuth = portalAuth.health();
 
   // Overall status
   health.status = isHealthy ? 'healthy' : 'degraded';

@@ -647,6 +647,58 @@ async function mainSuite(gateway) {
       ['Chapter 3', 'Chapter 3'], ['Part One: The Sea', 'Part One: The Sea'], ['1984', '1984'], ['One Day in June', 'One Day in June']];
     const wrongTitles = titleCases.filter(([t, want]) => stripChapterNumber(t) !== want).map(([t, want]) => `${t} -> ${stripChapterNumber(t)} (want ${want})`);
     check('a title loses only its own number prefix ("Chapter Twenty-One" stays whole)', wrongTitles.length === 0, wrongTitles.join('; '));
+
+    console.log('\n== sign in with SAI Cloud (real server, real Postgres)');
+    const ucols = (await db.query(`SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('portal_sub','portal_linked_at')`)).rows;
+    check('users has portal_sub + portal_linked_at, both nullable, unique index on portal_sub',
+      ucols.length === 2 && ucols.every(c => c.is_nullable === 'YES')
+      && (await db.query(`SELECT 1 FROM pg_indexes WHERE indexname = 'users_portal_sub_key' AND indexdef LIKE '%UNIQUE%'`)).rowCount === 1);
+    r = await call('GET', '/api/auth/portal/config');
+    check('feature OFF by default: /api/auth/portal/config says so', r.status === 200 && r.json?.enabled === false && r.json?.only === false, JSON.stringify(r.json));
+    r = await fetch(srv.base + '/auth/portal/login', { redirect: 'manual' });
+    check('feature OFF: /auth/portal/login is a 404, not the SPA', r.status === 404, `got ${r.status}`);
+    r = await call('GET', '/api/health');
+    check('/api/health reports portalAuth as off', r.json?.services?.portalAuth?.enabled === false && r.json?.services?.portalAuth?.requested === false, JSON.stringify(r.json?.services?.portalAuth));
+    const linkU = await makeUser(db, 'linkable');
+    await db.query(`UPDATE users SET portal_sub = 'u_regress0000000001' WHERE id = $1`, [linkU.id]);
+    r = await call('GET', '/api/auth/me', linkU.token);
+    check('/api/auth/me reports portalLinked for a linked user', r.status === 200 && r.json?.user?.portalLinked === true, JSON.stringify(r.json?.user));
+    r = await call('GET', '/api/auth/me', owner.token);
+    check('/api/auth/me: not portal-linked for everyone else', r.json?.user?.portalLinked === false);
+
+    // second server on the same database, feature ON with an unreachable issuer + PORTAL_ONLY + SIGNUPS_CLOSED
+    const on = await bootServer('rg_main', {
+      SAI_API_BASE_URL: gateway.url, SAI_API_KEY: 'test', PORTAL_OIDC: '1', PORTAL_ISSUER: 'https://portal.invalid', PORTAL_CLIENT_SECRET: 'regress-client-secret',
+      PORTAL_SESSION_SECRET: 'regress-session-secret-0123456789abcdef', APP_URL: 'https://stories.invalid', PORTAL_ONLY: '1', SIGNUPS_CLOSED: '1',
+    });
+    try {
+      const onCall = api(on.base);
+      r = await onCall('GET', '/api/auth/portal/config');
+      check('feature ON: config says enabled + only + signupsClosed (and no secret)', r.json?.enabled === true && r.json?.only === true && r.json?.signupsClosed === true && Object.keys(r.json).length === 3, JSON.stringify(r.json));
+      r = await fetch(on.base + '/auth/portal/login', { redirect: 'manual' });
+      check('feature ON, portal unreachable: login fails SOFT to the error page (no crash, no hang)', r.status === 302 && /\/auth\/portal\/error\?code=unavailable$/.test(r.headers.get('location') || ''), `${r.status} ${r.headers.get('location')}`);
+      r = await onCall('POST', '/api/auth/login', null, { email: 'a@b.co', password: 'x' });
+      check('PORTAL_ONLY: password login answers 403 PORTAL_ONLY', r.status === 403 && r.json?.code === 'PORTAL_ONLY', JSON.stringify(r.json));
+      r = await onCall('POST', '/api/auth/register', null, { email: 'a@b.co', password: 'Passw0rd!x', name: 'A' });
+      check('PORTAL_ONLY: local sign-up answers 403', r.status === 403, `got ${r.status}`);
+      r = await onCall('GET', '/api/auth/me', linkU.token);
+      check('PORTAL_ONLY: an existing session keeps working until it expires', r.status === 200, `got ${r.status}`);
+      r = await onCall('GET', '/api/health');
+      check('/api/health reports portalAuth on, without secrets', r.json?.services?.portalAuth?.enabled === true && !JSON.stringify(r.json).includes('regress-client-secret'));
+    } finally {
+      await on.stop();
+    }
+    // a misconfigured ON (no secrets) must leave the pod UP and the password login working
+    const bad = await bootServer('rg_main', { SAI_API_BASE_URL: gateway.url, SAI_API_KEY: 'test', PORTAL_OIDC: '1', PORTAL_ONLY: '1', APP_URL: 'https://stories.invalid' });
+    try {
+      const badCall = api(bad.base);
+      r = await badCall('GET', '/api/health');
+      check('PORTAL_OIDC=1 without secrets: pod healthy, feature off with a reason', r.status === 200 && r.json?.services?.portalAuth?.enabled === false && /PORTAL_CLIENT_SECRET/.test(r.json?.services?.portalAuth?.reason || ''), JSON.stringify(r.json?.services?.portalAuth));
+      r = await badCall('POST', '/api/auth/login', null, { email: 'nobody@regress.local', password: 'x' });
+      check('...and PORTAL_ONLY is ignored then: password login still runs (401, not 403)', r.status === 401, `got ${r.status}`);
+    } finally {
+      await bad.stop();
+    }
   } finally {
     await srv.stop();
     await db.end();
