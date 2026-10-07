@@ -4565,8 +4565,9 @@ app.delete('/api/imports/:id', authenticateToken, async (req, res) => {
 });
 
 // abandoned imports go after 14 days: once at boot, then daily
-setTimeout(() => pruneImports().catch(() => {}), 60000);
-setInterval(() => pruneImports().catch(() => {}), 24 * 3600 * 1000);
+// unref'd: housekeeping must never keep the process alive on shutdown
+setTimeout(() => pruneImports().catch(() => {}), 60000).unref();
+setInterval(() => pruneImports().catch(() => {}), 24 * 3600 * 1000).unref();
 
 // ==================== AUDIOBOOK VOICES ====================
 // Presets from VibeVoice and Qwen3-TTS, plus the user's own cloned voices
@@ -9051,7 +9052,7 @@ async function prepareDatabase() {
 
 await prepareDatabase();
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   verifyEmailTransport().catch(() => {});
   ensureMediaOwnersTable().catch((err) => console.error('media_owners table check failed:', err.message));
   console.log('\n🚀 Fiction Writing Studio Server');
@@ -9080,3 +9081,26 @@ app.listen(PORT, () => {
   console.log(`  Health: ${apiUrl}/api/health`);
   console.log('================================\n');
 });
+
+// Graceful shutdown. db/postgres.js closes its pool on SIGTERM but nothing
+// closed the listener or the Redis clients, so the process never exited and
+// every rollout waited out the pod's grace period for a SIGKILL. Stop taking
+// requests, let in-flight ones finish (open SSE streams get 10 s), then exit.
+let shuttingDown = false;
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal}: closing the HTTP server`);
+    const deadline = setTimeout(() => {
+      console.log('shutdown: requests still open after 10 s, exiting anyway');
+      process.exit(0);
+    }, 10000);
+    httpServer.close(() => {
+      clearTimeout(deadline);
+      // a moment for the pool's own SIGTERM handler to finish closing
+      setTimeout(() => process.exit(0), 500);
+    });
+    httpServer.closeIdleConnections?.();
+  });
+}

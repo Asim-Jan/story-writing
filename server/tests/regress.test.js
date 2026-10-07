@@ -247,7 +247,13 @@ async function bootServer(database, extraEnv = {}) {
   const base = `http://127.0.0.1:${port}`;
   return {
     base, log: () => log, exitCode: null, servedHealth,
-    stop: async () => { child.kill('SIGTERM'); await exited; },
+    stop: async () => {
+      child.kill('SIGTERM');
+      // a server that ignores SIGTERM delays every k8s rollout by the grace period: fail, don't hang
+      const t = setTimeout(() => { check('the server exits on SIGTERM', false, 'still running 15 s later, killed'); child.kill('SIGKILL'); }, 15000);
+      await exited;
+      clearTimeout(t);
+    },
   };
 }
 
@@ -862,7 +868,8 @@ async function importChecks({ call, db, owner, stranger, jobsUrl, waitJob }) {
   docx.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${wp('A note before the story begins.')}${wp('The Arrival', 'Heading1')}${wp('She came by boat.')}${wp('The Departure', 'Heading1')}${wp('He left by train.')}</w:body></w:document>`);
   r = await upload(owner.token, 'novel.docx', await docx.generateAsync({ type: 'nodebuffer' }));
   imp = await settle(owner.token, r.json?.import?.id);
-  check('Word: split on Heading 1, the opening note kept', (imp?.chapters || []).map(c => c.title).join('|').endsWith('The Arrival|The Departure') && imp.chapters.length === 3 && /note before/.test(imp.chapters[0].preview),
+  check('Word: split on Heading 1, the opening note kept as "Opening", title from the file name',
+    (imp?.chapters || []).map(c => c.title).join('|') === 'Opening|The Arrival|The Departure' && /note before/.test(imp.chapters[0].preview) && imp.title === 'novel',
     (imp?.chapters || []).map(c => `${c.kind}:${c.title}`).join('|'));
 
   // text in Windows-1252 with smart quotes, chapter headings, a preamble

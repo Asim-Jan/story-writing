@@ -82,5 +82,6 @@ export async function saveModelSettings(settings, userId) {
   return { ...current };
 }
 
-// warm the cache at startup (best effort)
-load();
+// No load at import time: on a fresh database the migrations that create
+// app_settings run after the modules load. The first request loads the
+// settings (until then the env defaults apply).

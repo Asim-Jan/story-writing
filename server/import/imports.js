@@ -75,11 +75,12 @@ export async function startImport({ ownerId, fileName, buffer }) {
     [ownerId, format, String(fileName).slice(0, 255), buffer.length, hash, JSON.stringify(duplicateOf), JSON.stringify({ message: 'Reading the file...' })]
   );
   const record = rows[0];
-  parseInBackground(record.id, format, buffer).catch(err => console.error(`import ${record.id} crashed:`, err.message));
+  parseInBackground(record.id, format, buffer, fileName).catch(err => console.error(`import ${record.id} crashed:`, err.message));
   return row2import(record);
 }
 
-async function parseInBackground(id, format, buffer) {
+async function parseInBackground(id, format, buffer, fileName = '') {
+  const fileTitle = path.basename(fileName, path.extname(fileName)).replace(/[_-]+/g, ' ').trim() || null;
   try {
     let parsed;
     if (format === 'epub') parsed = await parseEpub(buffer);
@@ -105,9 +106,13 @@ async function parseInBackground(id, format, buffer) {
     await update(id, { progress: { message: 'Sorting front matter, story and back matter...' } });
     sections = await classifySections(sections.map(s => ({ ...s, content: cleanText(s.content) })));
     let n = 0;
-    const chapters = sections.map(s => {
+    const othersTitled = sections.slice(1).some(x => x.title);
+    const chapters = sections.map((s, i) => {
       if (s.kind === 'chapter') n++;
-      return { title: s.title || (s.kind === 'chapter' ? `Chapter ${n}` : s.kind === 'front' ? 'Front matter' : 'Back matter'), kind: s.kind, content: s.content, source: s.source || 'whole' };
+      // untitled text before the first heading reads as an opening, not "Chapter 1"
+      const fallback = i === 0 && othersTitled ? 'Opening'
+        : s.kind === 'chapter' ? `Chapter ${n}` : s.kind === 'front' ? 'Front matter' : 'Back matter';
+      return { title: s.title || fallback, kind: s.kind, content: s.content, source: s.source || 'whole' };
     });
     const short = chapters.filter(c => c.kind === 'chapter' && wordCount(c.content) < 100).length;
     if (short) warnings.push(`${short} very short chapter${short === 1 ? '' : 's'} (under 100 words): check ${short === 1 ? 'it' : 'them'}`);
@@ -117,7 +122,8 @@ async function parseInBackground(id, format, buffer) {
       status: 'review',
       chapters,
       warnings,
-      title: parsed.meta?.title || null,
+      // formats with no title metadata start from the file name (editable in review)
+      title: parsed.meta?.title || fileTitle,
       author: parsed.meta?.author || null,
       language: parsed.meta?.language || null,
       progress: { message: 'Ready to review' },
