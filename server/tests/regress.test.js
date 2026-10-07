@@ -390,6 +390,29 @@ async function mainSuite(gateway) {
     const nums = (await db.query('SELECT chapter_number FROM chapters WHERE book_id = $1 ORDER BY chapter_number', [book2.id])).rows.map(x => x.chapter_number);
     check('unnumbered new chapters save = 200 with distinct numbers', r.status === 200 && nums.join(',') === '1,2', `status ${r.status}, numbers ${nums}`);
 
+    // delete a chapter and renumber the rest IN ONE SAVE: the sync used to
+    // update 4 -> 3 before deleting the old 3 and hit UNIQUE(book_id, chapter_number)
+    // (reuses book2: a new book would push the owner over the book quota later checks need)
+    const book3 = { id: book2.id, version: await dbVersion(db, book2.id) };
+    r = await call('PUT', `/api/books/${book3.id}`, owner.token, {
+      version: book3.version,
+      chapters: ['1', '2', '3', '4', '5'].map(n => ({ id: Number(n), number: n, title: `T${n}`, content: `text ${n}` })),
+    });
+    const saved = (await call('GET', `/api/books/${book3.id}`, owner.token)).json;
+    const { deleteChapter: dropChapter } = await import('../../src/utils/chapters.js');
+    const t3 = saved?.chapters?.find(c => c.title === 'T3');
+    r = await call('PUT', `/api/books/${book3.id}`, owner.token, { version: saved?.version, chapters: dropChapter(saved?.chapters || [], t3?.id) });
+    const order3 = async () => (await db.query('SELECT chapter_number, title FROM chapters WHERE book_id = $1 ORDER BY chapter_number', [book3.id])).rows.map(x => `${x.chapter_number}:${x.title}`).join(' ');
+    let got3 = await order3();
+    check('delete chapter 3 and renumber in one save = 200: 1:T1 2:T2 3:T4 4:T5', r.status === 200 && got3 === '1:T1 2:T2 3:T4 4:T5', `status ${r.status} ${JSON.stringify(r.json?.error || '')} | ${got3}`);
+    const again = (await call('GET', `/api/books/${book3.id}`, owner.token)).json;
+    r = await call('PUT', `/api/books/${book3.id}`, owner.token, {
+      version: again?.version,
+      chapters: (again?.chapters || []).map(c => (c.title === 'T1' ? { ...c, number: '2' } : c.title === 'T2' ? { ...c, number: '1' } : c)),
+    });
+    got3 = await order3();
+    check('swapping two chapter numbers saves (no collision mid-save)', r.status === 200 && got3 === '1:T2 2:T1 3:T4 4:T5', `status ${r.status} | ${got3}`);
+
     console.log('\n== roles on save');
     const cur = await dbVersion(db, book.id);
     r = await call('PUT', `/api/books/${book.id}`, editor.token, { title: 'Editor', version: cur });
@@ -498,6 +521,25 @@ async function mainSuite(gateway) {
     check('the AI routes that used to be free now use AI quota', unmetered.length === 0, unmetered.join(', '));
 
     await mediaChecks({ call, db, gateway, owner, stranger, book });
+
+    console.log('\n== chapter numbers and headings');
+    const ui = await import('../../src/utils/chapters.js');
+    const srvCh = await import('../utils/chapters.js');
+    const headingCases = [[{ number: '2', title: 'Chapter One' }, 'Chapter One'], [{ number: '1', title: 'Prologue' }, 'Prologue'],
+      [{ number: '3', title: 'The Storm' }, 'Chapter 3: The Storm'], [{ number: '4', title: '' }, 'Chapter 4'], [{ number: '9', title: 'Part Two: The Sea' }, 'Part Two: The Sea'],
+      [{ number: '5', title: 'Epilogue' }, 'Epilogue'], [{ number: '6', title: 'Chapterhouse' }, 'Chapter 6: Chapterhouse']];
+    const badHeadings = headingCases.filter(([c, want]) => ui.chapterHeading(c) !== want || srvCh.chapterHeading(c) !== want).map(([c, want]) => `${JSON.stringify(c)} -> ${ui.chapterHeading(c)} / ${srvCh.chapterHeading(c)} (want ${want})`);
+    check('a chapter whose title names it reads as its title ("Chapter One", not "Chapter 2: Chapter One"), app and narration alike', badHeadings.length === 0, badHeadings.join('; '));
+    check('no "Chapter N" label above a title that already says it', ui.chapterLabel({ number: '2', title: 'Chapter One' }) === null && ui.chapterLabel({ number: '3', title: 'The Storm' }) === 'Chapter 3'
+      && ui.chapterBadge({ number: '1', title: 'Prologue' }) === null && ui.chapterBadge({ number: '3', title: 'The Storm' }) === 'Ch. 3');
+    const five = ['1', '2', '3', '4', '5'].map(n => ({ id: `c${n}`, number: n, title: `T${n}` }));
+    const chNums = (list) => ui.sortChapters(list).map(c => `${c.id}=${c.number}`).join(' ');
+    check('deleting chapter 3 with renumber: 4 -> 3, 5 -> 4, 1-2 untouched', chNums(ui.deleteChapter(five, 'c3')) === 'c1=1 c2=2 c4=3 c5=4', chNums(ui.deleteChapter(five, 'c3')));
+    check('deleting without renumber leaves the gap', chNums(ui.deleteChapter(five, 'c3', { renumber: false })) === 'c1=1 c2=2 c4=4 c5=5');
+    const messy = [{ id: 'a', number: '1' }, { id: 'b', number: '4' }, { id: 'c', number: '4' }, { id: 'd', number: '' }, { id: 'e', number: '7' }];
+    check('renumber: gaps, repeats and blanks become 1..N in reading order (blank last)',
+      ui.needsRenumber(messy) && chNums(ui.renumberChapters(messy)) === 'a=1 b=2 c=3 e=4 d=5' && !ui.needsRenumber(ui.renumberChapters(messy)) && !ui.needsRenumber(five),
+      chNums(ui.renumberChapters(messy)));
 
     console.log('\n== profile preferences');
     const voicePref = { engine: 'qwen', voice: 'Serena' };

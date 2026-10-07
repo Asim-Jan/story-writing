@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Film, Sparkles, ChevronDown, ChevronUp, Download, Trash2, Copy, FileText } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import { chapterHeading } from '../utils/chapters';
 
 const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) => {
   const [selectedChapter, setSelectedChapter] = useState('');
@@ -21,7 +22,7 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
 
     setGeneratingFor(chapter.id);
 
-    const prompt = `Chapter ${chapter.number}: ${chapter.title}\n\n${chapter.summary}\n\nContent:\n${chapter.content}`;
+    const prompt = `${chapterHeading(chapter)}\n\n${chapter.summary}\n\nContent:\n${chapter.content}`;
 
     const result = await onGenerateTranscript('transcript', prompt);
 
@@ -126,7 +127,7 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
     pdf.text(`Scenes: ${transcriptObj.sceneCount} | Duration: ${transcriptObj.estimatedDuration}`, margin, yPosition);
     yPosition += 8;
     if (transcriptObj.chapterNumber) {
-      pdf.text(`Based on Chapter ${transcriptObj.chapterNumber}: ${transcriptObj.chapterTitle}`, margin, yPosition);
+      pdf.text(`Based on ${chapterHeading({ number: transcriptObj.chapterNumber, title: transcriptObj.chapterTitle })}`, margin, yPosition);
       yPosition += 8;
     }
     pdf.text(`Generated: ${new Date(transcriptObj.createdAt).toLocaleDateString()}`, margin, yPosition);
@@ -273,7 +274,7 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
       pdf.text(`Scenes: ${transcript.sceneCount} | Duration: ${transcript.estimatedDuration}`, margin, yPosition);
       if (transcript.chapterNumber) {
         yPosition += 6;
-        pdf.text(`Chapter ${transcript.chapterNumber}: ${transcript.chapterTitle}`, margin, yPosition);
+        pdf.text(chapterHeading({ number: transcript.chapterNumber, title: transcript.chapterTitle }), margin, yPosition);
       }
 
       yPosition += 12;
@@ -359,7 +360,7 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
             <option value="">Select a chapter to convert...</option>
             {sortedChapters.map((chapter) => (
               <option key={chapter.id} value={chapter.id}>
-                Chapter {chapter.number}: {chapter.title}
+                {chapterHeading(chapter)}
               </option>
             ))}
           </select>
@@ -410,7 +411,7 @@ const TranscriptsTab = ({ data, setData, onGenerateTranscript, generatingAI }) =
                             <span>⌖ {transcript.sceneCount} scenes</span>
                             <span>⏱ {transcript.estimatedDuration}</span>
                             {transcript.chapterNumber && (
-                              <span>Chapter {transcript.chapterNumber}</span>
+                              <span>{chapterHeading({ number: transcript.chapterNumber, title: transcript.chapterTitle })}</span>
                             )}
                           </div>
                         </div>

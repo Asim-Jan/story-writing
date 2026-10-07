@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ScanSearch, Loader, CheckCircle, AlertCircle, Clock, Users, MapPin, Route, FileText } from 'lucide-react';
 import { useMediaJobsContext, MediaJobStatus } from '../contexts/MediaJobsContext';
+import { chapterHeading } from '../utils/chapters';
 
 // Book analysis as a book media job (type "analysis"): reads the book chapter
 // by chapter and finds characters, places, plotlines, a timeline and chapter
@@ -33,7 +34,7 @@ const AnalysisPanel = ({ data, bookId, autosave }) => {
   };
   const chapterName = (id) => {
     const ch = chapters.find(c => String(c.id) === String(id));
-    return ch ? `Chapter ${ch.number}: ${ch.title}` : 'Chapter';
+    return ch ? chapterHeading(ch) : 'Chapter';
   };
 
   const analyze = async () => {

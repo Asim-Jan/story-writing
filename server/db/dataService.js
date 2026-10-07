@@ -851,15 +851,19 @@ export class BookDataService {
     const existingChapterMap = new Map(existingChapters.map(ch => [ch.id, ch]));
     const existingByNumber = new Map(existingChapters.map(ch => [ch.chapter_number, ch]));
 
-    const chaptersToKeep = new Set();
-
     // number arrives as a string from the client (and from some AI payloads).
     // A missing or zero number gets the next free one: two unnumbered chapters
     // both became 0 and hit UNIQUE(book_id, chapter_number) on every save.
     const numberOf = (ch) => parseInt(ch.number ?? ch.chapterNumber ?? ch.chapter_number ?? 0, 10) || 0;
     let nextNumber = Math.max(0, ...chaptersArray.map(numberOf)) + 1;
 
-    for (const chapter of chaptersArray) {
+    // 1. What each payload row is. Identity: the chapter's OWN id first; fall
+    // back to number ONLY when the payload row has no id (a genuinely new
+    // chapter). Two payload rows may not claim the same identity: the first
+    // wins, later ones become new rows and the UNIQUE constraint catches true
+    // collisions.
+    const claimed = new Set();
+    const plan = chaptersArray.map((chapter) => {
       const chapterData = {
         book_id: bookId,
         chapter_number: numberOf(chapter) || nextNumber++,
@@ -871,26 +875,61 @@ export class BookDataService {
         cover_image: chapter.coverImage || null,
         cover_image_filename: chapter.coverImageFilename || null
       };
-
-      // Identity: the chapter's OWN id first; fall back to number ONLY when the
-      // payload row has no id (a genuinely new chapter). Two payload rows may not
-      // claim the same identity — the first wins, later ones become new rows and
-      // the UNIQUE constraint catches true collisions.
       let existingChapter = null;
       if (chapter.id && existingChapterMap.has(chapter.id)) {
         existingChapter = existingChapterMap.get(chapter.id);
       } else if (!chapter.id && existingByNumber.has(chapterData.chapter_number)) {
         existingChapter = existingByNumber.get(chapterData.chapter_number);
       }
+      if (existingChapter && claimed.has(existingChapter.id)) existingChapter = null;
+      if (existingChapter) claimed.add(existingChapter.id);
+      return { chapterData, existingChapter };
+    });
 
+    // 2. Hard-delete chapters the payload no longer carries, FIRST: deleting
+    // chapter 3 and renumbering 4 -> 3 in one save used to update 4 -> 3 while
+    // the old 3 still existed and fail on UNIQUE(book_id, chapter_number).
+    // Only when the payload is chapter-bearing (non-empty): an EMPTY array with
+    // chapters in the DB is how a blank-book client wipes everything; that is
+    // treated as a conflict instead of a mass delete. A user deleting every
+    // chapter does it through the chapter UI, which sends the remaining state,
+    // never an empty array behind a fully-loaded book.
+    if (chaptersArray.length === 0 && existingChapters.length > 0) {
+      throw new Error('CONFLICT: refusing to delete all chapters from an empty payload');
+    }
+    for (const existing of existingChapters) {
+      if (!claimed.has(existing.id)) {
+        // chapter_versions has ON DELETE CASCADE on chapters: deleting the row
+        // takes its version history with it. That is intended: a chapter the
+        // client no longer has is gone; its content survives in the save the
+        // next sync writes if it returns.
+        await client.query('DELETE FROM chapters WHERE id = $1', [existing.id]);
+      }
+    }
+
+    // 3. Chapters whose number changes step aside to a temporary negative
+    // number first, so any renumbering (a shift after a delete, a swap, a full
+    // 1..N) never collides with a number another chapter still holds.
+    const moving = plan.filter(p => p.existingChapter && p.existingChapter.chapter_number !== p.chapterData.chapter_number);
+    if (moving.length) {
+      for (let i = 0; i < moving.length; i++) {
+        await client.query('UPDATE chapters SET chapter_number = $1 WHERE id = $2', [-(i + 1), moving[i].existingChapter.id]);
+      }
+      // that bumped their version (trigger); the updates below check against it
+      const fresh = await client.query('SELECT id, version FROM chapters WHERE id = ANY($1::uuid[])', [moving.map(p => p.existingChapter.id)]);
+      const versions = new Map(fresh.rows.map(r => [r.id, r.version]));
+      for (const p of moving) p.existingChapter = { ...p.existingChapter, version: versions.get(p.existingChapter.id) };
+    }
+
+    // 4. Write every chapter at its final number.
+    for (const { chapterData, existingChapter } of plan) {
       if (existingChapter) {
-        chaptersToKeep.add(existingChapter.id);
         // Update through the repository ON THIS CLIENT: that carries the
         // version bump (trigger-checked), the word-count recompute, and the
         // chapter_versions history the old sync silently skipped. The
-        // expectedVersion is the row's version read moments ago INSIDE this
-        // transaction, so the optimistic check is against data no one else
-        // could have changed between the read and the write.
+        // expectedVersion is the row's version read INSIDE this transaction,
+        // so the optimistic check is against data no one else could have
+        // changed between the read and the write.
         const updates = {
           chapter_number: chapterData.chapter_number,
           title: chapterData.title,
@@ -911,7 +950,7 @@ export class BookDataService {
         }
       } else {
         const wordCount = (chapterData.content || '').trim().split(/\s+/).filter(Boolean).length;
-        const inserted = await client.query(
+        await client.query(
           `INSERT INTO chapters (book_id, chapter_number, title, content, scenes, notes, status, cover_image, cover_image_filename, word_count)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            RETURNING *`,
@@ -919,26 +958,6 @@ export class BookDataService {
             JSON.stringify(chapterData.scenes), chapterData.notes, chapterData.status,
             chapterData.cover_image, chapterData.cover_image_filename, wordCount]
         );
-        chaptersToKeep.add(inserted.rows[0].id);
-      }
-    }
-
-    // Hard-delete chapters the payload no longer carries — but ONLY when the
-    // payload is chapter-bearing (non-empty). An EMPTY array with chapters in the
-    // DB is how a blank-book client wipes everything; that is treated as a
-    // conflict instead of a mass delete. A user deleting every chapter does it
-    // through the chapter UI, which sends the remaining state — never an empty
-    // array behind a fully-loaded book.
-    if (chaptersArray.length === 0 && existingChapters.length > 0) {
-      throw new Error('CONFLICT: refusing to delete all chapters from an empty payload');
-    }
-    for (const existing of existingChapters) {
-      if (!chaptersToKeep.has(existing.id)) {
-        // chapter_versions has ON DELETE CASCADE on chapters — deleting the row
-        // takes its version history with it. That is intended: a chapter the
-        // client no longer has is gone; its content survives in the save the
-        // next sync writes if it returns.
-        await client.query('DELETE FROM chapters WHERE id = $1', [existing.id]);
       }
     }
 

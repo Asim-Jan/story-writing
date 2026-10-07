@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Sparkles, CheckSquare, Square, Plus, FilePlus } from 'lucide-react';
+import { chapterHeading } from '../utils/chapters';
 
 const ChapterGeneratorModal = ({ data, setData, onGenerate, onClose, generatingAI }) => {
   const [selectedTimelines, setSelectedTimelines] = useState([]);
@@ -372,7 +373,7 @@ Create engaging narrative content that flows naturally through all these scenes 
                         <option value="">Choose a chapter...</option>
                         {data.chapters.sort((a, b) => parseInt(a.number) - parseInt(b.number)).map((chapter) => (
                           <option key={chapter.id} value={chapter.id}>
-                            Chapter {chapter.number}: {chapter.title} ({chapter.wordCount || 0} words)
+                            {chapterHeading(chapter)} ({chapter.wordCount || 0} words)
                           </option>
                         ))}
                       </select>

@@ -6,6 +6,7 @@ import { jsPDF } from 'jspdf';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
 import { saveAs } from 'file-saver';
 import epub from 'epub-gen-memory/bundle';
+import { chapterHeading, chapterLabel } from '../utils/chapters';
 
 const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
   const [editingChapterId, setEditingChapterId] = useState(null);
@@ -256,7 +257,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
     pdf.setFont(undefined, 'normal');
     sortedChapters.forEach((chapter, index) => {
       checkPageBreak(10);
-      const chapterText = `Chapter ${chapter.number}: ${chapter.title}`;
+      const chapterText = chapterHeading(chapter);
       pdf.text(chapterText, margin + 5, yPosition);
       yPosition += 8;
     });
@@ -355,7 +356,8 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
       pdf.setFontSize(28);
       pdf.setFont(undefined, 'bold');
       yPosition = pageHeight / 2 - 20;
-      pdf.text(`Chapter ${chapter.number}`, pageWidth / 2, yPosition, { align: 'center' });
+      // a title like "Prologue" or "Chapter One" stands alone
+      if (chapterLabel(chapter)) pdf.text(chapterLabel(chapter), pageWidth / 2, yPosition, { align: 'center' });
 
       yPosition += 15;
       pdf.setFontSize(36);
@@ -518,7 +520,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
     sortedChapters.forEach((chapter) => {
       sections.push(
         new Paragraph({
-          text: `Chapter ${chapter.number}: ${chapter.title}`,
+          text: chapterHeading(chapter),
           spacing: { before: 100, after: 100 }
         })
       );
@@ -531,14 +533,16 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
         new Paragraph({ text: '', pageBreakBefore: true })
       );
 
-      sections.push(
-        new Paragraph({
-          text: `Chapter ${chapter.number}`,
-          heading: HeadingLevel.HEADING_1,
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 1000, after: 400 }
-        })
-      );
+      if (chapterLabel(chapter)) {
+        sections.push(
+          new Paragraph({
+            text: chapterLabel(chapter),
+            heading: HeadingLevel.HEADING_1,
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 1000, after: 400 }
+          })
+        );
+      }
 
       sections.push(
         new Paragraph({
@@ -624,7 +628,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
         console.log('Generated content length for chapter', chapter.number, ':', contentHtml.length);
 
         return {
-          title: `Chapter ${chapter.number}: ${chapter.title}`,
+          title: chapterHeading(chapter),
           content: contentHtml  // Just the content, no duplicate heading
         };
       });
@@ -907,9 +911,11 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-3">
-                        <span className="px-3 py-1 bg-indigo-600 text-white rounded-full text-sm font-bold">
-                          Chapter {chapter.number}
-                        </span>
+                        {chapterLabel(chapter) && (
+                          <span className="px-3 py-1 bg-indigo-600 text-white rounded-full text-sm font-bold">
+                            {chapterLabel(chapter)}
+                          </span>
+                        )}
                         <h3 className="text-xl font-bold text-gray-800">{chapter.title}</h3>
                       </div>
                       {chapter.summary && (

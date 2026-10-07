@@ -7,6 +7,7 @@ import {
   DEFAULT_VOICE, normalizeVoiceSpec, voiceKey, specFromKey, vibeVoiceLabel, languageOf, voiceLabel,
   audioFileUrl, audioFileName,
 } from '../utils/voices';
+import { chapterHeading } from '../utils/chapters';
 
 // Audiobook: pick a voice (VibeVoice presets, Qwen presets, or a voice cloned
 // from the user's own sample), then generate chapters as an `audiobook` book
@@ -253,7 +254,7 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, bookId, autosave }) 
   // ---- playback ----
   const trackFor = (ch) => ({
     url: audioFileUrl(audioFiles[ch.id]),
-    title: `Chapter ${ch.number}: ${ch.title}`,
+    title: chapterHeading(ch),
     subtitle: bookTitle || 'Audiobook',
     chapterId: ch.id,
   });
@@ -420,7 +421,7 @@ const AudiobookTab = ({ chapters, bookTitle, data, setData, bookId, autosave }) 
                     return (
                       <li key={row.chapterId} className="flex items-center gap-2 text-sm" data-testid="job-chapter" data-status={row.status}>
                         <Icon size={14} className={`${st.cls} ${st.spin ? 'animate-spin' : ''} flex-shrink-0`} />
-                        <span className="flex-1 truncate">{ch ? `Chapter ${ch.number}: ${ch.title}` : 'Chapter'}</span>
+                        <span className="flex-1 truncate">{ch ? chapterHeading(ch) : 'Chapter'}</span>
                         <span className={`text-xs mono ${st.cls}`}>{st.label}</span>
                       </li>
                     );

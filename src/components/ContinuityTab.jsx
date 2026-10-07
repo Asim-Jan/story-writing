@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AlertTriangle, CheckCircle2, Clock, Users, MapPin, BookOpen, Sparkles, RefreshCw, TrendingUp, Zap, History, ChevronDown, ChevronUp, Check, Trash2 } from 'lucide-react';
 import QuickFixModal from './QuickFixModal';
+import { chapterHeading } from '../utils/chapters';
 
 const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
   const [analysis, setAnalysis] = useState(null);
@@ -437,7 +438,7 @@ const ContinuityTab = ({ data, setData, onAnalyze, analyzing }) => {
                         className="w-4 h-4"
                       />
                       <span className="text-sm">
-                        Chapter {ch.number}: {ch.title}
+                        {chapterHeading(ch)}
                       </span>
                     </label>
                   ))}

@@ -1,4 +1,5 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
+import { chapterHeading } from '../utils/chapters.js';
 
 // Book analysis (a book media job, type 'analysis'): read the book chapter by
 // chapter with the Assistant model in JSON mode, then merge in CODE. The old
@@ -59,7 +60,7 @@ export async function analyzeBook({ chapters, title, report }) {
       const text = String(c.content || '').slice(0, MAX_CHAPTER_CHARS);
       if (!text.trim()) { rows[i].status = 'done'; continue; }
       const known = [...characters.values()].map(x => x.name).slice(0, 80).join(', ');
-      const facts = await askJson(CHAPTER_PROMPT, `Book: ${title || 'Untitled'}\nKnown characters so far: ${known || 'none'}\n\nChapter ${c.number || i + 1}: ${c.title || ''}\n\n${text}`, 3000);
+      const facts = await askJson(CHAPTER_PROMPT, `Book: ${title || 'Untitled'}\nKnown characters so far: ${known || 'none'}\n\n${chapterHeading(c, i + 1)}\n\n${text}`, 3000);
       const n = c.number || i + 1;
       if (facts.summary) chapterSummaries[c.id] = String(facts.summary).slice(0, 600);
       for (const ch of facts.characters || []) {

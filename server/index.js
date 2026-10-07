@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import axios from 'axios';
 import { speakLongText } from './utils/speech.js';
 import { startMediaJob, getMediaJob, listMediaJobs, ackMediaJob } from './services/mediaJobs.js';
+import { chapterHeading } from './utils/chapters.js';
 import { applyOps, createFromImport, deleteImport, getImport, getImportChapter, listImports, patchImport, pruneImports, startImport } from './import/imports.js';
 import { analyzeBook } from './import/analyze.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
@@ -4749,7 +4750,7 @@ function mediaJobRunner(req) {
         rows[i].status = 'speaking';
         await report({ message: `Reading chapter ${chapter.number || i + 1}: ${chapter.title || ''}`.trim(), current: i, total: queue.length, chapters: rows.map(r => ({ ...r })) });
         try {
-          const text = `Chapter ${chapter.number || i + 1}${chapter.title ? `: ${chapter.title}` : ''}.\n\n${chapter.content || ''}`;
+          const text = `${chapterHeading(chapter, i + 1)}.\n\n${chapter.content || ''}`;
           const audio = await speak(user.userId, spec, text, { speed: params.speed });
           const stored = await storeAudio(user.userId, bookId, audio.mp3, `chapter-${chapter.number || i + 1}`);
           files[chapter.id] = { ...stored, durationSec: audio.durationSec, voice: audio.spec, format: 'mp3', createdAt: new Date().toISOString() };
@@ -5130,7 +5131,7 @@ app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature
       console.log(`Generating audio for chapter ${i + 1}/${chapters.length}`);
 
       // a whole chapter is far past one TTS request: speak it in pieces
-      const { buffer } = await speakLongText(`Chapter ${chapter.number || i + 1}: ${chapter.title}.\n\n${chapter.content}`, {
+      const { buffer } = await speakLongText(`${chapterHeading(chapter, i + 1)}.\n\n${chapter.content}`, {
         voice: VOICE_MAP[voice] || voice,
         speed,
       });
@@ -5316,7 +5317,7 @@ Plotlines: ${JSON.stringify(bookData.plotlines, null, 2)}
 Timeline: ${JSON.stringify(bookData.timelines, null, 2)}
 
 Chapters (${chaptersToAnalyze.length} ${chapterIds.length > 0 ? 'selected' : 'total'}):
-${chaptersToAnalyze.map(ch => `Chapter ${ch.number}: ${ch.title}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
+${chaptersToAnalyze.map(ch => `${chapterHeading(ch)}\n${ch.summary || ''}\n${(ch.content || '').substring(0, 500)}...`).join('\n\n')}
 
 Provide a thorough analysis with specific, actionable issues.`;
 
