@@ -5,6 +5,10 @@ import { parseEpub } from './epub.js';
 import { parseDocx, parseMarkdown, parsePdf, parsePlainText } from './formats.js';
 import { classifySections, detectChapters } from './classify.js';
 import { cleanText, preview, wordCount } from './text.js';
+import { liveSuggestions, reviewOutline, sectionKey } from './outline.js';
+
+// an outline review still "checking" after this long died with its process
+const SUGGESTIONS_STALE_MS = 3 * 60 * 1000;
 
 // Book imports, kept in Postgres (book_imports) so a review survives closing
 // the window, a reload or a deploy. Upload → parse in the background → the
@@ -25,6 +29,9 @@ const row2import = (row, { withChapters = true } = {}) => ({
   progress: row.progress || {},
   warnings: row.warnings || [],
   duplicateOf: row.duplicate_of || null,
+  // the outline review: checking | done | failed | skipped (null for older imports)
+  suggestionsStatus: row.suggestions?.status === 'checking' && Date.now() - (row.suggestions.startedAt || 0) > SUGGESTIONS_STALE_MS
+    ? 'failed' : (row.suggestions?.status || null),
   bookId: row.book_id,
   error: row.error,
   createdAt: row.created_at,
@@ -33,6 +40,7 @@ const row2import = (row, { withChapters = true } = {}) => ({
     chapters: (row.chapters || []).map((c, index) => ({
       index, title: c.title, kind: c.kind, wordCount: wordCount(c.content), preview: preview(c.content), source: c.source,
     })),
+    suggestions: row.status === 'review' ? liveSuggestions(row.suggestions, row.chapters || []) : [],
   } : { chapterCount: (row.chapters || []).filter(c => c.kind === 'chapter').length }),
 });
 
@@ -44,7 +52,7 @@ export async function getImportRow(ownerId, id) {
 async function update(id, fields) {
   const keys = Object.keys(fields);
   const sets = keys.map((k, i) => `${k} = $${i + 2}`);
-  const values = keys.map(k => (['chapters', 'progress', 'warnings', 'duplicate_of'].includes(k) ? JSON.stringify(fields[k]) : fields[k]));
+  const values = keys.map(k => (['chapters', 'progress', 'warnings', 'duplicate_of', 'suggestions'].includes(k) ? JSON.stringify(fields[k]) : fields[k]));
   const { rows } = await query(`UPDATE book_imports SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`, [id, ...values]);
   return rows[0];
 }
@@ -124,7 +132,7 @@ async function parseInBackground(id, format, buffer, fileName = '') {
       const fallback = i === 0 && othersTitled ? 'Opening'
         : s.kind === 'chapter' ? `Chapter ${n}` : s.kind === 'front' ? 'Front matter' : 'Back matter';
       const title = s.kind === 'chapter' ? stripChapterNumber(s.title) : s.title;
-      return { title: title || fallback, kind: s.kind, content: s.content, source: s.source || 'whole' };
+      return { key: sectionKey(), title: title || fallback, kind: s.kind, content: s.content, source: s.source || 'whole' };
     });
     const short = chapters.filter(c => c.kind === 'chapter' && wordCount(c.content) < 100).length;
     if (short) warnings.push(`${short} very short chapter${short === 1 ? '' : 's'} (under 100 words): check ${short === 1 ? 'it' : 'them'}`);
@@ -139,7 +147,19 @@ async function parseInBackground(id, format, buffer, fileName = '') {
       author: parsed.meta?.author || null,
       language: parsed.meta?.language || null,
       progress: { message: 'Ready to review' },
+      suggestions: { status: chapters.length > 1 ? 'checking' : 'skipped', startedAt: Date.now(), items: [], dismissed: [] },
     });
+    if (chapters.length > 1) {
+      // the review is open already; suggestions arrive when the model answers.
+      // Only the suggestions column is written, so the user's edits are safe.
+      reviewOutline({ title: parsed.meta?.title || fileTitle, author: parsed.meta?.author, chapters })
+        .then(items => update(id, { suggestions: { status: 'done', items, dismissed: [] } }))
+        .catch(err => {
+          console.warn(`import ${id}: outline review failed:`, err.message);
+          return update(id, { suggestions: { status: 'failed', items: [], dismissed: [] } });
+        })
+        .catch(() => {});
+    }
   } catch (err) {
     console.error(`import ${id} failed:`, err.message);
     await update(id, { status: 'failed', error: err.status ? err.message : `Could not read this file: ${err.message}`, progress: {} }).catch(() => {});
@@ -167,7 +187,8 @@ export async function applyOps(ownerId, id, ops) {
   const row = await getImportRow(ownerId, id);
   if (!row) return null;
   if (row.status !== 'review') throw Object.assign(new Error(`This import is ${row.status}, not in review`), { status: 409 });
-  const chapters = (row.chapters || []).map(c => ({ ...c }));
+  // every section carries a key (older imports get one now) so suggestions follow it through edits
+  const chapters = (row.chapters || []).map(c => ({ ...c, key: c.key || sectionKey() }));
   const bad = (i, msg) => Object.assign(new Error(`op ${i + 1}: ${msg}`), { status: 400 });
   const has = (k) => Number.isInteger(k) && k >= 0 && k < chapters.length;
   if (!Array.isArray(ops) || ops.length === 0 || ops.length > 200) throw Object.assign(new Error('Send 1-200 ops'), { status: 400 });
@@ -191,7 +212,7 @@ export async function applyOps(ownerId, id, ops) {
         const c = chapters[op.index];
         const at = Number(op.at);
         if (!Number.isInteger(at) || at <= 0 || at >= c.content.length) throw bad(i, 'split point must be inside the text');
-        chapters.splice(op.index + 1, 0, { title: String(op.title || '').trim().slice(0, 200) || 'New chapter', kind: c.kind, content: c.content.slice(at).trim(), source: 'manual' });
+        chapters.splice(op.index + 1, 0, { key: sectionKey(), title: String(op.title || '').trim().slice(0, 200) || 'New chapter', kind: c.kind, content: c.content.slice(at).trim(), source: 'manual' });
         c.content = c.content.slice(0, at).trim();
         break;
       }
@@ -212,12 +233,16 @@ export async function applyOps(ownerId, id, ops) {
   return row2import(await update(id, { chapters }));
 }
 
-export async function patchImport(ownerId, id, { title, author }) {
+export async function patchImport(ownerId, id, { title, author, dismissSuggestions }) {
   const row = await getImportRow(ownerId, id);
   if (!row) return null;
   const fields = {};
   if (typeof title === 'string') fields.title = title.trim().slice(0, 255) || null;
   if (typeof author === 'string') fields.author = author.trim().slice(0, 255) || null;
+  if (Array.isArray(dismissSuggestions) && row.suggestions) {
+    const ids = dismissSuggestions.filter(x => typeof x === 'string').slice(0, 100);
+    fields.suggestions = { ...row.suggestions, dismissed: [...new Set([...(row.suggestions.dismissed || []), ...ids])] };
+  }
   return row2import(Object.keys(fields).length ? await update(id, fields) : row);
 }
 

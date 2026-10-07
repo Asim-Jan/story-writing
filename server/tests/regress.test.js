@@ -187,6 +187,15 @@ async function fakeGateway() {
       } else if (/read one chapter of a novel/.test(sys)) {
         content = JSON.stringify({ summary: 'Mira finds a map.', characters: [{ name: 'Mira Vale', role: 'protagonist', description: 'A cartographer', appearance: 'copper hair' }],
           locations: [{ name: 'The Lighthouse', type: 'building', description: 'On a cliff' }], events: [{ title: 'Map found', description: 'She finds it.' }], plot: [{ title: 'The map', description: 'It leads somewhere.' }] });
+      } else if (/check how an imported book was split/.test(sys)) {
+        // a rule-based stand-in for the model: a chapter that ends mid-sentence
+        // continues in the next; a "Bonus" section is back matter; plus junk
+        // (an index out of range, a kind that is already right) to be filtered
+        const rows = [...usr.matchAll(/^\[(\d+)\] kind=(\w+) words=\d+ title="([^"]*)" \| starts: "[^"]*" \| ends: "([^"]*)"$/gm)]
+          .map(m => ({ index: Number(m[1]), kind: m[2], title: m[3], ends: m[4] }));
+        const merges = rows.filter((x, i) => x.kind === 'chapter' && rows[i + 1]?.kind === 'chapter' && !/[.!?"”’]$/.test(x.ends)).map(x => ({ index: x.index, reason: 'ends mid-sentence' }));
+        const kinds = rows.filter(x => /bonus/i.test(x.title) && x.kind !== 'back').map(x => ({ index: x.index, kind: 'back', reason: 'a bonus scene, not the story' }));
+        content = JSON.stringify({ kinds: [...kinds, { index: 99, kind: 'back' }, { index: 0, kind: rows[0]?.kind }], merges, titles: [{ index: 0, title: 'Not generic so ignored' }] });
       } else if (/one-paragraph overview/.test(sys)) {
         content = JSON.stringify({ overview: 'A cartographer follows a map.' });
       }
@@ -711,7 +720,7 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
   await call('POST', `${jobsUrl}/${animId}/ack`, owner.token);
 
   // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──
-  await importChecks({ call, db, owner, stranger, jobsUrl, waitJob });
+  await importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJob });
   // ── audiobook voices: presets, custom clones, the audiobook job ──
   {
     r = await call('GET', '/api/audiobook/voices', owner.token);
@@ -789,7 +798,7 @@ async function mediaChecks({ call, db, gateway, owner, stranger, book }) {
 }
 
 // ─── book import ──────────────────────────────────────────────────────────
-async function importChecks({ call, db, owner, stranger, jobsUrl, waitJob }) {
+async function importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJob }) {
   console.log('\n== book import');
   const { default: JSZip } = await import('jszip');
   const xhtml = (title, body, type = '') => `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>${title}</title></head><body${type ? ` epub:type="${type}"` : ''}>${body}</body></html>`;
@@ -946,6 +955,45 @@ async function importChecks({ call, db, owner, stranger, jobsUrl, waitJob }) {
   r = await upload(owner.token, 'notes.md', Buffer.from('# Part One\n\nAlpha text.\n\n# Part Two\n\nBeta text.'));
   imp = await settle(owner.token, r.json?.import?.id);
   check('Markdown: split on # headings', (imp?.chapters || []).map(c => c.title).join('|') === 'Part One|Part Two');
+
+  // ── outline review: sai-chat-fast suggests, the user decides ──
+  const sentence = (w, n) => Array.from({ length: n }, () => w).join(' ');
+  const outlineMd = [
+    `# The Arrival\n\n${sentence('rain', 500)}. She opened the door and`,
+    `# The Arrival, continued\n\nstepped into the dark hall. ${sentence('hall', 500)}.`,
+    `# The Departure\n\n${sentence('road', 500)}.`,
+    `# Bonus: A Deleted Scene\n\n${sentence('cut', 500)}.`,
+  ].join('\n\n');
+  r = await upload(owner.token, 'outline.md', Buffer.from(outlineMd));
+  let ol = await settle(owner.token, r.json?.import?.id);
+  for (let i = 0; i < 100 && ol?.suggestionsStatus === 'checking'; i++) {
+    await new Promise(res => setTimeout(res, 100));
+    ol = (await call('GET', `/api/imports/${ol.id}`, owner.token)).json?.import;
+  }
+  const sugg = (x) => (x?.suggestions || []).map(s => `${s.type}@${s.index}${s.value ? `:${s.value}` : ''}`).join('|');
+  check('outline review: the rules made 4 story sections, the review runs after the review opens', ol?.status === 'review' && ol.chapters.length === 4 && ol.suggestionsStatus === 'done',
+    JSON.stringify({ status: ol?.status, n: ol?.chapters?.length, s: ol?.suggestionsStatus }));
+  check('outline review: merge the cut chapter, move the bonus scene to back matter; junk filtered', sugg(ol) === 'kind@3:back|merge@0', sugg(ol));
+  const olCall = gateway.requests.filter(q => q.path.endsWith('/chat/completions') && /check how an imported book was split/.test(q.body?.messages?.[0]?.content || '')).pop();
+  check('outline review: one sai-chat-fast call in JSON mode, with how each section starts and ends',
+    olCall?.body?.model === 'sai-chat-fast' && olCall?.body?.response_format?.type === 'json_object' && /starts: "stepped into the dark hall/.test(olCall?.body?.messages?.[1]?.content || ''));
+  // the user's edits move sections; suggestions follow them by key
+  r = await call('PATCH', `/api/imports/${ol?.id}/chapters`, owner.token, { ops: [{ op: 'move', from: 2, to: 3 }] });
+  check('outline review: after a move, the suggestions point at the moved sections', sugg(r.json?.import) === 'kind@2:back|merge@0', sugg(r.json?.import));
+  r = await call('PATCH', `/api/imports/${ol?.id}`, owner.token, { dismissSuggestions: [r.json?.import?.suggestions?.find(s => s.type === 'kind')?.id] });
+  check('outline review: a dismissed suggestion is gone (and stays gone)', sugg(r.json?.import) === 'merge@0'
+    && sugg((await call('GET', `/api/imports/${ol?.id}`, owner.token)).json?.import) === 'merge@0', sugg(r.json?.import));
+  r = await call('PATCH', `/api/imports/${ol?.id}/chapters`, owner.token, { ops: [{ op: 'merge', index: 0 }] });
+  check('outline review: applying it (the same merge op) clears it', r.status === 200 && sugg(r.json?.import) === '' && r.json.import.chapters.length === 3, sugg(r.json?.import));
+  r = await upload(owner.token, 'broken.md', Buffer.from(`# One\n\n${sentence('a', 50)} GATEWAY_FAIL.\n\n# Two\n\n${sentence('b', 50)}.`));
+  let olFail = await settle(owner.token, r.json?.import?.id);
+  for (let i = 0; i < 100 && olFail?.suggestionsStatus === 'checking'; i++) {
+    await new Promise(res => setTimeout(res, 100));
+    olFail = (await call('GET', `/api/imports/${olFail.id}`, owner.token)).json?.import;
+  }
+  check('outline review: a model failure leaves the review usable (status failed, no suggestions)', olFail?.status === 'review' && olFail.suggestionsStatus === 'failed' && olFail.suggestions.length === 0,
+    JSON.stringify({ status: olFail?.status, s: olFail?.suggestionsStatus }));
+  for (const x of [ol, olFail]) if (x?.id) await call('DELETE', `/api/imports/${x.id}`, owner.token);
 
   // no headings at all: the model finds the chapters from numbered paragraphs; bogus numbers are ignored
   const plain = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} ${'word '.repeat(90)}`).join('\n\n');
