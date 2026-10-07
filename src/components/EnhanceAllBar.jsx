@@ -6,7 +6,8 @@ import { enhanceAllParams, neverEnhanced, openItems } from '../utils/enhanceFrom
 
 // "Enhance all from book" for the Characters or Locations list: one background
 // job over the ones the author picks. After an import (items marked
-// fromImport and never enhanced) it says why it is worth a click.
+// fromImport or found in the book, and never enhanced) it says why it is
+// worth a click.
 
 const EnhanceAllBar = ({ noun, kind, items, hasChapterText, label = noun, singular = kind, max = 40, note, waitingHint = '(marked "from book" below)' }) => {
   const { jobsFor, startJob } = useMediaJobsContext();
@@ -15,7 +16,7 @@ const EnhanceAllBar = ({ noun, kind, items, hasChapterText, label = noun, singul
   const jobs = jobsFor(noun).filter(j => j.type === 'enhance');
   const running = jobs.some(j => j.status === 'running');
   if (!items.length) return null;
-  const imported = items.filter(it => it.fromImport && neverEnhanced(it)).length;
+  const imported = items.filter(it => (it.fromImport || it.fromBook) && neverEnhanced(it)).length;
   const waiting = items.filter(it => openItems(it.enhancement) > 0).length;
 
   const start = async (chosen) => {
@@ -32,7 +33,7 @@ const EnhanceAllBar = ({ noun, kind, items, hasChapterText, label = noun, singul
     <div className="mb-3" data-testid={`enhance-all-${noun}`}>
       {imported > 0 && !running && (
         <p className="text-xs text-gray-600 mb-2" data-testid="enhance-all-hint">
-          {imported} {imported === 1 ? singular : label} came from the import with only the basics. Enhancing reads what the book says about them.
+          {imported} {imported === 1 ? `${singular} has` : `${label} have`} only the basics from the book. Enhancing reads what it says about them.
         </p>
       )}
       <button

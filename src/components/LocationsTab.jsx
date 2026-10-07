@@ -9,6 +9,7 @@ import { useIsMobile } from '../hooks/useMediaQuery';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
 import EnhanceAllBar from './EnhanceAllBar';
+import MissingFromBook from './MissingFromBook';
 import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 
 const LocationsTab = ({
@@ -214,6 +215,7 @@ const LocationsTab = ({
             </button>
           </div>
           <EnhanceAllBar noun="locations" kind="location" items={data.locations} hasChapterText={hasChapterText} />
+          <MissingFromBook which="places" data={data} setData={setData} />
           {/* Search Input */}
           {data.locations.length > 0 && (
             <div className="relative">

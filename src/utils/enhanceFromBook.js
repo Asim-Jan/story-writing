@@ -112,6 +112,7 @@ export const applyEnhanceJob = (book, job) => {
   const type = job.target?.type;
   const at = job.finishedAt || new Date().toISOString();
   if (!r) return book;
+  if (type === 'missing') return applyMissing(book, job, at);
   if (BATCH_KINDS[type]) {
     const kind = BATCH_KINDS[type];
     let next = book;
@@ -222,3 +223,43 @@ export const enhanceAllParams = (kind, items) => ({
 
 // Never enhanced (or never by a finished job): what "Enhance all" ticks by default.
 export const neverEnhanced = (item) => !item?.enhancement?.jobId;
+
+// ---- people and places the book names that are in neither list ----
+// The finds wait on book.metadata.discoveries = { jobId, at, read, people, places }
+// until the author adds or skips each one.
+
+const known = (list) => new Set((list || []).flatMap(x => [x.name, ...(x.aliases || [])]).filter(Boolean).map(norm));
+const DISCOVERY_LISTS = { people: 'characters', places: 'locations' };
+
+const applyMissing = (book, job, at) => {
+  const meta = book.metadata || {};
+  if (meta.discoveries?.jobId === job.jobId) return book;
+  const r = job.result || {};
+  const fresh = (rows, list) => (Array.isArray(rows) ? rows : []).filter(x => x?.name && !known(book[list]).has(norm(x.name)));
+  return {
+    ...book,
+    metadata: { ...meta, discoveries: { jobId: job.jobId, at, read: r.read || null, people: fresh(r.people, 'characters'), places: fresh(r.places, 'locations') } },
+  };
+};
+
+let discoverySeq = 0;
+const discoveryId = (prefix) => `${prefix}-${Date.now().toString(36)}-${(discoverySeq++).toString(36)}`;
+
+/** Add (or skip) found people/places: which = 'people' | 'places', names = [name] or 'all'. */
+export const resolveDiscoveries = (book, which, names, add) => {
+  const d = book.metadata?.discoveries;
+  if (!d) return book;
+  const rows = d[which] || [];
+  const picked = names === 'all' ? rows : rows.filter(x => names.includes(x.name));
+  if (!picked.length) return book;
+  const next = { ...book, metadata: { ...book.metadata, discoveries: { ...d, [which]: rows.filter(x => !picked.includes(x)) } } };
+  if (!add) return next;
+  const list = DISCOVERY_LISTS[which];
+  const have = known(book[list]);
+  const created = picked.filter(x => !have.has(norm(x.name))).map(x => (which === 'people'
+    ? { id: discoveryId('char'), name: x.name, role: x.role || 'minor', background: x.description || '', description: x.description || '',
+      firstChapter: x.firstChapter ?? null, mentions: x.mentions ?? null, relationships: [], referenceImages: [], fromBook: true }
+    : { id: discoveryId('loc'), name: x.name, type: x.type || '', description: x.description || '', significance: '', atmosphere: '', history: '',
+      firstChapter: x.firstChapter ?? null, fromBook: true }));
+  return { ...next, [list]: [...(book[list] || []), ...created] };
+};

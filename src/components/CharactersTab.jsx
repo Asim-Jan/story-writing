@@ -9,6 +9,7 @@ import RelationshipGraph from './RelationshipGraph';
 import CharacterReferences from './CharacterReferences';
 import EnhanceFromBookPanel from './EnhanceFromBookPanel';
 import EnhanceAllBar from './EnhanceAllBar';
+import MissingFromBook from './MissingFromBook';
 import { resolveEnhancement, closeEnhancement, enhanceParams, openItems } from '../utils/enhanceFromBook';
 import { useMediaJobsContext, MediaJobList } from '../contexts/MediaJobsContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
@@ -237,6 +238,7 @@ const CharactersTab = ({
             </button>
           </div>
           <EnhanceAllBar noun="characters" kind="character" items={data.characters} hasChapterText={hasChapterText} />
+          <MissingFromBook which="people" data={data} setData={setData} />
           {data.characters.length > 1 && (
             <button
               onClick={() => setShowRelationshipGraph(true)}

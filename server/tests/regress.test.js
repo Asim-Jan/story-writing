@@ -204,6 +204,12 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/sort the capitalised names found in a novel/.test(sys)) {
+        // Aslan is a person (named more fully), Harrow Bay a place, the Admiralty neither; plus an invented name
+        const rows = [...usr.matchAll(/^\[(\d+)\] ([^|]+?) \|/gm)].map(m => ({ i: Number(m[1]), name: m[2] }));
+        const at = (n) => rows.find(r => r.name === n)?.i;
+        content = JSON.stringify({ people: [{ name: 'Captain Aslan', from: [at('Aslan')], role: 'minor', description: 'An old sailor.' }, { name: 'Zed Invented', from: [at('Admiralty')] }],
+          places: [{ name: 'Harrow Bay', from: [at('Harrow Bay')], type: 'bay', description: 'The harbour.' }] });
       } else if (/how ONE storyline develops/.test(sys)) {
         const heads = [...usr.matchAll(/^\[#(\d+) [^\]]*\]$/gm)].map(m => Number(m[1]));
         content = JSON.stringify({ facts: heads.map(n => ({ about: 'event', fact: `the map matters in chapter ${n}`, chapter: n })) });
@@ -894,7 +900,7 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
   const filler = 'The tide turned slowly over the black sand and the gulls cried. '.repeat(60);
   const ids = (await db.query('SELECT id FROM chapters WHERE book_id = $1 AND deleted_at IS NULL ORDER BY chapter_number', [bookId])).rows.map(x => x.id);
   await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[0], `<p>${filler}</p><p>Mira Vale pushed the copper hair out of her eyes and climbed the Gull Lighthouse.</p><p>${filler}</p>`]);
-  await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[1], `${filler}\n\nMira argued with her brother Tomas until dawn.\n\n${filler}`]);
+  await db.query('UPDATE chapters SET content = $2 WHERE id = $1', [ids[1], `${filler}\n\nMira argued with her brother Tomas until dawn.\n\nThey rowed past Harrow Bay with Aslan, then Aslan waved from Harrow Bay, and old Aslan swore Harrow Bay was cursed. The Admiralty never knew, said the Admiralty clerk to the Admiralty.\n\n${filler}`]);
   const cast = [{ id: 'char-mira', name: 'Mira Vale', background: 'A cartographer', relationships: [] }, { id: 7, name: 'Tomas Reed', relationships: [] }];
   const places = [{ id: 'loc-gull', name: 'The Gull Lighthouse', description: 'A lighthouse.' }];
   await db.query('UPDATE books SET characters = $2, locations = $3 WHERE id = $1', [bookId, JSON.stringify(cast), JSON.stringify(places)]);
@@ -994,6 +1000,22 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
     tlCalls.length === 3 && /Last known time: none yet/.test(tlCalls[0].body.messages[1].content) && /Last known time: Day one/.test(tlCalls[1].body.messages[1].content),
     `${tlCalls.length} calls`);
   await call('POST', `${jobs}/${tl?.jobId}/ack`, owner.token);
+
+  // people and places the book names that are in neither list
+  b0 = gateway.requests.length;
+  r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'missing', id: null }, params: {} });
+  const miss = await wait(r.json?.job?.jobId);
+  const sortCall = gateway.requests.slice(b0).find(q => /sort the capitalised names/.test(q.body?.messages?.[0]?.content || ''));
+  const asked = sortCall?.body?.messages?.[1]?.content || '';
+  check('find missing: the names the book repeats mid-sentence, none already in the lists',
+    /\] Aslan \| 3 \|/.test(asked) && /\] Harrow Bay \|/.test(asked) && !/\] (Mira|Tomas|Gull Lighthouse|The Gull Lighthouse|Mira Vale)\b/.test(asked) && !/\] The tide/.test(asked),
+    asked.split('\n').filter(l => /^\[/.test(l)).map(l => l.split(' | ')[0]).join(', '));
+  check('find missing: people and places sorted, merged under the fuller name, invented names dropped',
+    miss?.status === 'done' && miss.label === 'Finding people and places missing from your lists' &&
+    JSON.stringify(miss.result.people.map(p => [p.name, p.role, p.mentions, p.chapters])) === '[["Captain Aslan","minor",3,[2]]]' &&
+    JSON.stringify(miss.result.places.map(p => [p.name, p.type])) === '[["Harrow Bay","bay"]]',
+    `${miss?.status} ${JSON.stringify(miss?.result).slice(0, 300)}`);
+  await call('POST', `${jobs}/${miss?.jobId}/ack`, owner.token);
 
   // Book Info from the chapters: the author's genre kept, the audience normalised
   await db.query(`UPDATE books SET metadata = metadata || '{"genre": "Gothic mystery"}'::jsonb WHERE id = $1`, [bookId]);

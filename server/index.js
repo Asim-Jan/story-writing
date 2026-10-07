@@ -14,6 +14,7 @@ import { enhanceLocation } from './enhance/location.js';
 import { enhanceBookInfo } from './enhance/book.js';
 import { enhancePlotline } from './enhance/plotline.js';
 import { enhanceEvents } from './enhance/events.js';
+import { findMissing } from './enhance/missing.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4664,7 +4665,7 @@ const MEDIA_JOB_TARGETS = {
   animation: ['animation'],
   analysis: ['book'],
   audiobook: ['audiobook'],
-  enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book'],
+  enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book', 'missing'],
 };
 
 // The profile an enhance job is about, as the author has it now (params.item;
@@ -4708,7 +4709,7 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: `Choose at least one of the ${ENHANCE_NOUN[target.type]}` });
       if (items.length > enhanceBatchMax(target.type)) return res.status(400).json({ error: `At most ${enhanceBatchMax(target.type)} ${ENHANCE_NOUN[target.type]} per job` });
       if (items.some(it => it?.id == null || !String(it?.name || '').trim())) return res.status(400).json({ error: `Each of the ${ENHANCE_NOUN[target.type]} needs an id and a name` });
-    } else if (type === 'enhance' && target.type !== 'book' && !String(enhanceItem(params)?.name || '').trim()) {
+    } else if (type === 'enhance' && !['book', 'missing'].includes(target.type) && !String(enhanceItem(params)?.name || '').trim()) {
       return res.status(400).json({ error: `The ${target.type} needs a name` });
     }
     if (!minioAvailable && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
@@ -4777,6 +4778,10 @@ function mediaJobRunner(req) {
     };
     if (target.type === 'book') {
       return async (report) => ({ targetId: target.id, ...(await enhanceBookInfo({ book, item: params.item || {}, report })) });
+    }
+    if (target.type === 'missing') {
+      // people and places the book names that are in neither list
+      return async (report) => findMissing({ book, report });
     }
     if (target.type === 'timelines') {
       // events go a chapter at a time (enhance/events.js)
@@ -4876,6 +4881,7 @@ function mediaJobRunner(req) {
 function mediaJobLabel({ type, target, params }) {
   if (type === 'analysis') return 'Analysing the book';
   if (type === 'enhance' && target.type === 'book') return 'Filling Book Info from the book';
+  if (type === 'enhance' && target.type === 'missing') return 'Finding people and places missing from your lists';
   if (type === 'enhance' && ENHANCE_ONE[target.type]) return `Enhancing ${params.items.length} ${params.items.length === 1 ? ENHANCE_NOUN[target.type].replace(/s$/, '') : ENHANCE_NOUN[target.type]} from the book`;
   if (type === 'enhance') return `Enhancing ${String(enhanceItem(params).name).trim().slice(0, 60)} from the book`;
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
