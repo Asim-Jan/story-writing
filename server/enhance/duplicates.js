@@ -50,3 +50,30 @@ export function mergeNameForms(cast) {
     list = list.map((c, i) => (i === pair.into ? merged : c)).filter((_, i) => i !== pair.from);
   }
 }
+
+// ---- places ----
+// The words that tell places apart (mirrors placeWords in
+// src/utils/duplicates.js, without resolving owners to characters): "The Lab
+// (night)", "lab" and "Labs" are one key; "Main St." is "main street".
+const VIEW_WORDS = new Set(['interior', 'exterior', 'inside', 'outside']);
+const ABBREVIATIONS = { st: 'street', rd: 'road', ave: 'avenue', ln: 'lane', sq: 'square', blvd: 'boulevard' };
+const singular = (w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') && !w.endsWith('us') ? w.slice(0, -1) : w);
+
+export function placeKey(name) {
+  let w = lower(name)
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+    .replace(/[’‘`']/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[.,;:!?"“”]/g, ' ')
+    .replace(/[-–—/]/g, ' ')
+    .split(/\s+/).filter(Boolean);
+  while (w.length > 1 && ['the', 'a', 'an'].includes(w[0])) w = w.slice(1);
+  w = w.filter(x => !VIEW_WORDS.has(x)).map(singular);
+  if (w.length > 1 && ABBREVIATIONS[w[w.length - 1]]) w[w.length - 1] = ABBREVIATIONS[w[w.length - 1]];
+  return w.join(' ');
+}
+
+/** How much of a name is name: "(night)", "- interior" and "The" don't count. */
+export const placeFullness = (name) => String(name || '').replace(/\s+/g, ' ').trim()
+  .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').replace(/\b(interior|exterior|inside|outside)\b/gi, ' ')
+  .replace(/^\s*(the|a|an)\s+/i, '').replace(/[\s:;,.–—-]+$/, '').trim().length;

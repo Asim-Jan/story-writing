@@ -113,6 +113,7 @@ export const applyEnhanceJob = (book, job) => {
   const at = job.finishedAt || new Date().toISOString();
   if (!r) return book;
   if (type === 'missing') return applyMissing(book, job, at);
+  if (type === 'duplicates') return applyDuplicateCheck(book, job, at);
   if (BATCH_KINDS[type]) {
     const kind = BATCH_KINDS[type];
     let next = book;
@@ -240,6 +241,20 @@ const applyMissing = (book, job, at) => {
     ...book,
     metadata: { ...meta, discoveries: { jobId: job.jobId, at, read: r.read || null, people: fresh(r.people, 'characters'), places: fresh(r.places, 'locations') } },
   };
+};
+
+// ---- one place listed twice (SAI's duplicate check) ----
+// The pairs wait on book.metadata.duplicateCheck[kind] = { jobId, at, read, pairs }
+// and show with the rule-found ones (utils/duplicates.js); a merge or "Not the
+// same" settles each.
+const applyDuplicateCheck = (book, job, at) => {
+  const kind = job.target?.id;
+  const meta = book.metadata || {};
+  if (kind !== 'location' || meta.duplicateCheck?.[kind]?.jobId === job.jobId) return book;
+  const r = job.result || {};
+  const pairs = (Array.isArray(r.pairs) ? r.pairs : []).filter(p => p && p.keepId != null && p.dropId != null)
+    .map(p => ({ keepId: p.keepId, dropId: p.dropId, reason: String(p.reason || '').slice(0, 200) }));
+  return { ...book, metadata: { ...meta, duplicateCheck: { ...(meta.duplicateCheck || {}), [kind]: { jobId: job.jobId, at, read: r.read || null, pairs } } } };
 };
 
 let discoverySeq = 0;

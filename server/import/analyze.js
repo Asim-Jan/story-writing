@@ -1,6 +1,6 @@
 import { getSAIClient, SAI_CHAT_FAST } from '../saiClient.js';
 import { chapterHeading } from '../utils/chapters.js';
-import { mergeNameForms } from '../enhance/duplicates.js';
+import { mergeNameForms, placeKey, placeFullness } from '../enhance/duplicates.js';
 
 // Book analysis (a book media job, type 'analysis'): read the book chapter by
 // chapter with the Assistant model in JSON mode, then merge in CODE. The old
@@ -28,7 +28,8 @@ const CHAPTER_PROMPT = `You read one chapter of a novel and extract facts as JSO
  "locations": [{"name": "", "type": "city|building|room|landscape|...", "description": ""}],
  "events": [{"title": "short", "description": "one sentence"}],
  "plot": [{"title": "storyline name", "description": "what develops in this chapter"}]}
-Only include what this chapter actually shows. Use the names exactly as written. Keep descriptions short.`;
+Only include what this chapter actually shows. Use the names exactly as written. Keep descriptions short.
+A place already in "Known places so far" keeps that exact name: do not list it again under another name or with "(night)", "interior" and the like.`;
 
 const key = (name) => String(name || '').trim().toLowerCase();
 const longer = (a, b) => (String(b || '').length > String(a || '').length ? b : a);
@@ -61,7 +62,8 @@ export async function analyzeBook({ chapters, title, report }) {
       const text = String(c.content || '').slice(0, MAX_CHAPTER_CHARS);
       if (!text.trim()) { rows[i].status = 'done'; continue; }
       const known = [...characters.values()].map(x => x.name).slice(0, 80).join(', ');
-      const facts = await askJson(CHAPTER_PROMPT, `Book: ${title || 'Untitled'}\nKnown characters so far: ${known || 'none'}\n\n${chapterHeading(c, i + 1)}\n\n${text}`, 3000);
+      const places = [...locations.values()].map(x => x.name).slice(0, 120).join(', ');
+      const facts = await askJson(CHAPTER_PROMPT, `Book: ${title || 'Untitled'}\nKnown characters so far: ${known || 'none'}\nKnown places so far: ${places || 'none'}\n\n${chapterHeading(c, i + 1)}\n\n${text}`, 3000);
       const n = c.number || i + 1;
       if (facts.summary) chapterSummaries[c.id] = String(facts.summary).slice(0, 600);
       for (const ch of facts.characters || []) {
@@ -74,11 +76,19 @@ export async function analyzeBook({ chapters, title, report }) {
       }
       for (const loc of facts.locations || []) {
         if (!loc?.name) continue;
-        const k = key(loc.name);
+        // "The Lab", "lab (night)" and "Labs" are one place: the fullest name
+        // wins, the others are kept as its other names
+        const k = placeKey(loc.name) || key(loc.name);
+        const name = String(loc.name).replace(/\s+/g, ' ').trim();
         const prev = locations.get(k);
-        locations.set(k, prev
-          ? { ...prev, description: longer(prev.description, loc.description) }
-          : { name: String(loc.name).trim(), type: loc.type || '', description: loc.description || '', firstChapter: n });
+        if (!prev) {
+          locations.set(k, { name, type: loc.type || '', description: loc.description || '', firstChapter: n, aliases: [] });
+          continue;
+        }
+        const keepNew = placeFullness(name) > placeFullness(prev.name);
+        const main = keepNew ? name : prev.name;
+        const aliases = [...new Set([...prev.aliases, keepNew ? prev.name : name])].filter(a => key(a) !== key(main));
+        locations.set(k, { ...prev, name: main, type: prev.type || loc.type || '', description: longer(prev.description, loc.description), aliases });
       }
       for (const pl of facts.plot || []) {
         if (!pl?.title) continue;

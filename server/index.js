@@ -15,6 +15,7 @@ import { enhanceBookInfo } from './enhance/book.js';
 import { enhancePlotline } from './enhance/plotline.js';
 import { enhanceEvents } from './enhance/events.js';
 import { findMissing } from './enhance/missing.js';
+import { checkPlaceDuplicates } from './enhance/placeDuplicates.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, FILM_STYLES } from './services/filmDirector.js';
@@ -4686,7 +4687,7 @@ const MEDIA_JOB_TARGETS = {
   transcript: ['chapter'],
   analysis: ['book'],
   audiobook: ['audiobook'],
-  enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book', 'missing'],
+  enhance: ['character', 'location', 'plotline', 'characters', 'locations', 'plotlines', 'timelines', 'book', 'missing', 'duplicates'],
 };
 
 // The profile an enhance job is about, as the author has it now (params.item;
@@ -4740,13 +4741,20 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: `Choose at least one of the ${ENHANCE_NOUN[target.type]}` });
       if (items.length > enhanceBatchMax(target.type)) return res.status(400).json({ error: `At most ${enhanceBatchMax(target.type)} ${ENHANCE_NOUN[target.type]} per job` });
       if (items.some(it => it?.id == null || !String(it?.name || '').trim())) return res.status(400).json({ error: `Each of the ${ENHANCE_NOUN[target.type]} needs an id and a name` });
+    } else if (type === 'enhance' && target.type === 'duplicates') {
+      if (target.id !== 'location') return res.status(400).json({ error: 'target.id for duplicates must be: location' });
     } else if (type === 'enhance' && !['book', 'missing'].includes(target.type) && !String(enhanceItem(params)?.name || '').trim()) {
       return res.status(400).json({ error: `The ${target.type} needs a name` });
     }
     if (!minioAvailable && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
     const book = await getBook(bookId);
     if (!book) return res.status(404).json({ error: 'Book not found' });
-    if (type === 'enhance' && !(book.chapters || []).some(c => String(c.content || '').trim())) {
+    if (type === 'enhance' && target.type === 'duplicates') {
+      // reads the saved list, not the chapters
+      if ((book.locations || []).filter(l => String(l?.name || '').trim()).length < 2) {
+        return res.status(400).json({ error: 'Save at least two locations first' });
+      }
+    } else if (type === 'enhance' && !(book.chapters || []).some(c => String(c.content || '').trim())) {
       return res.status(400).json({ error: 'The book has no saved chapter text to read yet' });
     }
     if (!canEditBook(await checkBookAccess(bookId, req.user.userId))) {
@@ -4830,6 +4838,10 @@ function mediaJobRunner(req) {
     if (target.type === 'missing') {
       // people and places the book names that are in neither list
       return async (report) => findMissing({ book, report });
+    }
+    if (target.type === 'duplicates') {
+      // one place listed twice under different names (suggestions only)
+      return async (report) => checkPlaceDuplicates({ book, report });
     }
     if (target.type === 'timelines') {
       // events go a chapter at a time (enhance/events.js)
@@ -4951,6 +4963,7 @@ function mediaJobLabel({ type, target, params }) {
   if (type === 'analysis') return 'Analysing the book';
   if (type === 'enhance' && target.type === 'book') return 'Filling Book Info from the book';
   if (type === 'enhance' && target.type === 'missing') return 'Finding people and places missing from your lists';
+  if (type === 'enhance' && target.type === 'duplicates') return 'Checking your locations for duplicates';
   if (type === 'enhance' && ENHANCE_ONE[target.type]) return `Enhancing ${params.items.length} ${params.items.length === 1 ? ENHANCE_NOUN[target.type].replace(/s$/, '') : ENHANCE_NOUN[target.type]} from the book`;
   if (type === 'enhance') return `Enhancing ${String(enhanceItem(params).name).trim().slice(0, 60)} from the book`;
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;

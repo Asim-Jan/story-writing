@@ -186,7 +186,7 @@ async function fakeGateway() {
         content = JSON.stringify({ chapters: nums.length > 4 ? [{ start: nums[0], title: 'Chapter 1' }, { start: nums[Math.floor(nums.length / 2)], title: 'Chapter 2' }, { start: 99999, title: 'bogus' }] : [] });
       } else if (/read one chapter of a novel/.test(sys)) {
         content = JSON.stringify({ summary: 'Mira finds a map.', characters: [{ name: 'Mira Vale', role: 'protagonist', description: 'A cartographer', appearance: 'copper hair' }, { name: 'Mira', role: 'supporting', description: 'Short form' }],
-          locations: [{ name: 'The Lighthouse', type: 'building', description: 'On a cliff' }], events: [{ title: 'Map found', description: 'She finds it.' }], plot: [{ title: 'The map', description: 'It leads somewhere.' }] });
+          locations: [{ name: 'The Lighthouse', type: 'building', description: 'On a cliff' }, ...(/Known places so far: The Lighthouse/.test(usr) ? [{ name: 'Lighthouse - exterior', type: 'building', description: 'Seen from the sea' }] : [])], events: [{ title: 'Map found', description: 'She finds it.' }], plot: [{ title: 'The map', description: 'It leads somewhere.' }] });
       } else if (/check how an imported book was split/.test(sys)) {
         // a rule-based stand-in for the model: a chapter that ends mid-sentence
         // continues in the next; a "Bonus" section is back matter; plus junk
@@ -204,6 +204,12 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/check a novel's list of locations for duplicates/.test(sys)) {
+        // Mira's flat and the cottage on Harrow Lane are one home; plus a group with a bad index
+        const rows = [...usr.matchAll(/^\[(\d+)\] ([^|]+?) \|/gm)].map(m => ({ i: Number(m[1]), name: m[2] }));
+        const at = (n) => rows.find(r => r.name === n)?.i;
+        content = JSON.stringify({ groups: [{ same: [at("Mira's flat"), at('The cottage on Harrow Lane')], keep: at('The cottage on Harrow Lane'), reason: 'Both are where Mira lives.' },
+          { same: [99, at('Harbour Cafe')], keep: 99 }] });
       } else if (/sort the capitalised names found in a novel/.test(sys)) {
         // Aslan is a person (named more fully), Harrow Bay a place, the Admiralty neither; plus an invented name
         const rows = [...usr.matchAll(/^\[(\d+)\] ([^|]+?) \|/gm)].map(m => ({ i: Number(m[1]), name: m[2] }));
@@ -1108,6 +1114,68 @@ async function enhanceChecks({ call, db, gateway, owner, stranger, bookId }) {
     `${miss?.status} ${JSON.stringify(miss?.result).slice(0, 300)}`);
   await call('POST', `${jobs}/${miss?.jobId}/ack`, owner.token);
 
+  // one place listed twice: the rules (client) and SAI's check (a job)
+  {
+  console.log('\n== duplicate locations');
+  // as an editor of the book (the owner is near the AI rate limit's 50 per 15 minutes)
+  const checker = await makeUser(db, 'dup-editor');
+  await addCollaborator(db, bookId, checker, 'editor');
+  const usedQuota = async () => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [checker.id])).rows[0].ai_requests_today;
+  const wait = async (jobId) => {
+    for (let i = 0; i < 300; i++) {
+      const j = ((await call('GET', jobs, checker.token)).json?.jobs || []).find(x => x.jobId === jobId);
+      if (j && j.status !== 'running') return j;
+      await new Promise(res => setTimeout(res, 200));
+    }
+    return null;
+  };
+  r = await call('POST', jobs, checker.token, { type: 'enhance', target: { type: 'duplicates', id: 'character' }, params: {} });
+  check('duplicate check: only for locations (400)', r.status === 400 && /location/.test(r.json?.error || ''), `${r.status} ${r.json?.error}`);
+  const qd0 = await usedQuota();
+  r = await call('POST', jobs, checker.token, { type: 'enhance', target: { type: 'duplicates', id: 'location' }, params: {} });
+  check('duplicate check: needs two saved locations (400, no quota)', r.status === 400 && /two locations/.test(r.json?.error || '') && (await usedQuota()) === qd0, `${r.status} ${r.json?.error}`);
+  const homes = [...places, { id: 'loc-flat', name: "Mira's flat", type: 'flat', description: 'Two rooms above the chandlery.' },
+    { id: 'loc-home', name: 'The cottage on Harrow Lane', type: 'cottage', description: 'Where Mira lives, above the chandlery.' }, { id: 'loc-cafe', name: 'Harbour Cafe', type: 'cafe' }];
+  await db.query('UPDATE books SET locations = $2 WHERE id = $1', [bookId, JSON.stringify(homes)]);
+  b0 = gateway.requests.length;
+  r = await call('POST', jobs, checker.token, { type: 'enhance', target: { type: 'duplicates', id: 'location' }, params: {} });
+  const dup = await wait(r.json?.job?.jobId);
+  const dupCall = gateway.requests.slice(b0).find(q => /list of locations for duplicates/.test(q.body?.messages?.[0]?.content || ''));
+  const dupAsked = dupCall?.body?.messages?.[1]?.content || '';
+  check('duplicate check: every location with its type and description, alphabetical; a part of a place is not the place (prompt)',
+    /\[0\] Harbour Cafe \| cafe/.test(dupAsked) && /\] Mira's flat \| flat \|\s+\| Two rooms above the chandlery\./.test(dupAsked) && /A part of a place is NOT the place/.test(dupCall?.body?.messages?.[0]?.content || ''),
+    dupAsked.slice(0, 300));
+  check('duplicate check: the pairs by id with the reason, a bad index dropped, one quota slot',
+    dup?.status === 'done' && dup.label === 'Checking your locations for duplicates' && (await usedQuota()) === qd0 + 1 &&
+    JSON.stringify(dup.result.pairs) === JSON.stringify([{ keepId: 'loc-home', dropId: 'loc-flat', reason: 'Both are where Mira lives.' }]) && dup.result.read?.locations === 4,
+    `${dup?.status} ${JSON.stringify(dup?.result)} ${dup?.error || ''}`);
+  await call('POST', `${jobs}/${dup?.jobId}/ack`, checker.token);
+  await db.query('UPDATE books SET locations = $2 WHERE id = $1', [bookId, JSON.stringify(places)]);
+
+  }
+  const dupUi = await import('../../src/utils/duplicates.js');
+  const { applyEnhanceJob } = await import('../../src/utils/enhanceFromBook.js');
+  const crew = [{ id: 2, name: 'Adam Carlsen' }, { id: 1, name: 'Olive Smith' }, { id: 4, name: 'Anh Pham' }];
+  const sample = ['The Lab (night)', 'Aslan Lab', "Adam's office", "Dr. Carlsen's office", "Adam Carlsen's Office", 'Stanford', 'Stanford University', 'Stanford Biology Department',
+    'The Gull Lighthouse', 'Gull Lighthouse - interior', 'Lighthouse cottage', "Olive's apartment", "Olive and Malcolm's apartment", 'Kitchen', "Anh's kitchen", "Olive's kitchen",
+    'Garden', 'Gardens', 'Castle gate', 'Main St.', 'Main Street'];
+  const found = dupUi.findDuplicates({ characters: crew, locations: sample.map((n, i) => ({ id: `s${i}`, name: n })) }, 'location').map(p => `${p.drop.name}>${p.keep.name}`).sort();
+  check('location rules: forms of one place paired (owner by character, "(night)", "- interior", St.), parts and two people\'s rooms left apart',
+    found.join('|') === ["Adam's office>Adam Carlsen's Office", "Dr. Carlsen's office>Adam Carlsen's Office", 'Garden>Gardens', 'Gull Lighthouse - interior>The Gull Lighthouse',
+      'Main St.>Main Street', 'Stanford>Stanford University', 'The Lab (night)>Aslan Lab'].join('|'), found.join(' | '));
+  let ub = { characters: crew, locations: [{ id: 'a', name: 'The cottage' }, { id: 'b', name: "Mira's flat", imageUrl: '/flat.png' }, { id: 'c', name: 'Pier' }],
+    plotlines: [{ id: 'p', linkedLocations: ['b'] }], visuals: [{ id: 'v', url: '/old.png', locationId: 'b' }] };
+  ub = applyEnhanceJob(ub, { jobId: 'j1', target: { type: 'duplicates', id: 'location' }, finishedAt: '2026-10-07T00:00:00Z',
+    result: { pairs: [{ keepId: 'a', dropId: 'b', reason: 'One home.' }, { keepId: 'b', dropId: 'c', reason: 'x' }] } });
+  const aiPairs = dupUi.findDuplicates(ub, 'location').map(p => `${p.drop.id}>${p.keep.id}:${p.reason || ''}`);
+  const merged = dupUi.mergeDuplicate(ub, 'location', 'a', 'b');
+  check('SAI pairs show with their reason; a merge moves pictures and links and repoints the other pairs',
+    aiPairs.join() === 'b>a:One home.,c>b:x' && merged.locations.length === 2 && merged.locations[0].imageUrl === '/flat.png' &&
+    merged.visuals.every(v => v.locationId === 'a') && merged.plotlines[0].linkedLocations.join() === 'a' &&
+    JSON.stringify(merged.metadata.duplicateCheck.location.pairs.map(p => [p.keepId, p.dropId])) === '[["a","c"]]' &&
+    dupUi.findDuplicates(dupUi.markNotDuplicates(merged, 'location', 'a', 'c'), 'location').length === 0,
+    `${aiPairs.join()} ${JSON.stringify(merged.locations)} ${JSON.stringify(merged.metadata)}`);
+
   // Book Info from the chapters: the author's genre kept, the audience normalised
   await db.query(`UPDATE books SET metadata = metadata || '{"genre": "Gothic mystery"}'::jsonb WHERE id = $1`, [bookId]);
   r = await call('POST', jobs, owner.token, { type: 'enhance', target: { type: 'book', id: bookId }, params: { item: { genre: 'Gothic mystery' } } });
@@ -1317,6 +1385,10 @@ async function importChecks({ call, db, gateway, owner, stranger, jobsUrl, waitJ
     analysed.result.characters.length === 1 && analysed.result.characters[0].aliases?.join() === 'Mira' && analysed.result.characters[0].role === 'protagonist' &&
     analysed.result.locations.length === 1 && Object.keys(analysed.result.chapterSummaries).length === 2 && analysed.result.overview,
     JSON.stringify(analysed).slice(0, 220));
+
+  check('analysis job: one place named two ways ("The Lighthouse", "Lighthouse - exterior") is one, the other name kept',
+    analysed?.result?.locations?.length === 1 && analysed.result.locations[0].name === 'The Lighthouse' && analysed.result.locations[0].aliases?.join() === 'Lighthouse - exterior',
+    JSON.stringify(analysed?.result?.locations));
 
   await enhanceChecks({ call, db, gateway, owner, stranger, bookId });
 
