@@ -210,9 +210,9 @@ const applyAnalysis = (book, job) => {
     c => ({ id: importId('char'), name: String(c.name).trim(), role: c.role || '', description: c.description || '', background: c.description || '',
       appearance: c.appearance || '', aliases: c.aliases || [], firstChapter: c.firstChapter ?? null, mentions: c.mentions ?? null, relationships: [], referenceImages: [], fromImport: true })));
   set('locations', mergeByName(book.locations, r.locations, l => l.name,
-    l => ({ type: l.type, description: l.description, firstChapter: l.firstChapter }),
+    l => ({ type: l.type, description: l.description, firstChapter: l.firstChapter, aliases: l.aliases }),
     l => ({ id: importId('loc'), name: String(l.name).trim(), type: l.type || '', description: l.description || '', significance: '', atmosphere: '', history: '',
-      firstChapter: l.firstChapter ?? null, fromImport: true })));
+      aliases: l.aliases || [], firstChapter: l.firstChapter ?? null, fromImport: true })));
   set('plotlines', mergeByName(book.plotlines, r.plotlines, pl => pl.title || pl.name,
     pl => ({ description: pl.description, chapters: pl.chapters }),
     pl => ({ id: importId('plot'), title: String(pl.title || pl.name).trim(), type: '', description: pl.description || '', status: 'planning', themes: '', conflicts: '',
