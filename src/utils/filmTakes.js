@@ -177,7 +177,7 @@ export const cutScenes = (scenes) => scenes.map((sc, i) => {
   let transition = i > 0 ? sceneTransition(scenes, i) : null;
   if (transition === 'continue' && !chosenTake(scenes[i - 1])) transition = 'dissolve';
   return { sceneNumber: sc.sceneNumber, title: sc.title, filename: take.filename, keyframeUrl: take.keyframeUrl, location: sc.location,
-    ...(transition ? { transition } : {}) };
+    ...(transition ? { transition } : {}), ...(Number.isFinite(sc.clipVolume) ? { clipVolume: sc.clipVolume } : {}) };
 }).filter(Boolean);
 
 // A job's label names its scenes ("Storyboard: scenes 1–4, 7"), so the scene
@@ -203,4 +203,65 @@ export const scenesInLabel = (label) => {
     if (!Number.isFinite(b)) return [a];
     return Array.from({ length: Math.max(0, Math.min(b - a, 200)) + 1 }, (_, k) => a + k);
   });
+};
+
+// ---- the film's sound: draft.sound = { voiceover, music } ----
+//   voiceover: { text, voice, url, filename, duration, spokenText, volume, offset }
+//   music:     { prompt, url, filename, duration, source, volume }
+// A scene's own clip sound: scene.clipVolume (0 = muted, 1 = as rendered).
+
+export const DEFAULT_VOICE_OFFSET = 0.5;
+export const DEFAULT_MUSIC_VOLUME = 1;
+
+const withSound = (book, transcriptId, jobId, change) => withDraft(book, transcriptId, (draft) => {
+  if (jobId && applied(draft, jobId)) return draft;
+  const next = { ...draft, sound: change(draft.sound || {}) };
+  return jobId ? markApplied(next, jobId) : next;
+});
+
+/** Edit the sound by hand (text, voice, volumes, offset, removing a part). */
+export const editSound = (book, transcriptId, part, patch) => withSound(book, transcriptId, null, (sound) => ({
+  ...sound,
+  [part]: patch === null ? null : { ...(sound[part] || {}), ...patch },
+}));
+
+export const applyNarration = (book, job) => {
+  const text = String(job.result?.narration || '').trim();
+  if (!text) return book;
+  return withSound(book, job.target?.id, job.jobId, (sound) => ({ ...sound, voiceover: { ...(sound.voiceover || {}), text, written: { words: job.result.words, seconds: job.result.seconds } } }));
+};
+
+export const applyVoiceover = (book, job) => {
+  const vo = job.result?.voiceover;
+  if (!vo?.filename) return book;
+  return withSound(book, job.target?.id, job.jobId, (sound) => ({
+    ...sound,
+    voiceover: { ...(sound.voiceover || {}), url: vo.url, filename: vo.filename, duration: vo.duration, voice: vo.voice, spokenText: vo.text },
+  }));
+};
+
+export const applyMusic = (book, job) => {
+  const m = job.result?.music;
+  if (!m?.filename) return book;
+  return withSound(book, job.target?.id, job.jobId, (sound) => ({
+    ...sound,
+    music: { ...(sound.music || {}), url: m.url, filename: m.filename, duration: m.duration, prompt: m.prompt, source: 'generated' },
+  }));
+};
+
+/** What the join needs of the sound (files, levels, offset). */
+export const soundForServer = (sound) => {
+  if (!sound) return undefined;
+  const out = {};
+  const vo = sound.voiceover;
+  if (vo?.filename) out.voiceover = { filename: vo.filename, volume: vo.volume ?? 1, offset: vo.offset ?? DEFAULT_VOICE_OFFSET };
+  const m = sound.music;
+  if (m?.filename) out.music = { filename: m.filename, volume: m.volume ?? DEFAULT_MUSIC_VOLUME };
+  return Object.keys(out).length ? out : undefined;
+};
+
+/** The film's running time: each scene's chosen take (else its planned length), less the blends. */
+export const filmSeconds = (scenes) => {
+  const parts = scenes.map(sc => Number(chosenTake(sc)?.duration) || Number(sc.duration) || 5);
+  return Math.max(1, Math.round(parts.reduce((a, b) => a + b, 0) - Math.max(0, parts.length - 1) * 0.4));
 };

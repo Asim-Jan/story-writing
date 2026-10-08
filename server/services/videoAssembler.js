@@ -6,6 +6,9 @@ import ffmpegPath from 'ffmpeg-static';
 import { mediaStorage } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
 import { TRANSITIONS, TRANSITION_IDS, transitionOf } from './filmShots.js';
+import { FPS, FADE_IN, FADE_OUT, VOICE_DB, MUSIC_DB, r3, dbOf, audioGraph } from './filmMix.js';
+
+export { audioGraph };
 
 export { TRANSITIONS, TRANSITION_IDS, transitionOf };
 
@@ -28,11 +31,8 @@ export { TRANSITIONS, TRANSITION_IDS, transitionOf };
 // piece, the pieces are joined without re-encoding, and the (light) sound
 // track is built separately. One join at a time per process.
 
-const FPS = 24;
 const ENCODE = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-threads', '2', '-video_track_timescale', '24000', '-an'];
 const TARGET_DB = -20; // mean level every clip is brought to
-const FADE_IN = 0.5;
-const FADE_OUT = 0.8;
 const MAX_HEAD_TRIM = 1.0;
 
 /**
@@ -92,7 +92,6 @@ async function stillHead(file) {
   return Number.isFinite(duration) ? duration : 1.6; // still to the end of the probe
 }
 
-const r3 = (n) => Math.max(0, Math.round(n * 1000) / 1000);
 
 /**
  * The pieces of the film, in frames: per clip the body (between its blends)
@@ -108,34 +107,6 @@ export function framePlan(frames, plan) {
   });
   const total = frames.reduce((s, n) => s + n, 0) - blend.reduce((s, d) => s + d, 0);
   return { blend, bodies, total };
-}
-
-/**
- * The sound track's filter graph (exported for tests). clips[i].audioInput is
- * the ffmpeg input number of clip i's sound file, or null for a silent clip.
- */
-export function audioGraph(clips, plan, fp) {
-  const parts = [];
-  clips.forEach((c, i) => {
-    const len = r3(c.frames / FPS);
-    parts.push(Number.isInteger(c.audioInput)
-      ? `[${c.audioInput}:a]apad,atrim=0:${len}[a${i}]`
-      : `anullsrc=r=44100:cl=stereo,atrim=0:${len},aformat=sample_fmts=fltp:channel_layouts=stereo[a${i}]`);
-  });
-  let a = 'a0';
-  plan.forEach((b, k) => {
-    parts.push(`[${a}][a${k + 1}]acrossfade=d=${r3(fp.blend[k] / FPS)}:c1=tri:c2=tri[xa${k + 1}]`);
-    a = `xa${k + 1}`;
-  });
-  const total = fp.total / FPS;
-  const fadeIn = Math.min(FADE_IN, total / 4);
-  const fadeOut = Math.min(FADE_OUT, total / 4);
-  // the clips' own sound bursts from quiet to loud inside a shot (31 dB in a
-  // quarter second in a real film): even the level out over a few seconds,
-  // then compress the peaks gently (measured: worst step 31.7 -> 23.8 dB,
-  // spread 11.0 -> 6.4 dB, no clipping)
-  parts.push(`[${a}]dynaudnorm=f=250:g=11:p=0.9:m=6,acompressor=threshold=0.1:ratio=3:attack=10:release=250,afade=t=in:st=0:d=${r3(fadeIn)},afade=t=out:st=${r3(total - fadeOut)}:d=${r3(fadeOut)},alimiter=limit=0.9[aout]`);
-  return parts.join(';');
 }
 
 const ffmpegOk = async (args, what) => {
@@ -206,10 +177,12 @@ export class VideoAssembler {
           '-vf', `trim=start=${r3(c.head)},setpts=PTS-STARTPTS,fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`,
           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-threads', '2', '-an', c.norm], `prepare scene ${i + 1}`);
         c.frames = await frameCount(c.norm);
-        if (c.hasAudio) {
+        // the author's level for this clip's own sound (0 = muted)
+        const clipVolume = Number.isFinite(Number(c.scene.clipVolume)) ? Math.max(0, Math.min(1.5, Number(c.scene.clipVolume))) : 1;
+        if (c.hasAudio && clipVolume > 0) {
           const mean = await meanVolume(c.file);
           // silence stays silence; otherwise towards one level, within reason
-          c.gainDb = mean === null || mean < -60 ? 0 : Math.max(-15, Math.min(18, TARGET_DB - mean));
+          c.gainDb = (mean === null || mean < -60 ? 0 : Math.max(-15, Math.min(18, TARGET_DB - mean))) + (clipVolume === 1 ? 0 : dbOf(clipVolume));
           c.wav = at(`aud-${i}.wav`);
           await ffmpegOk(['-i', c.file, '-map', '0:a:0', '-af', `atrim=start=${r3(c.head)},asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo,volume=${c.gainDb.toFixed(1)}dB`,
             '-c:a', 'pcm_s16le', c.wav], `take scene ${i + 1}'s sound`);
@@ -248,11 +221,29 @@ export class VideoAssembler {
       fs.writeFileSync(list, pieces.map(p => `file '${p}'`).join('\n'));
       await ffmpegOk(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', at('video.mp4')], 'join the pieces');
       const audioArgs = [];
+      let inputs = 0;
       for (const c of clips) {
-        c.audioInput = c.wav ? audioArgs.length / 2 : null;
+        c.audioInput = c.wav ? inputs++ : null;
         if (c.wav) audioArgs.push('-i', c.wav);
       }
-      fs.writeFileSync(at('audio.txt'), audioGraph(clips, plan, fp));
+      // the voice-over and the music (options.sound; files already checked as the user's)
+      const extras = {};
+      const sound = options.sound || {};
+      for (const kind of ['voice', 'music']) {
+        const part = kind === 'voice' ? sound.voiceover : sound.music;
+        const volume = Number.isFinite(Number(part?.volume)) ? Math.max(0, Math.min(1.5, Number(part.volume))) : 1;
+        if (!part?.filename || volume === 0) continue;
+        const file = at(`${kind}${path.extname(part.filename) || '.mp3'}`);
+        fs.writeFileSync(file, await mediaStorage.getFile('audio', part.filename));
+        const mean = await meanVolume(file);
+        if (mean === null || mean < -60) continue; // silent: nothing to mix
+        const gainDb = Math.max(-20, Math.min(24, (kind === 'voice' ? VOICE_DB : MUSIC_DB) - mean)) + dbOf(volume);
+        // music repeats until the film ends
+        if (kind === 'music') audioArgs.push('-stream_loop', '-1');
+        audioArgs.push('-i', file);
+        extras[kind] = { input: inputs++, gainDb, ...(kind === 'voice' ? { offset: Math.max(0, Math.min(60, Number(part.offset) || 0)) } : {}) };
+      }
+      fs.writeFileSync(at('audio.txt'), audioGraph(clips, plan, fp, (extras.voice || extras.music) ? extras : null));
       await ffmpegOk([...audioArgs, '-filter_complex_script', at('audio.txt'), '-map', '[aout]', '-c:a', 'aac', '-b:a', '160k', at('audio.m4a')], 'build the sound track');
       const outputFilename = `film-${Date.now()}.mp4`;
       const outputPath = at(outputFilename);
@@ -278,6 +269,7 @@ export class VideoAssembler {
         width: W,
         height: H,
         joinVersion: 2,
+        ...(extras.voice || extras.music ? { sound: { voiceover: Boolean(extras.voice), music: Boolean(extras.music) } } : {}),
         transitions: plan.map((b, j) => ({ into: clips[j + 1].scene.sceneNumber ?? j + 2, transition: b.transition, seconds: r3(fp.blend[j] / FPS) })),
       };
     } finally {

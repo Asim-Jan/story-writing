@@ -19,6 +19,7 @@ import { checkPlaceDuplicates } from './enhance/placeDuplicates.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, drawStoryboard, FILM_STYLES } from './services/filmDirector.js';
+import { writeNarration, makeMusic, MAX_VOICEOVER_CHARS, MAX_MUSIC_SECONDS } from './services/filmSound.js';
 import { artStyleOf } from './services/artStyles.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
@@ -4685,6 +4686,9 @@ const MEDIA_JOB_TARGETS = {
   animation: ['animation'],
   'film-join': ['animation'],
   storyboard: ['animation'],
+  'film-narration': ['animation'],
+  'film-voice': ['animation'],
+  'film-music': ['animation'],
   transcript: ['chapter'],
   analysis: ['book'],
   audiobook: ['audiobook'],
@@ -4701,7 +4705,7 @@ const ENHANCE_NOUN = { characters: 'characters', locations: 'locations', plotlin
 const enhanceBatchMax = (type) => (type === 'timelines' ? 400 : 40);
 
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
-const TEXT_JOBS = new Set(['enhance', 'transcript']);
+const TEXT_JOBS = new Set(['enhance', 'transcript', 'film-narration']);
 const mediaFeatureUnlessText = (req, res, next) => (TEXT_JOBS.has(req.body?.type) ? next() : requireFeature('media_generation')(req, res, next));
 // Jobs that call no AI model (rejoining a film's existing clips) cost no AI request.
 const FREE_JOBS = new Set(['film-join']);
@@ -4711,6 +4715,18 @@ const joinableScenes = (project) => (project?.scenes || []).filter(sc => sc?.fil
 // a clip named in a request: one of our stored videos, never a path
 const CLIP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.(mp4|webm|mov)$/;
 const STILL_URL = /^\/api\/media\/images\/[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+const AUDIO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.(mp3|wav|m4a|ogg|aac)$/;
+// a film's voice-over and music, as a request names them: the user's own audio
+async function soundAllowed(user, sound) {
+  if (sound === undefined || sound === null) return true;
+  if (typeof sound !== 'object') return false;
+  for (const part of [sound.voiceover, sound.music]) {
+    if (!part) continue;
+    if (typeof part !== 'object' || !AUDIO_NAME.test(String(part.filename || ''))) return false;
+    if (!(await canAccessMedia(user, 'audio', part.filename, 'read'))) return false;
+  }
+  return true;
+}
 // The clips a request asks to use must be the user's (or their book's): the
 // scene lists live in book data the user can edit.
 async function clipsAllowed(user, filenames) {
@@ -4755,6 +4771,22 @@ async function validateMediaJob(req, res, next) {
       const reused = params.scenes.filter(sc => sc?.reuseTake).map(sc => sc.reuseTake.filename);
       if (reused.length && !(await clipsAllowed(req.user, reused))) return res.status(404).json({ error: 'A kept clip is not one of this book\'s clips' });
       if (reused.length === params.scenes.length) return res.status(400).json({ error: 'Every scene already has a clip; cut the film instead' });
+    }
+    if (type === 'film-narration') {
+      if (!Array.isArray(params.scenes) || params.scenes.length === 0 || params.scenes.length > 60) return res.status(400).json({ error: 'Between 1 and 60 scenes are required' });
+      if (!(Number(params.seconds) > 0)) return res.status(400).json({ error: 'seconds (the running time) is required' });
+    }
+    if (type === 'film-voice') {
+      if (typeof params.text !== 'string' || !params.text.trim()) return res.status(400).json({ error: 'text is required' });
+      if (params.text.length > MAX_VOICEOVER_CHARS) return res.status(400).json({ error: `The voice-over can be at most ${MAX_VOICEOVER_CHARS} characters` });
+    }
+    if (type === 'film-music') {
+      if (typeof params.prompt !== 'string' || !params.prompt.trim() || params.prompt.length > 300) return res.status(400).json({ error: 'prompt (up to 300 characters) is required' });
+      if (!(Number(params.seconds) >= 5 && Number(params.seconds) <= MAX_MUSIC_SECONDS)) return res.status(400).json({ error: `seconds must be between 5 and ${MAX_MUSIC_SECONDS}` });
+    }
+    if ((type === 'film-join' && params.cut && typeof params.cut === 'object') || type === 'animation') {
+      const sound = type === 'animation' ? params.options?.sound : params.cut.sound;
+      if (!(await soundAllowed(req.user, sound))) return res.status(404).json({ error: 'The voice-over or music is not one of your files' });
     }
     if (type === 'film-join' && params.cut !== undefined) {
       // cut a film from chosen takes (no project yet)
@@ -4967,14 +4999,46 @@ function mediaJobRunner(req) {
         keyframeUrl: STILL_URL.test(String(sc.keyframeUrl || '')) ? sc.keyframeUrl : null,
         location: String(sc.location || '').slice(0, 200),
         ...(sc.transition ? { transition: sc.transition } : {}),
+        ...(Number.isFinite(Number(sc.clipVolume)) ? { clipVolume: Math.max(0, Math.min(1.5, Number(sc.clipVolume))) } : {}),
         status: 'completed',
       }));
       const title = String(cut.title || '').trim().slice(0, 200)
         || req.mediaJobBook.transcripts?.find(t => String(t.id) === String(target.id))?.title || 'Film';
-      await report({ message: `Cutting the film from ${scenes.length} takes...` });
-      const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title });
+      const sound = cleanSound(cut.sound);
+      await report({ message: `Cutting the film from ${scenes.length} takes${sound ? ', with its sound' : ''}...` });
+      const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title, ...(sound ? { sound } : {}) });
       return { project: { id: `anim-${uuidv4()}`, transcriptId: target.id, title, style: FILM_STYLES[cut.style] ? cut.style : undefined, scenes, finalVideo,
-        status: 'completed', cutFromTakes: true, createdAt: new Date().toISOString() } };
+        ...(sound ? { sound } : {}), status: 'completed', cutFromTakes: true, createdAt: new Date().toISOString() } };
+    };
+  }
+  if (type === 'film-narration') {
+    // one voice-over for the whole film, written to its running time (filmSound.js)
+    return async (report) => {
+      await report({ message: 'Writing the voice-over...' });
+      const transcript = (req.mediaJobBook.transcripts || []).find(t => String(t.id) === String(target.id));
+      const scenes = params.scenes.map(sc => ({ title: sc?.title, visualPrompt: sc?.visualPrompt, dialogue: sc?.dialogue, duration: sc?.duration }));
+      const written = await writeNarration({ title: transcript?.title || req.mediaJobBook.title, scenes, seconds: Number(params.seconds), screenplay: transcript?.content || '' });
+      return { ...written, seconds: Number(params.seconds) };
+    };
+  }
+  if (type === 'film-voice') {
+    // the voice-over spoken in an audiobook voice (services/voices.js)
+    return async (report) => {
+      await report({ message: 'Speaking the voice-over...' });
+      const spec = normaliseSpec(params.voice);
+      const text = params.text.trim();
+      const audio = await speak(user.userId, spec, text, { speed: params.speed });
+      const stored = await storeAudio(user.userId, bookId, audio.mp3, 'film-voiceover');
+      return { voiceover: { url: stored.audioUrl, filename: stored.filename, duration: audio.durationSec, voice: audio.spec, text } };
+    };
+  }
+  if (type === 'film-music') {
+    // a music bed from style tags (ACE-Step on the bridge)
+    return async (report) => {
+      await report({ message: `Composing ${Math.round(Number(params.seconds))} seconds of music...` });
+      const music = await makeMusic({ prompt: params.prompt.trim(), seconds: Number(params.seconds) });
+      const stored = await storeAudio(user.userId, bookId, music.mp3, 'film-music');
+      return { music: { url: stored.audioUrl, filename: stored.filename, duration: music.seconds, prompt: params.prompt.trim(), model: music.model } };
     };
   }
   if (type === 'storyboard') {
@@ -5008,7 +5072,9 @@ function mediaJobRunner(req) {
       const overrides = params.transitions || {};
       const scenes = (project.scenes || []).map(sc => (TRANSITIONS[overrides[sc.sceneNumber]] ? { ...sc, transition: overrides[sc.sceneNumber] } : sc));
       await report({ message: `Joining ${joinableScenes(project).length} scenes with smooth transitions...` });
-      const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title: project.title });
+      // the film's sound, when its files are still the user's
+      const sound = (await soundAllowed(user, project.sound)) ? cleanSound(project.sound) : null;
+      const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title: project.title, ...(sound ? { sound } : {}) });
       return { project: { ...project, id: `anim-${uuidv4()}`, scenes, finalVideo, rejoinedFrom: project.id, createdAt: new Date().toISOString() } };
     };
   }
@@ -5048,6 +5114,16 @@ function mediaJobRunner(req) {
   };
 }
 
+// the parts of a film's sound the join uses (already checked as the user's)
+const cleanSound = (sound) => {
+  if (!sound || typeof sound !== 'object') return null;
+  const level = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1.5, Number(v))) : d);
+  const out = {};
+  if (sound.voiceover?.filename) out.voiceover = { filename: sound.voiceover.filename, volume: level(sound.voiceover.volume, 1), offset: Math.max(0, Math.min(60, Number(sound.voiceover.offset) || 0)) };
+  if (sound.music?.filename) out.music = { filename: sound.music.filename, volume: level(sound.music.volume, 1) };
+  return Object.keys(out).length ? out : null;
+};
+
 // what a scene list keeps of a rendered clip
 const takeOf = (r) => (r.status === 'completed'
   ? { sceneNumber: r.sceneNumber, status: 'completed', videoUrl: r.videoUrl, filename: r.filename, keyframeUrl: r.keyframeUrl || null,
@@ -5065,6 +5141,9 @@ function mediaJobLabel({ type, target, params }) {
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
   if (type === 'film-join') return params.cut ? 'Cutting the film' : 'Rejoining the film';
+  if (type === 'film-narration') return 'Writing the voice-over';
+  if (type === 'film-voice') return 'Speaking the voice-over';
+  if (type === 'film-music') return 'Composing the music';
   if (type === 'storyboard') return params.scenes.length === 1 ? `Still: scene ${params.scenes[0].sceneNumber}` : `Storyboard: ${params.scenes.length} stills`;
   if (type === 'transcript') return 'Writing the transcript';
   return `Image: ${String(params.prompt).slice(0, 40)}`;
@@ -6398,13 +6477,15 @@ async function renderAnimation({ user, bookId, book, transcriptId, scenes, optio
   onProgress({ stage: 'assembling', message: `Assembling ${completed.length} of ${scenes.length} scenes into the film...` });
   const title = book.transcripts?.find(t => String(t.id) === String(transcriptId))?.title || 'Animation';
   // the assembler measures the joined film (blends overlap the clips)
-  const finalVideo = await new VideoAssembler(bookId).assembleFilm(results, { title, ...options });
+  const sound = cleanSound(options.sound);
+  const finalVideo = await new VideoAssembler(bookId).assembleFilm(results, { title, ...options, sound: sound || undefined });
   return {
     id: `anim-${uuidv4()}`,
     transcriptId,
     title,
     style,
     scenes: scenes.map(({ still, reuseTake, previousStill, previousScene, ...scene }, idx) => ({ ...scene, ...results[idx] })),
+    ...(sound ? { sound } : {}),
     finalVideo,
     status: 'completed',
     createdAt: new Date().toISOString(),

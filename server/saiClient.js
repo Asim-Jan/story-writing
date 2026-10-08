@@ -204,6 +204,25 @@ export async function saiSpeech({ text, voice = 'en-davis_man', speed = undefine
   return Buffer.from(await res.arrayBuffer());
 }
 
+/**
+ * A music bed (the bridge's ACE-Step): style tags in, MP3 out. Takes about
+ * two seconds per second of music.
+ */
+export async function saiMusic({ prompt, seconds = 30, seed = undefined }) {
+  if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');
+  const res = await fetch(`${BASE_URL()}/audio/music`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${API_KEY()}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, seconds, response_format: 'json', ...(Number.isFinite(seed) ? { seed } : {}) }),
+    signal: AbortSignal.timeout(600000),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.b64_mp3) {
+    throw new Error(`SAI_MUSIC_${res.status}: ${String(body?.error?.message || body?.error || 'no music came back').slice(0, 200)}`);
+  }
+  return { mp3: Buffer.from(body.b64_mp3, 'base64'), seconds: Number(body.seconds) || seconds, model: body.model || null };
+}
+
 /** Speech to text (the bridge's ASR): a WAV buffer → its transcript. */
 export async function saiTranscribe(wav) {
   if (!API_KEY()) throw new Error('SAI_API_KEY_NOT_CONFIGURED');

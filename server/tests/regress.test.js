@@ -97,6 +97,15 @@ async function fakeGateway() {
     const ff = spawn(ffmpegPath, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x240:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', clipPath]);
     ff.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))));
   });
+  // a real tone for speech that asks for one ("TONE") and an MP3 music bed
+  const tonePath = path.join(os.tmpdir(), `regress-tone-${process.pid}.wav`);
+  const musicPath = path.join(os.tmpdir(), `regress-music-${process.pid}.mp3`);
+  for (const [file, args] of [[tonePath, ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-ar', '24000', '-ac', '1']], [musicPath, ['-f', 'lavfi', '-i', 'sine=frequency=220:duration=3', '-c:a', 'libmp3lame', '-b:a', '64k']]]) {
+    await new Promise((resolve, reject) => {
+      const ff = spawn(ffmpegPath, ['-y', '-loglevel', 'error', ...args, file]);
+      ff.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))));
+    });
+  }
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => { body += d; });
@@ -169,7 +178,12 @@ async function fakeGateway() {
       }
       if (req.url.endsWith('/audio/speech')) {
         res.setHeader('Content-Type', 'audio/wav');
-        res.end(makeWav(1000));
+        res.end(/TONE/.test(parsed?.input || '') ? fs.readFileSync(tonePath) : makeWav(1000));
+        return;
+      }
+      if (req.url.endsWith('/audio/music')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ model: 'ace-step-1.5', seed: 1, seconds: parsed?.seconds, b64_mp3: fs.readFileSync(musicPath).toString('base64') }));
         return;
       }
       res.setHeader('Content-Type', 'application/json');
@@ -204,6 +218,9 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/You write the voice-over for a short film/.test(sys)) {
+        // far too long, so the server trims it at a sentence
+        content = JSON.stringify({ narration: 'The keeper climbed alone. '.repeat(40).trim() });
       } else if (/check the opening frame of a film scene/.test(sys)) {
         // the frame has the scene's text and a JPEG; "TWIN_ONCE" = the first draw shows someone twice
         const parts = Array.isArray(parsed?.messages?.[1]?.content) ? parsed.messages[1].content : [];
@@ -1034,6 +1051,74 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     const withGap = [{ ...d3.scenes[0], takes: [], take: null }, { ...d3.scenes[1], takes: [{ id: 'x', filename: 'b.mp4' }], take: 'x' }];
     check('scene list: deleting the only take empties the scene; a "continue" after a scene with no take dissolves in the cut',
       !ft.chosenTake(d4.scenes[0]) && ft.cutScenes(withGap)[0]?.transition === 'dissolve', JSON.stringify(ft.cutScenes(withGap)));
+
+    // ── the film's sound: voice-over (written, spoken), music, clip levels (2.23.62) ──
+    const eq2 = await editorQuota();
+    mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-narration', target: { type: 'animation', id: 't3' }, params: { scenes: sbScenes, seconds: 10 } });
+    const nar = await waitJob(editor.token, r.json?.job?.jobId);
+    const narCall = gateway.requests.slice(mark).find(q => /You write the voice-over for a short film/.test(q.body?.messages?.[0]?.content || ''));
+    check('voice-over: written to the running time (about 20 words for 10 s), trimmed at a sentence, one quota slot',
+      nar?.status === 'done' && nar.label === 'Writing the voice-over' && /about 20 words/.test(narCall?.body?.messages?.[0]?.content || '') &&
+      nar.result.words <= 25 && /alone\.$/.test(nar.result.narration) && nar.result.targetWords === 20 && (await editorQuota()) === eq2 + 1,
+      `${nar?.status} ${nar?.error || ''} ${JSON.stringify(nar?.result)}`);
+    await call('POST', `${jobsUrl}/${nar?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-voice', target: { type: 'animation', id: 't3' }, params: { text: 'TONE The keeper climbed alone.', voice: { engine: 'vibevoice', voice: 'en-emma_woman' } } });
+    const vo = await waitJob(editor.token, r.json?.job?.jobId);
+    const voFile = vo?.result?.voiceover;
+    check('voice-over: spoken in the chosen audiobook voice, stored as the user\'s MP3',
+      vo?.status === 'done' && /^film-voiceover-.*\.mp3$/.test(voFile?.filename || '') && voFile.voice?.voice === 'en-emma_woman' && voFile.duration > 1 &&
+      (await fetch(`${call.base}${voFile.url}`, { headers: { Authorization: `Bearer ${editor.token}` } })).status === 200,
+      `${vo?.status} ${vo?.error || ''} ${JSON.stringify(vo?.result)}`);
+    await call('POST', `${jobsUrl}/${vo?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-music', target: { type: 'animation', id: 't3' }, params: { prompt: 'x'.repeat(301), seconds: 30 } });
+    const r2 = await call('POST', jobsUrl, editor.token, { type: 'film-music', target: { type: 'animation', id: 't3' }, params: { prompt: 'piano', seconds: 500 } });
+    check('music: a prompt over 300 characters or a length over 180 s = 400', r.status === 400 && r2.status === 400, `${r.status} ${r2.status}`);
+    mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-music', target: { type: 'animation', id: 't3' }, params: { prompt: 'slow piano, melancholic, instrumental', seconds: 12 } });
+    const mu = await waitJob(editor.token, r.json?.job?.jobId);
+    const muCall = gateway.requests.slice(mark).find(q => q.path.endsWith('/audio/music'));
+    check('music: composed by the bridge from the prompt at the film\'s length, stored as the user\'s MP3',
+      mu?.status === 'done' && /^film-music-.*\.mp3$/.test(mu.result?.music?.filename || '') && muCall?.body?.prompt === 'slow piano, melancholic, instrumental' && muCall.body.seconds === 12,
+      `${mu?.status} ${mu?.error || ''} ${JSON.stringify(mu?.result)}`);
+    await call('POST', `${jobsUrl}/${mu?.jobId}/ack`, editor.token);
+
+    const sound = { voiceover: { filename: voFile?.filename, volume: 1, offset: 0.3 }, music: { filename: mu?.result?.music?.filename, volume: 0.8 } };
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { title: 'With sound', scenes: [
+      { sceneNumber: 1, filename: take1.filename, clipVolume: 0 }, { sceneNumber: 2, filename: take2.filename, transition: 'dissolve', clipVolume: 1.2 }], sound } } });
+    const sc = await waitJob(editor.token, r.json?.job?.jobId);
+    const scp = sc?.result?.project;
+    let scLevel = null;
+    if (scp?.finalVideo?.filename) {
+      const { default: ffmpegPath } = await import('ffmpeg-static');
+      const film = await fetch(`${call.base}${scp.finalVideo.videoUrl}`, { headers: { Authorization: `Bearer ${editor.token}` } });
+      const f = path.join(os.tmpdir(), `regress-sound-${process.pid}.mp4`);
+      fs.writeFileSync(f, Buffer.from(await film.arrayBuffer()));
+      const err = await new Promise((resolve) => { let e = ''; const p = spawn(ffmpegPath, ['-i', f, '-vn', '-af', 'volumedetect', '-f', 'null', '-']); p.stderr.on('data', d => { e += d; }); p.on('exit', () => resolve(e)); });
+      scLevel = Number((err.match(/mean_volume: (-?[\d.]+) dB/) || [])[1]);
+    }
+    check('cut with sound: the voice-over and the music are mixed in (an audible track), the levels kept on the film',
+      sc?.status === 'done' && scp?.finalVideo?.sound?.voiceover === true && scp.finalVideo.sound.music === true && scp.sound?.music?.volume === 0.8 &&
+      scp.scenes[0].clipVolume === 0 && scp.scenes[1].clipVolume === 1.2 && scLevel > -40,
+      `${sc?.status} ${sc?.error || ''} sound ${JSON.stringify(scp?.finalVideo?.sound)} level ${scLevel}`);
+    await call('POST', `${jobsUrl}/${sc?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { scenes: [{ filename: take1.filename }], sound: { music: { filename: 'upload-not-yours.mp3' } } } } });
+    check('cut with sound: music that is not the user\'s = 404', r.status === 404, `status ${r.status}`);
+
+    const { audioGraph } = await import('../services/filmMix.js');
+    const g = audioGraph([{ frames: 48, audioInput: 0 }, { frames: 48, audioInput: null }], [{ seconds: 0.5 }], { blend: [12], total: 84 },
+      { voice: { input: 1, gainDb: 3, offset: 0.5 }, music: { input: 2, gainDb: -6 } });
+    check('sound graph: narration ducks the clips and the music; every bus padded to the film\'s length before the sidechain',
+      (g.match(/sidechaincompress/g) || []).length === 2 && /\[vo\]asplit=3/.test(g) && /adelay=500\|500/.test(g) && /amix=inputs=3/.test(g) &&
+      ['[clips]', '[vo]', '[mu]'].every(l => new RegExp(`apad,atrim=0:3\\.5[^;]*${l.replace(/[[\]]/g, '\\$&')}`).test(g)), g);
+
+    const fs2 = ft.applyMusic(ft.applyVoiceover(ft.applyNarration(fb, { ...nar, target: { type: 'animation', id: 't3' } }), { ...vo, target: { type: 'animation', id: 't3' } }), { ...mu, target: { type: 'animation', id: 't3' } });
+    const snd = fs2.metadata.animationDrafts.t3.sound;
+    check('scene list: the written text, the spoken file and the music land once; what the cut sends',
+      snd.voiceover.text === nar.result.narration && snd.voiceover.filename === voFile.filename && snd.music.filename === mu.result.music.filename &&
+      ft.applyNarration(fs2, { ...nar, target: { type: 'animation', id: 't3' } }) === fs2 &&
+      JSON.stringify(ft.soundForServer(snd)) === JSON.stringify({ voiceover: { filename: voFile.filename, volume: 1, offset: 0.5 }, music: { filename: mu.result.music.filename, volume: 1 } }),
+      JSON.stringify(snd));
   }
 
   // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──
