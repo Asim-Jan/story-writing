@@ -398,6 +398,101 @@ async function addCollaborator(db, bookId, user, role) {
 
 const dbVersion = async (db, bookId) => (await db.query('SELECT version FROM books WHERE id = $1', [bookId])).rows[0].version;
 
+// PORTAL_ONLY against a HEALTHY provider (the preload answers the probe's two documents), on the real server and database:
+// the independent review's findings 1, 2, 3 and 6a at the HTTP level.
+async function portalOnlyEnforced(db, gateway) {
+  console.log('\n== PORTAL_ONLY enforced (healthy provider), break-glass, reset-then-link, session lifetimes');
+  const { default: bcrypt } = await import('bcryptjs');
+  const PW = 'Correct-Horse-9!';
+  const mk = async (label, { role = 'user', sub = null, verified = true } = {}) => {
+    const email = `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}@regress.local`;
+    const { rows } = await db.query(
+      `INSERT INTO users (email, password_hash, name, tier, role, portal_sub, email_verified) VALUES ($1, $2, $3, 'free', $4, $5, $6) RETURNING id, token_version`,
+      [email, bcrypt.hashSync(PW, 4), label, role, sub, verified]);
+    return { id: rows[0].id, email, version: rows[0].token_version };
+  };
+  const tokenFor = (u, over = {}, expiresIn = '1h') => jwt.sign({ userId: u.id, email: u.email, tokenVersion: u.version, ...over }, JWT_SECRET, { expiresIn });
+  const redis = createClient({ url: `redis://${REDIS.host}:${REDIS.port}` });
+  await redis.connect();
+  const resetKeys = async () => { const ks = new Set(); for await (const k of redis.scanIterator({ MATCH: 'password_reset:*', COUNT: 100 })) ks.add(k); return ks; };
+  const srv = await bootServer('rg_main', {
+    SAI_API_BASE_URL: gateway.url, SAI_API_KEY: 'test', PORTAL_OIDC: '1', PORTAL_ISSUER: 'https://portal.test', PORTAL_CLIENT_SECRET: 'regress-client-secret',
+    PORTAL_SESSION_SECRET: 'regress-session-secret-0123456789abcdef', APP_URL: 'https://stories.invalid', PORTAL_ONLY: '1',
+    NODE_OPTIONS: `--import=${path.join(__dirname, 'fake-portal-fetch.mjs')}`,
+  });
+  try {
+    const call = api(srv.base);
+    let r;
+    for (let i = 0; i < 40; i++) { r = await call('GET', '/api/health'); if (r.json?.services?.portalAuth?.providerHealthy) break; await new Promise(res => setTimeout(res, 250)); }
+    check('the provider probe succeeds in the background; PORTAL_ONLY is enforced', r.json?.services?.portalAuth?.providerHealthy === true && r.json?.services?.portalAuth?.only === true, JSON.stringify(r.json?.services?.portalAuth));
+    r = await call('GET', '/api/auth/portal/config');
+    check('public config: only = true (enforced), no secret', r.json?.only === true && Object.keys(r.json).length === 3, JSON.stringify(r.json));
+
+    const reader = await mk('reader');
+    const boss = await mk('boss', { role: 'admin' });
+    r = await call('POST', '/api/auth/login', null, { email: reader.email, password: PW });
+    check('1a. enforced: a normal account is refused, even with the right password (403 PORTAL_ONLY)', r.status === 403 && r.json?.code === 'PORTAL_ONLY', `got ${r.status}`);
+    r = await call('POST', '/api/auth/login', null, { email: boss.email, password: PW });
+    check('1a. break-glass: an ADMIN signs in with the password', r.status === 200 && !!r.json?.token, `got ${r.status}`);
+    r = await call('POST', '/api/auth/login', null, { email: boss.email, password: 'wrong' });
+    check('1a. ...and a wrong admin password is a plain 401', r.status === 401, `got ${r.status}`);
+    r = await call('POST', '/api/auth/register', null, { email: 'new@regress.local', password: PW, name: 'N' });
+    check('1a. local sign-up is refused for everyone (403 PORTAL_ONLY)', r.status === 403 && r.json?.code === 'PORTAL_ONLY', `got ${r.status}`);
+
+    // 2. forgot / reset
+    const linked = await mk('linked', { sub: 'u_regresslinked0001' });
+    const loose = await mk('loose', { verified: false });
+    let before = await resetKeys();
+    r = await call('POST', '/api/auth/forgot-password', null, { email: linked.email });
+    let after = await resetKeys();
+    check('2. forgot-password for a SAI Cloud-linked account: the generic 200, and NO reset token is made', r.status === 200 && /If an account exists/.test(r.json?.message || '') && after.size === before.size, `got ${r.status}`);
+    before = after;
+    r = await call('POST', '/api/auth/forgot-password', null, { email: loose.email });
+    after = await resetKeys();
+    check('2. forgot-password for an UNLINKED account still works (a reset token is made)', r.status === 200 && after.size === before.size + 1, `got ${r.status}, keys ${before.size}->${after.size}`);
+    await redis.set('password_reset:regress-linked', linked.id, { EX: 600 });
+    r = await call('POST', '/api/auth/reset-password', null, { token: 'regress-linked', newPassword: 'Str0ng-Pass-Phrase!9' });
+    check('2. reset-password for a linked account is refused while enforced (403 PORTAL_ONLY)', r.status === 403 && r.json?.code === 'PORTAL_ONLY', `got ${r.status}`);
+    const oldJwt = tokenFor(loose);
+    await redis.set('password_reset:regress-loose', loose.id, { EX: 600 });
+    r = await call('POST', '/api/auth/reset-password', null, { token: 'regress-loose', newPassword: 'Str0ng-Pass-Phrase!9' });
+    const lrow = (await db.query('SELECT email_verified, email_verification_token, token_version FROM users WHERE id = $1', [loose.id])).rows[0];
+    check('2. reset-password for an unlinked, UNVERIFIED account works and marks the email verified', r.status === 200 && lrow.email_verified === true && lrow.email_verification_token === null, `got ${r.status} ${JSON.stringify(lrow)}`);
+    check('2. ...and bumps token_version, so the old JWT dies', lrow.token_version === loose.version + 1 && (await call('GET', '/api/auth/me', oldJwt)).status === 401);
+    r = await call('POST', '/api/auth/login', null, { email: loose.email, password: 'Str0ng-Pass-Phrase!9' });
+    check('2. ...and under enforced PORTAL_ONLY that non-admin still cannot use the new password to sign in (SAI Cloud is the door)', r.status === 403);
+
+    // 6a. change-password
+    const lifetime = (tok) => { const d = jwt.decode(tok); return d.exp - d.iat; };
+    const portalUser = await mk('portaluser', { sub: 'u_regressportal0002' });
+    r = await call('POST', '/api/auth/change-password', tokenFor(portalUser, { via: 'portal' }, '1h'), { currentPassword: PW, newPassword: 'Str0ng-Pass-Phrase!9' });
+    const t1 = r.json?.token;
+    check('6a. a portal session of 1 h gets a replacement token of <= 1 h, not 7 days', r.status === 200 && lifetime(t1) <= 3600 && lifetime(t1) > 3000 && jwt.decode(t1).via === 'portal', `got ${r.status} ${t1 && lifetime(t1)}`);
+    const portalUser2 = await mk('portaluser2', { sub: 'u_regressportal0003' });
+    r = await call('POST', '/api/auth/change-password', tokenFor(portalUser2, {}, '7d'), { currentPassword: PW, newPassword: 'Str0ng-Pass-Phrase!9' });
+    check('6a. a linked user holding a 7-day password token is capped at 24 h', r.status === 200 && lifetime(r.json?.token) <= 86400, `got ${r.status} ${r.json?.token && lifetime(r.json.token)}`);
+    const plain = await mk('plainpw');
+    r = await call('POST', '/api/auth/change-password', tokenFor(plain, {}, '1h'), { currentPassword: PW, newPassword: 'Str0ng-Pass-Phrase!9' });
+    check('6a. an unlinked password user keeps the 7 days they always had', r.status === 200 && lifetime(r.json?.token) === 7 * 24 * 3600, `got ${r.status}`);
+    r = await call('GET', '/api/auth/me', t1);
+    check('6a. the replacement token works (it carries the bumped token_version)', r.status === 200, `got ${r.status}`);
+
+    // second review, finding 3: the PORTAL_ONLY refusal runs AFTER the limiters, so a flood of blocked logins is throttled
+    // before each one costs a database query. (Last in this section: it spends this client's whole per-IP budget.)
+    const same = [];
+    for (let i = 0; i < 8; i++) same.push((await call('POST', '/api/auth/login', null, { email: reader.email, password: 'x' })).status);
+    const s429 = same.indexOf(429);   // this address was already refused once above, so the 5th refusal in all is the last 403
+    check('3. the same blocked address is rate limited after 5 refusals (403 ..., then 429 and stays 429)', s429 === 4 && same.slice(0, s429).every(c => c === 403) && same.slice(s429).every(c => c === 429), same.join(','));
+    const varied = [];
+    for (let i = 0; i < 45; i++) varied.push((await call('POST', '/api/auth/login', null, { email: `flood${i}-${Date.now()}@regress.local`, password: 'x' })).status);
+    const first429 = varied.indexOf(429);
+    check('3. a flood that changes the address every time is rate limited too (per-IP budget), and stays limited', first429 > 0 && first429 <= 31 && varied.slice(first429).every(c => c === 429) && varied.slice(0, first429).every(c => c === 403), varied.join(','));
+  } finally {
+    await srv.stop();
+    await redis.quit();
+  }
+}
+
 // ─── 1. fresh install + the HTTP suite ──────────────────────────────────────
 async function mainSuite(gateway) {
   console.log('\n== fresh install');
@@ -673,6 +768,62 @@ async function mainSuite(gateway) {
       ['Chapter 3', 'Chapter 3'], ['Part One: The Sea', 'Part One: The Sea'], ['1984', '1984'], ['One Day in June', 'One Day in June']];
     const wrongTitles = titleCases.filter(([t, want]) => stripChapterNumber(t) !== want).map(([t, want]) => `${t} -> ${stripChapterNumber(t)} (want ${want})`);
     check('a title loses only its own number prefix ("Chapter Twenty-One" stays whole)', wrongTitles.length === 0, wrongTitles.join('; '));
+
+    console.log('\n== sign in with SAI Cloud (real server, real Postgres)');
+    const ucols = (await db.query(`SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('portal_sub','portal_linked_at')`)).rows;
+    check('users has portal_sub + portal_linked_at, both nullable, unique index on portal_sub',
+      ucols.length === 2 && ucols.every(c => c.is_nullable === 'YES')
+      && (await db.query(`SELECT 1 FROM pg_indexes WHERE indexname = 'users_portal_sub_key' AND indexdef LIKE '%UNIQUE%'`)).rowCount === 1);
+    r = await call('GET', '/api/auth/portal/config');
+    check('feature OFF by default: /api/auth/portal/config says so', r.status === 200 && r.json?.enabled === false && r.json?.only === false, JSON.stringify(r.json));
+    r = await fetch(srv.base + '/auth/portal/login', { redirect: 'manual' });
+    check('feature OFF: /auth/portal/login is a 404, not the SPA', r.status === 404, `got ${r.status}`);
+    r = await call('GET', '/api/health');
+    check('/api/health reports portalAuth as off', r.json?.services?.portalAuth?.enabled === false && r.json?.services?.portalAuth?.requested === false, JSON.stringify(r.json?.services?.portalAuth));
+    const linkU = await makeUser(db, 'linkable');
+    await db.query(`UPDATE users SET portal_sub = 'u_regress0000000001' WHERE id = $1`, [linkU.id]);
+    r = await call('GET', '/api/auth/me', linkU.token);
+    check('/api/auth/me reports portalLinked for a linked user', r.status === 200 && r.json?.user?.portalLinked === true, JSON.stringify(r.json?.user));
+    r = await call('GET', '/api/auth/me', owner.token);
+    check('/api/auth/me: not portal-linked for everyone else', r.json?.user?.portalLinked === false);
+
+    // second server on the same database, feature ON with an unreachable issuer + PORTAL_ONLY + SIGNUPS_CLOSED
+    const on = await bootServer('rg_main', {
+      SAI_API_BASE_URL: gateway.url, SAI_API_KEY: 'test', PORTAL_OIDC: '1', PORTAL_ISSUER: 'https://portal.invalid', PORTAL_CLIENT_SECRET: 'regress-client-secret',
+      PORTAL_SESSION_SECRET: 'regress-session-secret-0123456789abcdef', APP_URL: 'https://stories.invalid', PORTAL_ONLY: '1', SIGNUPS_CLOSED: '1',
+    });
+    try {
+      const onCall = api(on.base);
+      r = await onCall('GET', '/api/auth/portal/config');
+      check('feature ON, PORTAL_ONLY requested but the portal is UNREACHABLE: config says enabled, only=false (not enforced), signupsClosed (and no secret)', r.json?.enabled === true && r.json?.only === false && r.json?.signupsClosed === true && Object.keys(r.json).length === 3, JSON.stringify(r.json));
+      r = await fetch(on.base + '/auth/portal/login', { redirect: 'manual' });
+      check('feature ON, portal unreachable: login fails SOFT to the error page (no crash, no hang)', r.status === 302 && /\/auth\/portal\/error\?code=unavailable$/.test(r.headers.get('location') || ''), `${r.status} ${r.headers.get('location')}`);
+      r = await onCall('POST', '/api/auth/login', null, { email: 'a@b.co', password: 'x' });
+      check('...so password login still runs (401 bad credentials, not 403): an outage cannot lock everyone out', r.status === 401, `got ${r.status} ${JSON.stringify(r.json)}`);
+      r = await onCall('POST', '/api/auth/register', null, { email: 'a@b.co', password: 'Passw0rd!x', name: 'A' });
+      check('SIGNUPS_CLOSED: local sign-up answers 403', r.status === 403 && r.json?.code === 'SIGNUPS_CLOSED', `got ${r.status}`);
+      r = await onCall('GET', '/api/auth/me', linkU.token);
+      check('an existing session keeps working', r.status === 200, `got ${r.status}`);
+      r = await onCall('GET', '/api/health');
+      const pa = r.json?.services?.portalAuth;
+      check('/api/health reports portalAuth on, provider NOT healthy, PORTAL_ONLY not enforced, without secrets',
+        pa?.enabled === true && pa?.onlyRequested === true && pa?.only === false && pa?.providerHealthy === false && /NOT enforced/.test(pa?.note || '') && !JSON.stringify(r.json).includes('regress-client-secret'), JSON.stringify(pa));
+    } finally {
+      await on.stop();
+    }
+    await portalOnlyEnforced(db, gateway);
+
+    // a misconfigured ON (no secrets) must leave the pod UP and the password login working
+    const bad = await bootServer('rg_main', { SAI_API_BASE_URL: gateway.url, SAI_API_KEY: 'test', PORTAL_OIDC: '1', PORTAL_ONLY: '1', APP_URL: 'https://stories.invalid' });
+    try {
+      const badCall = api(bad.base);
+      r = await badCall('GET', '/api/health');
+      check('PORTAL_OIDC=1 without secrets: pod healthy, feature off with a reason', r.status === 200 && r.json?.services?.portalAuth?.enabled === false && /PORTAL_CLIENT_SECRET/.test(r.json?.services?.portalAuth?.reason || ''), JSON.stringify(r.json?.services?.portalAuth));
+      r = await badCall('POST', '/api/auth/login', null, { email: 'nobody@regress.local', password: 'x' });
+      check('...and PORTAL_ONLY is ignored then: password login still runs (401, not 403)', r.status === 401, `got ${r.status}`);
+    } finally {
+      await bad.stop();
+    }
   } finally {
     await srv.stop();
     await db.end();

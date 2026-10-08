@@ -50,12 +50,17 @@ import { VideoSceneParser } from './services/videoSceneParser.js';
 import { VideoGenerator } from './services/videoGenerator.js';
 import { VideoAssembler, TRANSITIONS, TRANSITION_IDS } from './services/videoAssembler.js';
 import { writeTranscript, cleanGuidance, GUIDANCE, GUIDANCE_NOTES_MAX } from './services/transcriptWriter.js';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { MemoryStore } from 'express-rate-limit';
 import { validate, schemas } from './middleware/validation.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { runMigrations } from './db/migrate.js';
 import { readFileSync } from 'fs';
 import { initializeAuthorization } from './middleware/authorization.js';
+import { features } from './config/features.js';
+import { loadPortalConfig } from './portalAuth/config.js';
+import { createPortalAuth } from './portalAuth/routes.js';
+import { pgStore as portalStore } from './portalAuth/store.js';
+import { createOnceStore, reissueLifetimeS } from './portalAuth/session.js';
 import { ApiResponse } from './utils/responses.js';
 import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
@@ -589,9 +594,13 @@ const authLimiter = rateLimit({
 });
 
 // SECURITY: Rate limit registration endpoint to prevent spam/bot accounts
+// The counter is a named store so SAI Cloud sign-ups (a new account made from the OIDC callback) spend from the SAME budget.
+const REGISTRATION_MAX = 3;
+const registrationStore = new MemoryStore();
 const registrationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // 3 registrations per hour per IP
+  max: REGISTRATION_MAX, // 3 registrations per hour per IP
+  store: registrationStore,
   message: 'Too many accounts created from this IP, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
@@ -832,8 +841,25 @@ async function searchWeb(query) {
 
 // ============ AUTHENTICATION ROUTES ============
 
+// Sign in with SAI Cloud (OpenID Connect). OFF unless PORTAL_OIDC=1; see server/portalAuth and STORIES-SAI-CLOUD.md.
+// PORTAL_ONLY=1 turns the password routes below off (the final cutover); SIGNUPS_CLOSED=1 refuses new accounts.
+const portalCfg = loadPortalConfig(process.env);
+if (portalCfg.enabled && !features.shouldReadFromPostgres()) {
+  portalCfg.enabled = false; portalCfg.only = false; portalCfg.reason = 'needs PostgreSQL user storage (READ_FROM_POSTGRES)';
+}
+if (portalCfg.requested && !portalCfg.enabled) console.error('[portal-auth] PORTAL_OIDC=1 but SAI Cloud sign-in is DISABLED:', portalCfg.reason);
+const portalAuth = createPortalAuth({
+  cfg: portalCfg, store: portalStore, jwtSecret: JWT_SECRET,
+  audit: (email, userId, ok, reason, req) => logLoginAttempt(email, userId, ok, reason, req),
+  // a NEW account made through SAI Cloud counts against the same per-IP budget as POST /api/auth/register
+  allowSignup: async (req) => (await registrationStore.increment(`register:${req.ip}`)).totalHits <= REGISTRATION_MAX,
+  // the SPA token hand-off is one-shot; Redis (when connected) makes that true across replicas and restarts
+  handoff: createOnceStore({ redis: () => { try { return getRedisClient(); } catch { return null; } } }),
+});
+app.use(portalAuth.router);
+
 // Register new user
-app.post('/api/auth/register', registrationLimiter, async (req, res) => {
+app.post('/api/auth/register', portalAuth.blockPasswordAuth, portalAuth.blockSignups, registrationLimiter, async (req, res) => {
   try {
     const { password } = req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -966,7 +992,19 @@ async function logUserActivity(userId, activityType, details = {}, req) {
   }
 }
 
-app.post('/api/auth/login', authLimiter, async (req, res) => {
+// PORTAL_ONLY refusals cost one database query each (blockPasswordLogin asks "is this an admin?"). authLimiter is keyed by
+// email+IP, so a flood that changes the address each time would not trip it: this per-IP budget does, and only counts while
+// PORTAL_ONLY is enforced and only the refusals (a successful admin break-glass login is not counted).
+const portalOnlyRefusalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: 'Too many login attempts, please try again later',
+  skipSuccessfulRequests: true,
+  skip: () => !portalAuth.onlyActive(),
+  keyGenerator: (req) => `portal-only:${req.ip}`,
+});
+// both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query
+app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.blockPasswordLogin, async (req, res) => {
   try {
     console.log('Login attempt for:', req.body?.email);
     const { email, password } = req.body;
@@ -1053,6 +1091,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
       tier: req.user.tier || 'free',
       status: req.user.status || 'active',
       emailVerified: !!(req.user.email_verified ?? req.user.emailVerified),
+      portalLinked: !!req.user.portal_sub,
       books: req.user.books,
       createdAt: req.user.createdAt
     }
@@ -1087,6 +1126,10 @@ app.post('/api/auth/forgot-password', emailSendLimiter, async (req, res) => {
       // Don't reveal if user exists
       return res.json(generic);
     }
+
+    // PORTAL_ONLY (while enforced): an account linked to SAI Cloud signs in there, so it gets no reset mail. The answer is the
+    // same generic one, so this reveals nothing about which addresses have accounts. Unlinked accounts (and admins) still reset.
+    if (!portalAuth.passwordResetAllowed(user)) return res.json(generic);
 
     // Generate secure reset token with UUID
     const resetToken = uuidv4();
@@ -1137,20 +1180,18 @@ app.post('/api/auth/reset-password', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    if (!portalAuth.passwordResetAllowed(user)) return res.status(403).json(portalAuth.onlyBody);
+
     // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // Update user password
-    const updatedUser = {
-      ...user,
-      password: hashedPassword
-    };
+    // Update user password (only the password: no stale copy of the rest of the user is written back)
+    await updateUser(userId, { password: hashedPassword });
 
-    await updateUser(userId, updatedUser);
-
-    // Bump token_version: every issued JWT dies at the next request (the
-    // stolen-token case a password reset must always close).
-    await getPool().query('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1', [userId]);
+    // Bump token_version: every issued JWT dies at the next request (the stolen-token case a password reset must always
+    // close). The emailed link also proves the person controls this mailbox, so the Stories email counts as verified from
+    // now on: that is what lets an account whose old password is forgotten link to SAI Cloud (reset, then sign in there).
+    await UserRepository.completePasswordReset(userId);
 
     // Delete reset token
     await deletePasswordResetToken(token);
@@ -1194,13 +1235,8 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // Update user password
-    const updatedUser = {
-      ...user,
-      password: hashedPassword
-    };
-
-    await updateUser(userId, updatedUser);
+    // Update user password (only the password: no stale copy of the rest of the user is written back)
+    await updateUser(userId, { password: hashedPassword });
 
     // Bump token_version: every OTHER session dies. Then hand THIS session a
     // fresh token carrying the new version — the old code bumped without
@@ -1210,16 +1246,21 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
       [userId]
     );
     const newVersion = bump.rows[0]?.token_version ?? 1;
+    // A portal-linked user's session is 24 h: the replacement token gets what is left of the current one (at most 24 h), not a
+    // fresh 7 days. Password-only users keep the 7 days they always had.
+    let current = {};
+    try { current = jwt.verify(req.cookies.token || req.headers.authorization?.split(' ')[1] || '', JWT_SECRET) || {}; } catch { /* authenticateToken accepted it a moment ago */ }
+    const ttlS = reissueLifetimeS({ exp: current.exp, nowS: Math.floor(Date.now() / 1000), portalLinked: !!user.portal_sub });
     const freshToken = jwt.sign(
-      { userId: req.user.userId || req.user.id, email: req.user.email, tokenVersion: newVersion },
+      { userId: req.user.userId || req.user.id, email: req.user.email, tokenVersion: newVersion, ...(current.via === 'portal' ? { via: 'portal' } : {}) },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: ttlS }
     );
     res.cookie('token', freshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      maxAge: ttlS * 1000
     });
 
     console.log(`Password changed for user ${userId}`);
@@ -3257,11 +3298,8 @@ app.post('/api/agent/create-book', authenticateToken, aiLimiter, checkAIQuota, c
     const bookId = created?.id;
 
     // Add book to user's book list
-    const updatedUser = {
-      ...req.user,
-      books: [...(req.user.books || []), bookId],
-    };
-    await updateUser(req.user.id, updatedUser);
+    // only the book list: spreading req.user would write back a stale password hash / role / status / portal link
+    await updateUser(req.user.id, { books: [...(req.user.books || []), bookId] });
 
     // Send final result
     res.write(
@@ -3598,11 +3636,7 @@ app.delete('/api/books/:id', authenticateToken, async (req, res) => {
     // Remove book from user's book list
     if (req.user.books && req.user.books.includes(id)) {
       const updatedBooks = req.user.books.filter(bookId => bookId !== id);
-      const updatedUser = {
-        ...req.user,
-        books: updatedBooks
-      };
-      await updateUser(req.user.id, updatedUser);
+      await updateUser(req.user.id, { books: updatedBooks });   // only the book list (a stale copy of the user must not be written back)
     }
 
     // Update quota usage after book deletion
@@ -5617,6 +5651,7 @@ app.get('/api/health', async (req, res) => {
   };
 
   health.services.email = { configured: isEmailConfigured() };
+  health.services.portalAuth = portalAuth.health();
 
   // Overall status
   health.status = isHealthy ? 'healthy' : 'degraded';
@@ -6105,11 +6140,8 @@ app.post('/api/books/import/:importId/create-book', authenticateToken, async (re
     });
 
     // Add book to user's book list
-    const updatedUser = {
-      ...req.user,
-      books: [...(req.user.books || []), bookId],
-    };
-    await updateUser(req.user.id, updatedUser);
+    // only the book list: spreading req.user would write back a stale password hash / role / status / portal link
+    await updateUser(req.user.id, { books: [...(req.user.books || []), bookId] });
 
     // Update import record
     importRecord.bookId = bookId;
@@ -9459,7 +9491,8 @@ const httpServer = app.listen(PORT, () => {
 
   if (minioAvailable && !process.env.AWS_S3_BUCKET) {
     console.log(`    MinIO Console: http://${process.env.MINIO_ENDPOINT || 'localhost'}:9001`);
-    console.log(`    Username: ${process.env.MINIO_ACCESS_KEY || 'minioadmin'}`);
+    // development convenience only: production logs never carry an access key (or a default one)
+    if (process.env.NODE_ENV !== 'production') console.log(`    Username: ${process.env.MINIO_ACCESS_KEY || 'minioadmin'}`);
   }
 
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';

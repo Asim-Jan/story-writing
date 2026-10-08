@@ -222,7 +222,8 @@ export class UserDataService {
     // Update PostgreSQL if enabled
     if (features.shouldWriteToPostgres()) {
       const pgUpdates = this.mapUserFieldsToPostgres(updates);
-      user = await UserRepository.update(userId, pgUpdates);
+      // nothing that belongs in users (e.g. only the Redis-era book list): nothing to write
+      user = Object.keys(pgUpdates).length ? await UserRepository.update(userId, pgUpdates) : await UserRepository.findById(userId);
     }
 
     // Update Redis if needed

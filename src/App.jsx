@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AudioPlayerProvider } from './contexts/AudioPlayerContext';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -10,6 +10,7 @@ import GlobalAudioPlayer from './components/GlobalAudioPlayer';
 import AdminDashboard from './components/AdminDashboard';
 import EmailVerificationPage from './components/EmailVerificationPage';
 import EmailVerificationBanner from './components/EmailVerificationBanner';
+import { PortalDonePage, PortalLinkPage, PortalErrorPage } from './components/PortalAuthPages';
 
 function AppContent() {
   const { user, loading, login, isAuthenticated } = useAuth();
@@ -31,6 +32,10 @@ function AppContent() {
       setCurrentView('reset-password');
       return;
     }
+    // Sign in with SAI Cloud: the pages the round trip lands on (public routes)
+    if (path === '/auth/portal/done') { setCurrentView('portal-done'); return; }
+    if (path === '/auth/portal/link') { setCurrentView('portal-link'); return; }
+    if (path === '/auth/portal/error') { setCurrentView('portal-error'); return; }
 
     if (isAuthenticated) {
       const bookId = urlParams.get('book');
@@ -58,6 +63,13 @@ function AppContent() {
     return () => window.removeEventListener('bookCreated', handleBookCreated);
   }, []);
 
+  const onPortalSignedIn = useCallback((u, t, returnTo) => {
+    // the URL first: the effect above opens ?book=... once the user is set
+    window.history.replaceState({}, '', returnTo || '/');
+    setCurrentView('list');
+    login(u, t);
+  }, [login]);
+
   const handleSelectBook = (bookId) => {
     setSelectedBookId(bookId);
     setCurrentView('editor');
@@ -80,6 +92,15 @@ function AppContent() {
     setCurrentView('admin');
     window.history.pushState({}, '', '?admin=true');
   };
+
+  // SAI Cloud sign-in landing pages. onPortalSignedIn stores the session exactly as the password login does.
+  if (currentView === 'portal-done' || currentView === 'portal-link') {
+    const Page = currentView === 'portal-done' ? PortalDonePage : PortalLinkPage;
+    return <Page onSignedIn={onPortalSignedIn} />;
+  }
+  if (currentView === 'portal-error') {
+    return <PortalErrorPage />;
+  }
 
   // Show email verification page (public route - no auth required)
   if (currentView === 'verify-email') {
