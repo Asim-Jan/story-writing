@@ -59,6 +59,7 @@ import { initializeAuthorization } from './middleware/authorization.js';
 import { features } from './config/features.js';
 import { loadPortalConfig } from './portalAuth/config.js';
 import { createPortalAuth } from './portalAuth/routes.js';
+import { loginLimiterKey, normalizeEmail } from './portalAuth/loginBudget.js';
 import { pgStore as portalStore } from './portalAuth/store.js';
 import { createOnceStore, reissueLifetimeS } from './portalAuth/session.js';
 import { ApiResponse } from './utils/responses.js';
@@ -543,6 +544,9 @@ async function processStripeWebhook(event) {
   }
 }
 
+// The hidden administrator sign-in page marks its login POST; that surface is hardened (same-origin, 2 KB body, its own
+// failure budget, one uniform failure, an audit line) AHEAD of the 10 MB parser. Unmarked requests pass straight through.
+app.use('/api/auth/login', (req, res, next) => portalAuth.adminLogin.guard(req, res, next));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
@@ -587,10 +591,10 @@ const authLimiter = rateLimit({
   message: 'Too many login attempts, please try again later',
   skipSuccessfulRequests: true, // Only count failed attempts
   // SECURITY: Use email + IP to prevent both distributed attacks and targeted attacks
-  keyGenerator: (req) => {
-    const email = req.body?.email || 'unknown';
-    return `auth:${email}:${req.ip}`;
-  },
+  // The address is NORMALISED (trim, lower case, NFKC) the way the account lookup is blind to case and spaces: "Admin@x",
+  // " admin@x " and "ADMIN@X" are one account, so they share one budget. The per-ACCOUNT budget (accountBudget, below) is what
+  // stops a client that rotates its address.
+  keyGenerator: loginLimiterKey,
 });
 
 // SECURITY: Rate limit registration endpoint to prevent spam/bot accounts
@@ -617,7 +621,7 @@ const emailSendLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many emails requested. Please wait a while and try again.' },
-  keyGenerator: (req) => `email:${String(req.body?.email || req.user?.userId || '').toLowerCase()}:${req.ip}`,
+  keyGenerator: (req) => `email:${normalizeEmail(req.body?.email) || String(req.user?.userId || '').toLowerCase()}:${req.ip}`,
 });
 
 // Redis client - MUST be created before session middleware
@@ -864,6 +868,8 @@ const portalAuth = createPortalAuth({
   handoff: createOnceStore({ redis: () => { try { return getRedisClient(); } catch { return null; } } }),
   // Settings > "Connect SAI Cloud" is for the signed-in user
   authenticate: authenticateToken,
+  // the admin sign-in page's failure budget is shared across replicas through Redis when it is connected
+  redis: () => { try { return getRedisClient(); } catch { return null; } },
 });
 app.use(portalAuth.router);
 
@@ -1012,10 +1018,13 @@ const portalOnlyRefusalLimiter = rateLimit({
   skip: () => !portalAuth.onlyActive(),
   keyGenerator: (req) => `portal-only:${req.ip}`,
 });
-// both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query
-app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.blockPasswordLogin, async (req, res) => {
+// both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query. accountBudget comes
+// after them (a request an IP limiter already refused does not spend the account's budget) and before the query too.
+app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.adminLogin.accountBudget, portalAuth.blockPasswordLogin, async (req, res) => {
   try {
-    console.log('Login attempt for:', req.body?.email);
+    // the admin sign-in page's requests keep the address out of the log (its own audit line says what happened)
+    const loginLog = (...a) => { if (!req.adminLocalLogin) console.log(...a); };
+    loginLog('Login attempt for:', req.body?.email);
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -1029,12 +1038,15 @@ app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.bl
     console.log('User found:', !!user);
 
     if (!user) {
-      console.log('User not found for email:', email);
+      loginLog('User not found for email:', email);
+      // from the admin page an unknown address costs what a wrong password costs (no timing oracle)
+      if (req.adminLocalLogin) await portalAuth.adminLogin.dummyCompare(password);
       await logLoginAttempt(email, null, false, 'user_not_found', req);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Verify password
+    req.loginAccountId = user.id;   // for the admin page's audit line only
     const validPassword = await bcrypt.compare(password, user.password);
     console.log('Password valid:', validPassword);
 
@@ -1063,7 +1075,7 @@ app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.bl
     // Log successful login
     await logLoginAttempt(email, user.id, true, null, req);
 
-    console.log('Login successful for:', email);
+    loginLog('Login successful for:', email);
     res.json({
       user: {
         id: user.id,
