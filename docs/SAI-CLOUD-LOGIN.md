@@ -98,17 +98,54 @@ misconfigured in a way the health probe cannot see, or down while the probe stil
 * **What the marker adds** (`guard`, mounted ahead of the 10 MB body parser; requests without the marker are untouched):
   same-origin only (`Sec-Fetch-Site` must be `same-origin` when sent, `Origin` must be this site, else `403`); `application/json` only (`415`);
   2 KB body cap (`413`); its **own budget of 5 failures per 15 minutes per account and per IP class** (/24 for IPv4, /64 for IPv6), spent before
-  the attempt and given back on success so parallel guesses cannot slip through, kept in Redis when connected (so replicas agree) and in process
-  memory otherwise; a locked request gets `429` and never reaches the login handler; and **one uniform failure**: a wrong password, an unknown
-  address, a non-admin under `PORTAL_ONLY` and a suspended account all answer the same `401` with the same text, and each costs one bcrypt
-  compare, so neither answer nor timing class tells them apart. The page shows "Too many attempts. Try again later." for `429` only.
+  the attempt and given back on success so parallel guesses cannot slip through; a locked request gets `429` and never reaches the login handler.
+  The IP class is charged first and an account counter only after it, so a flood of made-up addresses from one class cannot touch the real account's counter.
+* **One uniform failure, and what "uniform" covers.** Every refusal that reaches the credential check (a wrong password, an unknown address, a
+  non-admin under `PORTAL_ONLY`, a suspended account) is the **same `401` with the same text**. Refusals that happen *before* an account is touched
+  are different statuses, but generic and carry no information about any account: a wrong `Origin` or `Sec-Fetch-Site` is `403`, a body that is not JSON is
+  `400`, a body over 2 KB is `413`, a content type other than JSON is `415`, a locked request is `429`. The page shows "Too many attempts. Try again
+  later." for `429` only. Timing: a non-admin or unknown address costs one bcrypt compare, like a wrong password; the remaining difference (an
+  admin account's request also does its database writes) is about 2 to 3 ms, which is not exploitable over a network. **`login_history` still stores the full
+  email and IP for these requests**, as it does for every login (the page's own audit log line, below, does not).
   Every attempt writes one log line `[admin-local-login] outcome=... acct=<user id or unknown> ipclass=<a.b.c.0/24> ...` (never the email, the password or the full address).
-* **When it exists:** only while SAI Cloud sign-in is enabled (`PORTAL_OIDC=1` and correctly configured). Otherwise the page, its script and the
-  marked login answer `404` (the normal form is the way in, and a hidden extra surface would be pointless). With `PORTAL_ONLY` off the page works
-  and is simply the same login.
+* **When it exists:** only while SAI Cloud sign-in is enabled (`PORTAL_OIDC=1` and correctly configured). Otherwise the page and its script fall
+  through to whatever the app answers for **any unknown path** (so this build is not fingerprinted by them) and a marked login is `404` (the normal form
+  is the way in, and a hidden extra surface would be pointless). With `PORTAL_ONLY` off the page works and is simply the same login.
+* **The form cannot send anything without its script.** The page's form is `hidden`, has no `action` and is `method="dialog"`; the script un-hides it and
+  sends the credentials itself with `fetch`. If the script fails to load the visitor sees "This page needs JavaScript to sign in" and no form, and the CSP
+  has `form-action 'none'` so the browser would refuse a form submission anyway.
+
+## Password sign-in budgets (every password login)
+
+Review of the admin page found that the normal `POST /api/auth/login` was limited only per *typed* email plus IP, so `Admin@x`, ` admin@x ` and `ADMIN@X`
+each got their own budget and a rotating `X-Forwarded-For` multiplied it again. Now:
+
+* **One spelling per account.** Every login limiter keys on the address *normalised* the way the account lookup is blind to it: trimmed, lower case,
+  Unicode NFKC (`normalizeEmail` in `server/portalAuth/loginBudget.js`). Variants share one budget.
+* **A per-account failure budget on every password login**, marked or not: **10 failures per 15 minutes per account** for the normal form
+  (`accountBudget`), **5** for the admin page, on the **same counter** (key `stories:admin-login:acct:<hash of the normalised address>`).
+  The attempt is counted before it runs and given back when the password turns out right: **a successful password never counts**.
+  The counter is not keyed on the client address at all, so rotating addresses or header values cannot multiply guesses on one account.
+  The window is **fixed**: it starts at the first failure, refused attempts do not extend it, and it ends 15 minutes later (the Redis script
+  repairs a key that ever lost its expiry).
+* **Decision: one shared counter, and a lock is a short pause, not a lock-out.** Failures from the page and the normal form add up. At 5 the page is
+  locked for that account (the tighter limit), at 10 the normal form is too; either clears on its own after at most 15 minutes. So **an attacker who knows
+  an admin's email can slow that admin's password sign-in down for 15 minutes**, whichever door they use; the cost to them is one request per
+  guess and the admin's way round is the other door below its limit, or waiting. **SAI Cloud sign-in is unaffected** by this counter: it is the primary
+  path, has no password to guess, and never passes through it. (The alternative, a separate counter per door, would let an attacker spend 5 + 10 guesses per
+  window instead of 10, and would not stop the 15 minute pause either, so it was not chosen.)
+* **Where the counter lives.** Redis when connected (so replicas agree; one atomic Lua step does the increment and sets the window), this process's memory
+  otherwise, also when Redis times out. The memory fallback is **per process**: with N replicas and Redis down, a caller has N budgets. When that happens
+  one log line a minute says so (`limiter store (redis) ... using this process's memory (the budget is then per replica)`). The fallback cannot be flushed by
+  volume: eviction is least-recently-used and never takes a key at half its budget or more, one IP class can create only 300 new account keys per window, and a table
+  full of attacked keys refuses new ones rather than forgetting old ones.
+* **The client address** for the per-IP limiters is Express's `req.ip` with `trust proxy` = 2 hops (`TRUST_PROXY_HOPS`, Cloudflare then Traefik): it
+  counts from the **right** of `X-Forwarded-For`, the entries our own proxies appended, and never believes the leftmost, client-typed one. A spoofed leftmost
+  value is not a fresh budget (tested). If the number of proxies in front of the app changes, change `TRUST_PROXY_HOPS` with it.
+
 * **What it does not protect against:** an administrator's password being weak, reused or phished. **Stories has no MFA**, so this page makes a
-  session from a password alone; use a long, unique admin password. An attacker can lock one admin account out of this page for 15 minutes by
-  failing five times on purpose (SAI Cloud sign-in and the unmarked endpoint are unaffected). The session is the normal 7 day password token
+  session from a password alone; use a long, unique admin password. An attacker who knows the admin's email can lock this page for that account for 15 minutes by
+  failing five times on purpose (and slow the normal form the same way after ten; see the budgets section; SAI Cloud sign-in is unaffected). The session is the normal 7 day password token
   and the page does not appear in the SPA, but a signed-in admin's browser is as trusted as ever. The existing login handler's own
   `login_history` row still records the address typed (as for every login).
 
