@@ -42,25 +42,31 @@ const firstName = (s) => norm(s).split(' ')[0] || '';
 // A scene's characters entry is normally a name; tolerate { name } objects.
 const sceneName = (entry) => (typeof entry === 'string' ? entry : entry?.name || '');
 
-// The character's reference image: the main image, else the newest portrait
-// reference. referenceImages is kept newest first, but createdAt decides when
-// present.
+// The character's reference image, as the server picks it: the main image
+// unless it is a reference sheet (several views of one person, which the
+// keyframe copies), else the newest portrait, else the sheet.
+const SHEET_KINDS = new Set(['turnaround', 'turnaround-quad', 'expressions', 'qwen-sheet']);
 export const characterReferenceUrl = (character) => {
   if (!character) return null;
-  if (character.imageUrl) return character.imageUrl;
-  const portraits = (character.referenceImages || []).filter(r => r?.kind === 'portrait' && r.imageUrl);
-  if (!portraits.length) return null;
+  const refs = character.referenceImages || [];
+  const mainIsSheet = character.imageUrl && refs.some(r => r?.imageUrl === character.imageUrl && SHEET_KINDS.has(r.kind));
+  if (character.imageUrl && !mainIsSheet) return character.imageUrl;
+  const portraits = refs.filter(r => r?.kind === 'portrait' && r.imageUrl);
+  if (!portraits.length) return character.imageUrl || null;
   const stamp = (r) => Date.parse(r.createdAt || '') || 0;
   return portraits.reduce((best, r) => (stamp(r) > stamp(best) ? r : best), portraits[0]).imageUrl;
 };
 
-// Match a scene name to a book character: full name (case-insensitive), then
-// first name. The first character in book order wins a tie.
+// Match a scene name to a book character: full name (case-insensitive), an
+// "also known as" name, then first name. The first character in book order
+// wins a tie.
 export const matchCharacter = (name, characters = []) => {
   const full = norm(name);
   if (!full) return null;
   const byFull = characters.find(c => norm(c?.name) === full);
   if (byFull) return byFull;
+  const byAlias = characters.find(c => (c?.aliases || []).some(a => norm(a) === full));
+  if (byAlias) return byAlias;
   const first = firstName(name);
   return characters.find(c => firstName(c?.name) === first) || null;
 };

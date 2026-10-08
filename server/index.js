@@ -18,7 +18,7 @@ import { findMissing } from './enhance/missing.js';
 import { checkPlaceDuplicates } from './enhance/placeDuplicates.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
-import { directFilm, FILM_STYLES } from './services/filmDirector.js';
+import { directFilm, drawStoryboard, FILM_STYLES } from './services/filmDirector.js';
 import { artStyleOf } from './services/artStyles.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
@@ -4684,6 +4684,7 @@ const MEDIA_JOB_TARGETS = {
   image: ['character', 'location', 'chapter', 'cover', 'visual'],
   animation: ['animation'],
   'film-join': ['animation'],
+  storyboard: ['animation'],
   transcript: ['chapter'],
   analysis: ['book'],
   audiobook: ['audiobook'],
@@ -4707,6 +4708,17 @@ const FREE_JOBS = new Set(['film-join']);
 const quotaUnlessFree = (req, res, next) => (FREE_JOBS.has(req.body?.type) ? next() : consumeAIQuota(req, res, next));
 const filmProject = (book, projectId) => (book?.animationProjects || []).find(p => String(p.id) === String(projectId)) || null;
 const joinableScenes = (project) => (project?.scenes || []).filter(sc => sc?.filename && sc.status === 'completed');
+// a clip named in a request: one of our stored videos, never a path
+const CLIP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.(mp4|webm|mov)$/;
+const STILL_URL = /^\/api\/media\/images\/[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+// The clips a request asks to use must be the user's (or their book's): the
+// scene lists live in book data the user can edit.
+async function clipsAllowed(user, filenames) {
+  for (const f of filenames) {
+    if (!CLIP_NAME.test(String(f || '')) || !(await canAccessMedia(user, 'videos', f, 'read'))) return false;
+  }
+  return true;
+}
 
 // Validate before the quota middleware, so a bad request costs nothing.
 async function validateMediaJob(req, res, next) {
@@ -4731,7 +4743,29 @@ async function validateMediaJob(req, res, next) {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 scenes per render' });
     }
-    if (type === 'film-join' && !String(params.projectId || '').trim()) return res.status(400).json({ error: 'projectId is required' });
+    if (type === 'storyboard') {
+      if (!Array.isArray(params.scenes) || params.scenes.length === 0) return res.status(400).json({ error: 'Scenes are required' });
+      if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 stills per storyboard' });
+      if (params.scenes.some(sc => !Number.isFinite(Number(sc?.sceneNumber)))) return res.status(400).json({ error: 'Each scene needs a sceneNumber' });
+      if (params.scenes[0]?.previousStill !== undefined && !STILL_URL.test(String(params.scenes[0].previousStill))) return res.status(400).json({ error: 'previousStill must be one of this app\'s images' });
+    }
+    if (type === 'animation') {
+      const stills = params.scenes.filter(sc => sc?.still !== undefined && sc?.still !== null && sc?.still !== '');
+      if (stills.some(sc => !STILL_URL.test(String(sc.still)))) return res.status(400).json({ error: 'A scene\'s still must be one of this app\'s images' });
+      const reused = params.scenes.filter(sc => sc?.reuseTake).map(sc => sc.reuseTake.filename);
+      if (reused.length && !(await clipsAllowed(req.user, reused))) return res.status(404).json({ error: 'A kept clip is not one of this book\'s clips' });
+      if (reused.length === params.scenes.length) return res.status(400).json({ error: 'Every scene already has a clip; cut the film instead' });
+    }
+    if (type === 'film-join' && params.cut !== undefined) {
+      // cut a film from chosen takes (no project yet)
+      const cut = params.cut;
+      if (!cut || typeof cut !== 'object' || !Array.isArray(cut.scenes) || cut.scenes.length === 0) return res.status(400).json({ error: 'cut.scenes are required' });
+      if (cut.scenes.length > 60) return res.status(400).json({ error: 'At most 60 scenes per film' });
+      if (cut.scenes.some(sc => sc?.transition !== undefined && !TRANSITIONS[sc.transition])) {
+        return res.status(400).json({ error: `transition must be one of: ${TRANSITION_IDS.join(', ')}` });
+      }
+      if (!(await clipsAllowed(req.user, cut.scenes.map(sc => sc?.filename)))) return res.status(404).json({ error: 'A clip in the cut is not one of this book\'s clips' });
+    } else if (type === 'film-join' && !String(params.projectId || '').trim()) return res.status(400).json({ error: 'projectId is required' });
     if (type === 'film-join' && params.transitions !== undefined && (typeof params.transitions !== 'object' || Array.isArray(params.transitions)
       || Object.values(params.transitions).some(t => !TRANSITIONS[t]))) {
       return res.status(400).json({ error: `transitions must map scene numbers to one of: ${TRANSITION_IDS.join(', ')}` });
@@ -4774,8 +4808,12 @@ async function validateMediaJob(req, res, next) {
       if (!chapter) return res.status(404).json({ error: 'That chapter is not in the saved book yet; save and try again' });
       if (!String(chapter.content || '').replace(/<[^>]+>/g, '').trim()) return res.status(400).json({ error: 'This chapter has no saved text to adapt yet' });
     }
-    if (type === 'film-join' && !joinableScenes(filmProject(book, params.projectId)).length) {
-      return res.status(404).json({ error: 'That film is not in the saved book, or it has no rendered scenes' });
+    if (type === 'film-join' && params.cut === undefined) {
+      const clips = joinableScenes(filmProject(book, params.projectId)).map(sc => sc.filename);
+      // the project lives in book data the user can edit: only their own clips
+      if (!clips.length || !(await clipsAllowed(req.user, clips))) {
+        return res.status(404).json({ error: 'That film is not in the saved book, or it has no rendered scenes' });
+      }
     }
     req.mediaJobBook = book;
     next();
@@ -4916,6 +4954,51 @@ function mediaJobRunner(req) {
       return { transcript: { ...written, chapterId: chapter.id, chapterNumber: chapter.number, chapterTitle: chapter.title } };
     };
   }
+  if (type === 'film-join' && params.cut) {
+    // the film from the chosen take of each scene, in the scene list's order:
+    // no clip is rendered, so it is quick and free; a NEW project
+    return async (report) => {
+      const cut = params.cut;
+      const scenes = cut.scenes.map((sc, i) => ({
+        sceneNumber: Number.isFinite(Number(sc.sceneNumber)) ? Number(sc.sceneNumber) : i + 1,
+        title: String(sc.title || '').slice(0, 200),
+        filename: sc.filename,
+        videoUrl: `/api/media/videos/${sc.filename}`,
+        keyframeUrl: STILL_URL.test(String(sc.keyframeUrl || '')) ? sc.keyframeUrl : null,
+        location: String(sc.location || '').slice(0, 200),
+        ...(sc.transition ? { transition: sc.transition } : {}),
+        status: 'completed',
+      }));
+      const title = String(cut.title || '').trim().slice(0, 200)
+        || req.mediaJobBook.transcripts?.find(t => String(t.id) === String(target.id))?.title || 'Film';
+      await report({ message: `Cutting the film from ${scenes.length} takes...` });
+      const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title });
+      return { project: { id: `anim-${uuidv4()}`, transcriptId: target.id, title, style: FILM_STYLES[cut.style] ? cut.style : undefined, scenes, finalVideo,
+        status: 'completed', cutFromTakes: true, createdAt: new Date().toISOString() } };
+    };
+  }
+  if (type === 'storyboard') {
+    // stills only, in order, each from the one before (filmDirector.drawStoryboard)
+    return async (report) => {
+      const book = req.mediaJobBook;
+      const style = FILM_STYLES[params.style] ? params.style : FILM_STYLES[artStyleOf(book)?.id] ? artStyleOf(book).id : 'animated';
+      const status = params.scenes.map(sc => ({ sceneNumber: sc.sceneNumber, status: 'pending' }));
+      const stills = await drawStoryboard({
+        user, bookId, book, scenes: params.scenes, styleKey: style,
+        onProgress: (event) => {
+          const row = status.find(r => r.sceneNumber === event.sceneNumber);
+          if (row && event.stage === 'still') row.status = 'keyframe';
+          if (row && event.stage === 'still-done') Object.assign(row, { status: 'completed', keyframeUrl: event.result?.url });
+          if (row && event.stage === 'still-failed') Object.assign(row, { status: 'failed', error: event.error });
+          const done = status.filter(r => r.status === 'completed' || r.status === 'failed').length;
+          return report({ message: event.stage === 'still' ? `Drawing scene ${event.sceneNumber} (${event.current} of ${event.total})` : `${done} of ${status.length} stills drawn`,
+            current: done, total: status.length, scenes: status.map(r => ({ ...r })) });
+        },
+      });
+      if (!stills.some(r => r.status === 'completed')) throw new Error(stills.find(r => r.error)?.error || 'No still could be drawn');
+      return { stills, style };
+    };
+  }
   if (type === 'film-join') {
     // join a finished film's clips again (new transitions, levelled sound);
     // no clip is rendered, so it is quick and free. The result is a NEW
@@ -4934,9 +5017,7 @@ function mediaJobRunner(req) {
   return async (report) => {
     const status = scenes.map(sc => ({ sceneNumber: sc.sceneNumber, status: 'pending' }));
     const mark = (n, patch) => { const row = status.find(r => r.sceneNumber === n); if (row) Object.assign(row, patch); };
-    const project = await renderAnimation({
-      user, bookId, book: req.mediaJobBook, transcriptId: target.id, scenes, options: params.options || {},
-      onProgress: (event) => {
+    const onProgress = (event) => {
         const kf = event.keyframeUrl ? { keyframeUrl: event.keyframeUrl } : {};
         if (event.stage === 'keyframe') mark(event.sceneNumber, { status: 'keyframe' });
         if (event.stage === 'generating') mark(event.sceneNumber, { status: 'rendering', ...kf });
@@ -4953,11 +5034,25 @@ function mediaJobRunner(req) {
           message,
           current: done, total: scenes.length, scenes: status.map(r => ({ ...r })),
         });
-      },
-    });
+    };
+    if (params.options?.takesOnly) {
+      // new takes for the scene list (no film is joined): the author picks
+      // takes and cuts the film when ready
+      const style = FILM_STYLES[params.options.style] ? params.options.style : FILM_STYLES[artStyleOf(req.mediaJobBook)?.id] ? artStyleOf(req.mediaJobBook).id : 'animated';
+      const results = await directFilm({ user, bookId, book: req.mediaJobBook, scenes, styleKey: style, onProgress });
+      if (!results.some(r => r.status === 'completed' && !r.reused)) throw new Error(results.find(r => r.error)?.error || 'No scene could be rendered');
+      return { takes: results.filter(r => !r.reused).map(takeOf), style };
+    }
+    const project = await renderAnimation({ user, bookId, book: req.mediaJobBook, transcriptId: target.id, scenes, options: params.options || {}, onProgress });
     return { project };
   };
 }
+
+// what a scene list keeps of a rendered clip
+const takeOf = (r) => (r.status === 'completed'
+  ? { sceneNumber: r.sceneNumber, status: 'completed', videoUrl: r.videoUrl, filename: r.filename, keyframeUrl: r.keyframeUrl || null,
+    ...(r.duration ? { duration: r.duration } : {}), ...(r.keyframeCheck ? { keyframeCheck: r.keyframeCheck } : {}) }
+  : { sceneNumber: r.sceneNumber, status: 'failed', error: r.error });
 
 function mediaJobLabel({ type, target, params }) {
   if (type === 'analysis') return 'Analysing the book';
@@ -4969,7 +5064,8 @@ function mediaJobLabel({ type, target, params }) {
   if (type === 'audiobook') return `Audiobook: ${params.chapterIds.length} chapter${params.chapterIds.length === 1 ? '' : 's'}`;
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
-  if (type === 'film-join') return 'Rejoining the film';
+  if (type === 'film-join') return params.cut ? 'Cutting the film' : 'Rejoining the film';
+  if (type === 'storyboard') return params.scenes.length === 1 ? `Still: scene ${params.scenes[0].sceneNumber}` : `Storyboard: ${params.scenes.length} stills`;
   if (type === 'transcript') return 'Writing the transcript';
   return `Image: ${String(params.prompt).slice(0, 40)}`;
 }
@@ -6308,7 +6404,7 @@ async function renderAnimation({ user, bookId, book, transcriptId, scenes, optio
     transcriptId,
     title,
     style,
-    scenes: scenes.map((scene, idx) => ({ ...scene, ...results[idx] })),
+    scenes: scenes.map(({ still, reuseTake, previousStill, previousScene, ...scene }, idx) => ({ ...scene, ...results[idx] })),
     finalVideo,
     status: 'completed',
     createdAt: new Date().toISOString(),

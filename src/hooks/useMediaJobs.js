@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { chapterHeading } from '../utils/chapters';
 import { applyEnhanceJob } from '../utils/enhanceFromBook';
+import { applyStoryboard, applyTakes } from '../utils/filmTakes';
 
 // Book media jobs: every image, reference sheet and animation is a SERVER job
 // listed per book. This hook is created once for the open book (in
@@ -278,7 +279,9 @@ export const applyJob = (book, job) => {
   switch (job.type) {
     case 'reference': return applyReference(book, job);
     case 'image': return applyImage(book, job);
-    case 'animation': return applyAnimation(book, job);
+    // a whole film (a project) and/or new takes for the scene list
+    case 'animation': return applyTakes(applyAnimation(book, job), job);
+    case 'storyboard': return applyStoryboard(book, job);
     case 'film-join': return applyAnimation(book, job); // a rejoined film is a new project
     case 'transcript': return applyTranscript(book, job);
     case 'audiobook': return applyAudiobook(book, job);

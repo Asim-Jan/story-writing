@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Film, Play, Download, Trash2, Edit3, Loader, CheckCircle2, AlertCircle, Video, Zap, Clock, Users, UserPlus, Palette } from 'lucide-react';
+import { Film, Play, Download, Trash2, Loader, CheckCircle2, Video, Users, UserPlus, Palette, Image as ImageIcon, Scissors } from 'lucide-react';
 import { getMediaUrl } from '../utils/mediaUrl';
 import { useMediaJobsContext, MediaJobList, MediaJobStatus } from '../contexts/MediaJobsContext';
 import { characterFields } from './CharacterReferences';
-import { FILM_STYLES, DEFAULT_FILM_STYLE, FILM_TRANSITIONS, filmStyle, buildCast, sceneTransition } from '../utils/filmCast';
+import { FILM_STYLES, DEFAULT_FILM_STYLE, filmStyle, buildCast, sceneTransition } from '../utils/filmCast';
+import { chosenStill, chosenTake, chooseStill, chooseTake, removeStill, removeTake, storyboardScenes, renderScenes, cutScenes, sceneListLabel, scenesInLabel } from '../utils/filmTakes';
+import FilmSceneCard from './FilmSceneCard';
 
 // Rendering a film is a book media job (type "animation", target the
 // transcript): it runs on the server whether or not this tab is open, its
@@ -27,16 +29,12 @@ const RENDER_OPTIONS = {};
 // up transitions changed on the scene list since it was made.
 const canRejoin = (project) => (project.scenes || []).some(sc => sc?.filename && sc.status === 'completed');
 
-// A single-scene render is labelled "Scene N: ..."; a whole film "Animation: ...".
-const sceneLabelPrefix = (sceneNumber) => `Scene ${sceneNumber}: `;
-const isSceneJob = (job) => /^Scene \d+: /.test(String(job.label || ''));
-
-const SCENE_STATUS = {
-  pending: { label: 'Waiting', cls: 'text-[var(--dim)]' },
-  keyframe: { label: 'Drawing keyframe', cls: 'text-[var(--blue)]' },
-  rendering: { label: 'Rendering', cls: 'text-[var(--blue)]' },
-  completed: { label: 'Done', cls: 'text-[var(--ok)]' },
-  failed: { label: 'Failed', cls: 'text-[var(--red)]' },
+// The scenes a running job is busy with: its progress rows that are not
+// finished, else (before it reports) the scenes its label names.
+const busyIn = (job) => {
+  const rows = job.progress?.scenes;
+  if (Array.isArray(rows) && rows.length) return rows.filter(r => r.status !== 'completed' && r.status !== 'failed').map(r => Number(r.sceneNumber));
+  return scenesInLabel(job.label);
 };
 
 // A small keyframe picture (16:9), opening full size in a new tab.
@@ -237,14 +235,23 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const bookFilmStyle = FILM_STYLES.some(st => st.id === data.metadata?.artStyle?.id) ? data.metadata.artStyle.id : DEFAULT_FILM_STYLE;
   const styleId = FILM_STYLES.some(st => st.id === draft?.style) ? draft.style : bookFilmStyle;
 
-  const jobsHere = animationJobs.filter(j => String(j.target?.id) === String(selectedTranscript));
-  const filmJob = jobsHere.find(j => j.status === 'running' && !isSceneJob(j));
-  const sceneJobs = jobsHere.filter(j => j.status === 'running' && isSceneJob(j));
+  // every job on this transcript: storyboards, takes, whole films, cuts
+  const jobsHere = jobsFor('animation').filter(j => String(j.target?.id) === String(selectedTranscript));
+  const runningHere = jobsHere.filter(j => j.status === 'running');
   const failedHere = jobsHere.filter(j => j.status === 'failed');
   const elsewhere = animationJobs.filter(j => String(j.target?.id) !== String(selectedTranscript));
-  const sceneBusy = (sceneNumber) => starting === sceneNumber
-    || sceneJobs.some(j => String(j.label).startsWith(sceneLabelPrefix(sceneNumber)));
-
+  const busyWith = (types) => new Set(runningHere.filter(j => types.includes(j.type)).flatMap(busyIn));
+  const stillBusySet = busyWith(['storyboard']);
+  const takeBusySet = busyWith(['animation']);
+  const cutting = runningHere.some(j => j.type === 'film-join');
+  // the newest word on a scene from a running (or failed) job
+  const progressFor = (n) => {
+    for (const j of [...runningHere, ...failedHere]) {
+      const row = (j.progress?.scenes || []).find(r => Number(r.sceneNumber) === Number(n));
+      if (row && row.status !== 'completed') return row;
+    }
+    return null;
+  };
   const writeDraft = (transcriptId, change) => {
     setData(prev => {
       const all = prev.metadata?.animationDrafts || {};
@@ -308,17 +315,34 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
 
   const setFilmStyle = (style) => writeDraft(selectedTranscript, (d) => d && ({ ...d, style }));
 
-  const startRender = async (scenes, label, startingKey) => {
-    setStarting(startingKey);
+  const target = () => ({ type: 'animation', id: selectedTranscript });
+  const run = async (key, fn, what) => {
+    setStarting(key);
     setActionError(null);
     try {
-      await startJob('animation', { type: 'animation', id: selectedTranscript }, { scenes, options: { ...RENDER_OPTIONS, style: styleId } }, label);
+      await fn();
     } catch (error) {
-      setActionError(`Video generation failed: ${error.message}`);
+      setActionError(`${what}: ${error.message}`);
     } finally {
       setStarting(null);
     }
   };
+
+  // stills only (seconds each): the storyboard
+  const drawStills = (numbers) => run(`still:${numbers.join(',')}`, () => startJob('storyboard', target(),
+    { scenes: storyboardScenes(parsedScenes, numbers), style: styleId }, sceneListLabel('Storyboard', numbers)), 'Could not draw the stills');
+
+  // new takes from the chosen stills (no film is joined)
+  const renderTakes = (numbers) => run(`take:${numbers.join(',')}`, () => startJob('animation', target(),
+    { scenes: renderScenes(parsedScenes, numbers), options: { ...RENDER_OPTIONS, style: styleId, takesOnly: true } }, sceneListLabel('Takes', numbers)), 'Could not render');
+
+  // render every scene without a take, then cut the film with the kept ones
+  const makeFilm = (numbers) => run('film', () => startJob('animation', target(),
+    { scenes: renderScenes(parsedScenes, numbers, { wholeFilm: true }), options: { ...RENDER_OPTIONS, style: styleId } }, sceneListLabel('Film', numbers)), 'Could not make the film');
+
+  // the film from the chosen takes: free, no rendering
+  const cutFilm = () => run('cut', () => startJob('film-join', target(),
+    { cut: { scenes: cutScenes(parsedScenes), title: transcriptTitle(selectedTranscript), style: styleId } }, 'Cutting the film'), 'Could not cut the film');
 
   const handleRejoin = async (project) => {
     setJoining(project.id);
@@ -336,27 +360,12 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
     }
   };
 
-  const handleGenerateAnimation = () => {
-    if (!parsedScenes) return;
-    startRender(parsedScenes, `Animation: ${transcriptTitle(selectedTranscript)}`, 'film');
-  };
-
-  const handleGenerateSingleScene = (scene) => {
-    startRender([scene], `${sceneLabelPrefix(scene.sceneNumber)}${scene.title || transcriptTitle(selectedTranscript)}`, scene.sceneNumber);
-  };
-
-  const showStep3 = view === 'scenes' && !!filmJob;
-  const showStep2 = view === 'scenes' && !!parsedScenes && !filmJob;
-  const showStep1 = !showStep2 && !showStep3;
-
-  // Per-scene progress of the running film: the job's own list, or the draft
-  // as "waiting" until the server reports.
-  const filmScenes = filmJob
-    ? (filmJob.progress?.scenes?.length
-      ? filmJob.progress.scenes
-      : (parsedScenes || []).map(s => ({ sceneNumber: s.sceneNumber, status: 'pending' })))
-    : [];
-  const sceneTitle = (n) => parsedScenes?.find(s => s.sceneNumber === n)?.title;
+  const draftEdit = (fn) => setData(prev => fn(prev));
+  const showScenes = view === 'scenes' && !!parsedScenes;
+  const showStep1 = !showScenes;
+  const noStill = (parsedScenes || []).filter(sc => !chosenStill(sc)).map(sc => sc.sceneNumber);
+  const noTake = (parsedScenes || []).filter(sc => !chosenTake(sc)).map(sc => sc.sceneNumber);
+  const withTake = (parsedScenes || []).length - noTake.length;
 
   return (
     <div className="max-w-7xl mx-auto p-6 space-y-6">
@@ -472,186 +481,96 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
         </div>
       )}
 
-      {/* Step 2: Review & Edit Scenes */}
-      {showStep2 && (
+      {/* Step 2: the scene list as a workbench: stills, takes, the cut */}
+      {showScenes && (
         <div className="bg-white rounded-lg p-6 border-2 border-gray-200" data-testid="animation-scenes">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-3">
             <h3 className="text-xl font-bold text-gray-900">
-              Step 2: Review Scenes ({parsedScenes.length} scenes)
+              Step 2: Storyboard, takes and the cut ({parsedScenes.length} scenes)
               <span className="block text-sm font-normal text-gray-500">{transcriptTitle(selectedTranscript)}</span>
             </h3>
             <button
               onClick={() => setView('select')}
-              className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors"
+              className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors flex-shrink-0"
             >
               Back to Selection
             </button>
           </div>
 
-          <MediaJobList jobs={[...sceneJobs, ...failedHere]} className="mb-4" />
+          <MediaJobList jobs={[...runningHere.filter(j => j.type !== 'film-join'), ...failedHere]} className="mb-4"
+            hint="This runs on the server; you can leave this tab and come back." />
 
           <FilmCastPanel scenes={parsedScenes} characters={data.characters || []} styleId={styleId} />
+          <FilmStylePicker value={styleId} onChange={setFilmStyle} />
 
-          <div className="space-y-4 max-h-96 overflow-y-auto mb-6">
+          <div className="border-2 border-purple-200 bg-purple-50 rounded-lg p-4 mb-4" data-testid="film-workflow">
+            <p className="text-sm text-purple-900 mb-3">
+              <strong>1.</strong> Draw the storyboard (a still per scene, seconds each) and redraw any that look wrong.{' '}
+              <strong>2.</strong> Render clips from the stills (a few minutes each); render another take of any scene you don't like.{' '}
+              <strong>3.</strong> Cut the film from the takes you chose (free).
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => drawStills(noStill.length ? noStill : parsedScenes.map(sc => sc.sceneNumber))}
+                disabled={stillBusySet.size > 0 || String(starting || '').startsWith('still')} data-testid="draw-storyboard"
+                className="px-3 py-2 bg-white border-2 border-purple-400 text-purple-800 hover:bg-purple-100 disabled:opacity-50 rounded-lg text-sm font-semibold flex items-center gap-2">
+                <ImageIcon className="w-4 h-4" />
+                {noStill.length === parsedScenes.length ? `Draw the storyboard (${noStill.length} stills)`
+                  : noStill.length ? `Draw ${noStill.length} missing still${noStill.length === 1 ? '' : 's'}` : 'Redraw every still'}
+              </button>
+              <button type="button" onClick={() => renderTakes(noTake)}
+                disabled={!noTake.length || takeBusySet.size > 0 || String(starting || '').startsWith('take')} data-testid="render-missing"
+                title="Animate each scene that has no clip yet from its chosen still"
+                className="px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg text-sm font-semibold flex items-center gap-2">
+                <Video className="w-4 h-4" />
+                {noTake.length ? `Render ${noTake.length} clip${noTake.length === 1 ? '' : 's'}` : 'Every scene has a clip'}
+              </button>
+              <button type="button" onClick={cutFilm} disabled={!withTake || cutting || starting === 'cut'} data-testid="cut-film"
+                title="Join the chosen take of every scene with its transition and levelled sound. No clip is rendered again, and it is free."
+                className="px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-sm font-semibold flex items-center gap-2">
+                {cutting ? <Loader className="w-4 h-4 animate-spin" /> : <Scissors className="w-4 h-4" />}
+                {cutting ? 'Cutting the film...' : `Cut the film (${withTake} of ${parsedScenes.length} scenes)`}
+              </button>
+            </div>
+            {withTake > 0 && noTake.length > 0 && (
+              <p className="text-xs text-purple-800 mt-2">Scenes without a clip are left out of the cut.</p>
+            )}
+          </div>
+
+          <div className="space-y-4 max-h-[75vh] overflow-y-auto mb-6 pr-1">
             {parsedScenes.map((scene, idx) => (
-              <div key={idx} className="border-2 border-gray-200 rounded-lg p-4 hover:border-blue-300 transition-colors">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded">
-                        Scene {scene.sceneNumber}
-                      </span>
-                      <h4 className="font-semibold text-gray-900">{scene.title}</h4>
-                      <span className="text-xs text-gray-500">{scene.duration}s &middot; {scene.cameraDirection}</span>
-                      {idx > 0 && (
-                        <select
-                          value={sceneTransition(parsedScenes, idx)}
-                          onChange={(e) => updateScene(scene.sceneNumber, { transition: e.target.value })}
-                          title={FILM_TRANSITIONS.find(t => t.id === sceneTransition(parsedScenes, idx))?.hint}
-                          aria-label={`How scene ${scene.sceneNumber} begins`}
-                          data-testid="scene-transition"
-                          className="text-xs border border-gray-300 rounded px-1 py-0.5 bg-white"
-                        >
-                          {FILM_TRANSITIONS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                        </select>
-                      )}
-                      {scene.status === 'completed' && (
-                        <span className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Generated
-                        </span>
-                      )}
-                      {scene.status === 'failed' && (
-                        <span className="flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 text-xs font-semibold rounded">
-                          <AlertCircle className="w-3 h-3" />
-                          Failed
-                        </span>
-                      )}
-                    </div>
-                    {editingScene === scene.sceneNumber ? (
-                      <textarea
-                        value={scene.visualPrompt}
-                        onChange={(e) => updateScene(scene.sceneNumber, { visualPrompt: e.target.value })}
-                        className="w-full mt-2 px-3 py-2 border border-gray-300 rounded text-sm"
-                        rows="3"
-                      />
-                    ) : (
-                      <p className="text-gray-700 text-sm mt-2">{scene.visualPrompt}</p>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setEditingScene(editingScene === scene.sceneNumber ? null : scene.sceneNumber)}
-                      className="p-2 text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => handleGenerateSingleScene(scene)}
-                      disabled={sceneBusy(scene.sceneNumber) || scene.status === 'completed'}
-                      className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs rounded transition-colors flex items-center gap-1"
-                    >
-                      {sceneBusy(scene.sceneNumber) ? (
-                        <>
-                          <Loader className="w-3 h-3 animate-spin" />
-                          Generating...
-                        </>
-                      ) : (
-                        <>
-                          <Play className="w-3 h-3" />
-                          Generate
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-                {scene.dialogue && (
-                  <p className="text-purple-700 text-sm italic mt-2">Dialogue: "{scene.dialogue}"</p>
-                )}
-                <div className="flex gap-2 mt-2 text-xs text-gray-600">
-                  {scene.characters && scene.characters.length > 0 && (
-                    <span>Cast: {scene.characters.join(', ')}</span>
-                  )}
-                  {scene.location && <span>Scene: {scene.location}</span>}
-                </div>
-              </div>
+              <FilmSceneCard
+                key={scene.sceneNumber}
+                scene={scene}
+                index={idx}
+                scenes={parsedScenes}
+                editing={editingScene === scene.sceneNumber}
+                onToggleEdit={() => setEditingScene(editingScene === scene.sceneNumber ? null : scene.sceneNumber)}
+                onUpdate={(updates) => updateScene(scene.sceneNumber, updates)}
+                progress={progressFor(scene.sceneNumber)}
+                stillBusy={stillBusySet.has(Number(scene.sceneNumber)) || starting === `still:${scene.sceneNumber}`}
+                takeBusy={takeBusySet.has(Number(scene.sceneNumber)) || starting === `take:${scene.sceneNumber}` || starting === 'film'}
+                onDrawStill={() => drawStills([scene.sceneNumber])}
+                onRenderTake={() => renderTakes([scene.sceneNumber])}
+                onChooseStill={(url) => draftEdit(b => chooseStill(b, selectedTranscript, scene.sceneNumber, url))}
+                onRemoveStill={(url) => draftEdit(b => removeStill(b, selectedTranscript, scene.sceneNumber, url))}
+                onChooseTake={(id) => draftEdit(b => chooseTake(b, selectedTranscript, scene.sceneNumber, id))}
+                onRemoveTake={(id) => { if (confirm('Delete this take?')) draftEdit(b => removeTake(b, selectedTranscript, scene.sceneNumber, id)); }}
+              />
             ))}
           </div>
 
-          <FilmStylePicker value={styleId} onChange={setFilmStyle} />
-
-          <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 mb-4">
-            <p className="text-blue-900 font-medium text-sm flex items-center gap-1">
-              <Zap className="w-4 h-4" />
-              Estimated Cost: ${(parsedScenes.length * 0.10).toFixed(2)} - ${(parsedScenes.length * 0.15).toFixed(2)}
-            </p>
-            <p className="text-blue-700 text-xs mt-1">
-              ~{parsedScenes.length} scenes of up to 10 seconds each, rendered by SAI video (a few minutes per scene)
-            </p>
-            <p className="text-blue-700 text-xs mt-1">
-              Generation time: {Math.ceil(parsedScenes.length * 30 / 60)} - {Math.ceil(parsedScenes.length * 45 / 60)} minutes. It keeps rendering if you leave this tab.
-            </p>
-          </div>
-
+          <p className="text-xs text-gray-600 mb-2">
+            In one go: render every scene that has no clip yet (each from its still, or a new one), then cut the film. About {Math.max(1, Math.ceil(noTake.length * 1.5))} to {Math.max(2, Math.ceil(noTake.length * 3))} minutes; it keeps going if you leave this tab.
+          </p>
           <button
-            onClick={handleGenerateAnimation}
-            disabled={starting === 'film'}
+            onClick={() => (noTake.length ? makeFilm(noTake) : cutFilm())}
+            disabled={starting === 'film' || takeBusySet.size > 0 || cutting}
             data-testid="generate-film"
             className="w-full px-6 py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-bold text-lg flex items-center justify-center gap-3"
           >
-            {starting === 'film' ? <Loader className="w-6 h-6 animate-spin" /> : <Video className="w-6 h-6" />}
-            Generate {filmStyle(styleId).label} Film ({parsedScenes.length} scenes)
+            {starting === 'film' ? <Loader className="w-6 h-6 animate-spin" /> : <Film className="w-6 h-6" />}
+            {noTake.length ? `Make the ${filmStyle(styleId).label} film (render ${noTake.length} clip${noTake.length === 1 ? '' : 's'}, then cut)` : 'Cut the film from the chosen takes'}
           </button>
-        </div>
-      )}
-
-      {/* Step 3: Generation Progress (from the job, so it survives leaving) */}
-      {showStep3 && (
-        <div className="bg-white rounded-lg p-6 border-2 border-purple-200" data-testid="animation-progress">
-          <div className="flex items-center justify-between mb-2 gap-3">
-            <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-              <Loader className="w-6 h-6 animate-spin text-purple-600" />
-              Generating Animation...
-            </h3>
-            <button
-              onClick={() => setView('select')}
-              className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors"
-            >
-              Back to Selection
-            </button>
-          </div>
-          <MediaJobStatus job={filmJob} className="mb-4" hint="Rendering runs on the server; you can leave this tab and come back." />
-
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {filmScenes.map(scene => {
-              const state = SCENE_STATUS[scene.status] || SCENE_STATUS.pending;
-              return (
-                <div
-                  key={scene.sceneNumber}
-                  data-testid="film-scene"
-                  data-status={scene.status}
-                  className={`p-3 rounded-lg border-l-4 flex items-center gap-3 ${
-                    scene.status === 'failed' ? 'bg-red-50 border-red-500' :
-                    scene.status === 'completed' ? 'bg-green-50 border-green-500' :
-                    scene.status === 'rendering' || scene.status === 'keyframe' ? 'bg-blue-50 border-blue-500' :
-                    'bg-gray-50 border-gray-400'
-                  }`}
-                >
-                  {scene.status === 'completed' ? <CheckCircle2 className="w-4 h-4 text-green-600" />
-                    : scene.status === 'failed' ? <AlertCircle className="w-4 h-4 text-red-600" />
-                    : scene.status === 'rendering' || scene.status === 'keyframe' ? <Loader className="w-4 h-4 animate-spin text-blue-600" />
-                    : <Clock className="w-4 h-4 text-gray-500" />}
-                  <p className="text-sm font-medium text-gray-900 flex-1">
-                    Scene {scene.sceneNumber}{sceneTitle(scene.sceneNumber) ? `: ${sceneTitle(scene.sceneNumber)}` : ''}
-                    {scene.error && <span className="block text-xs text-red-700 font-normal">{scene.error}</span>}
-                  </p>
-                  <KeyframeThumb url={scene.keyframeUrl} sceneNumber={scene.sceneNumber} />
-                  <span className={`text-xs mono ${state.cls}`}>{state.label}</span>
-                </div>
-              );
-            })}
-          </div>
-          {failedHere.length > 0 && <MediaJobList jobs={failedHere} className="mt-4" />}
         </div>
       )}
 
@@ -764,6 +683,8 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-6">
         <h4 className="font-bold text-purple-900 mb-3">About Animation Studio</h4>
         <ul className="space-y-2 text-sm text-purple-800">
+          <li>• <strong>Storyboard first:</strong> every scene's opening frame is drawn as a still in seconds, so you can fix the pictures before paying for video</li>
+          <li>• <strong>Takes:</strong> render another take of any scene and choose the one the film uses; the film is cut from the chosen takes for free</li>
           <li>• <strong>AI Video Generation:</strong> Each scene becomes a short cinematic clip (up to 10 seconds)</li>
           <li>• <strong>Scene Parsing:</strong> Automatically breaks transcripts into filmable scenes</li>
           <li>• <strong>Native Audio:</strong> clips come with generated sound</li>
