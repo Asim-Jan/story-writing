@@ -40,8 +40,10 @@ Migration `z106_portal_identity.sql` adds `users.portal_sub` (nullable, UNIQUE) 
      reset by the emailed link marks the Stories email verified, so the next SAI Cloud sign-in links by itself.
 3. Else a new `free` user is created, linked, email verified: unless `SIGNUPS_CLOSED=1` (own page), unless the Stories
    registration limiter (3 per hour per IP, the same counter as `POST /api/auth/register`) is spent (`rate_limited`), and unless an
-   account exists under **another spelling** of the address (plus-tag, Gmail dots: a normalised key, `emailKey.js`) -> a "you may
-   already have a Stories account under another spelling" page and nothing is created. The key only detects; matching to link stays exact.
+   a **verified or already SAI Cloud-linked** account exists under **another spelling** of the address (plus-tag, Gmail dots: a normalised key,
+   `emailKey.js`) -> a "you may already have a Stories account under another spelling" page and nothing is created. An **unverified** lookalike
+   does not count: anyone can register `name+x@gmail.com` without owning a mailbox, and that must not lock the real owner out of their
+   sign-up. The key only detects; matching to link stays exact.
 
 A Stories `user_id` and every book under it are untouched in every path. A SAI Cloud account whose email is not verified at
 the portal cannot sign in at all (`email_unverified` page).
