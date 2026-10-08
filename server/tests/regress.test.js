@@ -787,6 +787,34 @@ async function mainSuite(gateway) {
     r = await call('GET', '/api/auth/me', owner.token);
     check('/api/auth/me: not portal-linked for everyone else', r.json?.user?.portalLinked === false);
 
+    // Settings: name, plans, sign out other devices, connect (off), the page's pure helpers
+    {
+      const su = await makeUser(db, 'settings');
+      r = await call('PUT', '/api/users/profile', su.token, { name: '  Ada \u0007  Quill  ' });
+      check('settings: PUT /api/users/profile saves a cleaned name', r.status === 200 && r.json?.user?.name === 'Ada Quill', JSON.stringify(r.json));
+      r = await call('GET', '/api/auth/me', su.token);
+      check('settings: /api/auth/me shows the new name and a member-since date', r.json?.user?.name === 'Ada Quill' && !Number.isNaN(Date.parse(r.json?.user?.createdAt)), JSON.stringify(r.json?.user));
+      check('settings: an empty or 101-character name is refused', (await call('PUT', '/api/users/profile', su.token, { name: '   ' })).status === 400
+        && (await call('PUT', '/api/users/profile', su.token, { name: 'x'.repeat(101) })).status === 400);
+      r = await call('GET', '/api/plans', su.token);
+      const byTier = Object.fromEntries((r.json?.plans || []).map((p) => [p.tier, p]));
+      check('settings: /api/plans lists the three tiers from the enforced table (free 3 books, premium unlimited) and no checkout without Stripe',
+        r.status === 200 && byTier.free?.limits?.books === 3 && byTier.premium?.limits?.books === 'Unlimited' && byTier.basic?.features?.media_generation === true && r.json?.checkout === false, JSON.stringify(r.json));
+      r = await call('POST', '/api/auth/sign-out-others', su.token);
+      const fresh = r.json?.token;
+      check('settings: sign out other devices ends the old token and hands this one a fresh one',
+        r.status === 200 && !!fresh && (await call('GET', '/api/auth/me', su.token)).status === 401 && (await call('GET', '/api/auth/me', fresh)).status === 200);
+      r = await call('POST', '/api/auth/portal/attach', fresh, { password: 'x' });
+      check('settings: Connect SAI Cloud is a 404 while the feature is off', r.status === 404, `got ${r.status}`);
+      const h = await import('../../src/utils/settings.js');
+      const aid = 'a'.repeat(32);
+      check('settings helpers: meters, arrival from the URL, initials',
+        h.meterOf(5, 10).pct === 50 && h.meterOf(30, 10).pct === 100 && h.meterOf(1, 999999).unlimited && h.meterOf(1, 0).unlimited
+        && h.settingsArrival(`?settings=security&connect=${aid}`).connected === true && h.settingsArrival('?settings=security&connect=x').connected === false
+        && h.settingsArrival('?settings=nope').section === 'account' && h.settingsArrival('?settings=plan&checkout=success').checkout === 'success'
+        && h.settingsArrival('?book=1') === null && h.initialsOf('Ada Byron Lovelace') === 'AL' && h.initialsOf('', 'zed@x.y') === 'Z');
+    }
+
     // second server on the same database, feature ON with an unreachable issuer + PORTAL_ONLY + SIGNUPS_CLOSED
     const on = await bootServer('rg_main', {
       SAI_API_BASE_URL: gateway.url, SAI_API_KEY: 'test', PORTAL_OIDC: '1', PORTAL_ISSUER: 'https://portal.invalid', PORTAL_CLIENT_SECRET: 'regress-client-secret',

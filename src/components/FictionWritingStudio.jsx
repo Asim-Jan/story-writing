@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Video, Briefcase, Swords, User, Lock, ScanSearch } from 'lucide-react';
+import { Book, Users, MapPin, Route, Clock, FileText, Plus, Trash2, Save, Menu, Search, BookOpen, Palette, Sparkles, X, Edit3, ArrowLeft, Wand2, Film, Shield, Volume2, Layout, RefreshCw, Video, Briefcase, Swords, Lock, ScanSearch, Settings as SettingsIcon } from 'lucide-react';
 import { useBook } from '../hooks/useBook';
 import { useMediaJobs } from '../hooks/useMediaJobs';
 import { MediaJobsProvider, MediaJobList } from '../contexts/MediaJobsContext';
@@ -28,7 +28,7 @@ import AnimationStudioTab from './AnimationStudioTab';
 import JobsTab from './JobsTab';
 import RPGGameTab from './RPGGameTab';
 import ErrorBoundary from './ErrorBoundary';
-import ProfilePage from './ProfilePage';
+import SettingsPage from './SettingsPage';
 import QuotaBanner from './QuotaBanner';
 import WarningToast from './WarningToast';
 import DailyDigestModal from './DailyDigestModal';
@@ -39,7 +39,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
   const [sidebarOpen, setSidebarOpen] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
   );
-  const [showProfile, setShowProfile] = useState(false);
+  const [settingsSection, setSettingsSection] = useState(null); // null, or the Settings section to open
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeModalProps, setUpgradeModalProps] = useState({ featureName: '', requiredTier: '', requiredFeature: '' });
 
@@ -579,8 +579,8 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
     { id: 'ai-tools', icon: Wand2, label: 'AI Tools', requiredFeature: null }
   ];
 
-  if (showProfile) {
-    return <ProfilePage onBack={() => setShowProfile(false)} />;
+  if (settingsSection) {
+    return <SettingsPage section={settingsSection} backLabel="Back to the book" onBack={() => setSettingsSection(null)} />;
   }
 
   // A failed load is a hard stop — the old code rendered the EMPTY book on top
@@ -746,11 +746,13 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               )}
             </div>
             <button
-              onClick={() => setShowProfile(true)}
+              onClick={() => setSettingsSection('account')}
               className="iconb"
-              title="Profile"
+              title="Settings"
+              aria-label="Settings"
+              data-testid="open-settings"
             >
-              <User size={20} />
+              <SettingsIcon size={20} />
             </button>
             <button
               onClick={handleSaveBook}
@@ -773,7 +775,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
         )}
 
         {/* Quota Banner */}
-        <QuotaBanner onNavigateToProfile={() => setShowProfile(true)} />
+        <QuotaBanner onNavigateToProfile={() => setSettingsSection('plan')} />
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           {activeTab === 'overview' && (
@@ -1282,7 +1284,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
       <WarningToast
         warning={currentWarning}
         onDismiss={handleWarningDismiss}
-        onNavigate={() => setShowProfile(true)}
+        onNavigate={() => setSettingsSection('plan')}
       />
 
       {/* Daily Digest Modal */}
@@ -1291,7 +1293,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
           quotas={quotas}
           onClose={handleDigestClose}
           onNavigateToProfile={() => {
-            setShowProfile(true);
+            setSettingsSection('plan');
             handleDigestClose();
           }}
         />

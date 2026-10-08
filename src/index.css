@@ -123,6 +123,13 @@ input:focus, textarea:focus, select:focus {
 
 .card { background:var(--glass); border:1px solid var(--line); border-radius:var(--r); }
 
+/* icon button: header actions (account, admin, close) */
+.iconb { display:inline-flex; align-items:center; justify-content:center; width:2.1rem; height:2.1rem;
+  border-radius:3px; border:1px solid transparent; color:var(--dim); background:transparent;
+  transition:border-color var(--t),color var(--t); cursor:pointer; }
+.iconb:hover { color:var(--ink); border-color:var(--line2); }
+.iconb:focus-visible { outline:none; box-shadow:0 0 0 2px var(--focus); }
+
 .pill { display:inline-flex; align-items:center; gap:.35rem; padding:.18rem .55rem;
   border-radius:3px; font-size:.72rem; background:var(--glass2);
   border:1px solid var(--line); font-family:var(--mono); }

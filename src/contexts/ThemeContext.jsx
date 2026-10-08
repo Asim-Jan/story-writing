@@ -5,27 +5,38 @@ const ThemeContext = createContext();
 // ONE source of truth for theming: localStorage 'sw-theme' -> html[data-theme]
 // (+ html.dark for Tailwind's class-based dark: variants — they must move together
 // or the two theming systems disagree and half the UI renders the wrong theme).
+// The saved CHOICE is 'light', 'dark' or 'system' (follow the device, live); `theme` is what it resolves to.
+const systemTheme = () => (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+const CHOICES = ['light', 'dark', 'system'];
+
 export function ThemeProvider({ children }) {
-  const [theme, setTheme] = useState(() => {
+  const [choice, setChoice] = useState(() => {
     const saved = localStorage.getItem('sw-theme');
-    if (saved === 'dark' || saved === 'light') return saved;
-    // first visit follows the system, and that choice is then persisted
-    const system = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    localStorage.setItem('sw-theme', system);
-    return system;
+    return CHOICES.includes(saved) ? saved : 'system';
   });
+  const [system, setSystem] = useState(systemTheme);
+  const theme = choice === 'system' ? system : choice;
 
   useEffect(() => {
-    localStorage.setItem('sw-theme', theme);
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!mq) return undefined;
+    const on = () => setSystem(mq.matches ? 'dark' : 'light');
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('sw-theme', choice);
     const root = document.documentElement;
     root.dataset.theme = theme;
     root.classList.toggle('dark', theme === 'dark');
-  }, [theme]);
+  }, [choice, theme]);
 
-  const toggleTheme = () => setTheme(t => (t === 'light' ? 'dark' : 'light'));
+  const setTheme = (c) => { if (CHOICES.includes(c)) setChoice(c); };
+  const toggleTheme = () => setChoice(theme === 'light' ? 'dark' : 'light');
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+    <ThemeContext.Provider value={{ theme, choice, setTheme, toggleTheme }}>
       {children}
     </ThemeContext.Provider>
   );

@@ -58,7 +58,7 @@ export const PORTAL_ERRORS = {
   },
   similar_email: {
     title: 'You may already have a Stories account',
-    body: 'Your SAI Cloud email looks like another spelling of an email address that already has a Stories account (for example with a +tag or different dots). No new account was created. If that account is yours, sign in to Stories with its email and password, or contact support so it can be linked to SAI Cloud.',
+    body: 'Your SAI Cloud email looks like another spelling of an email address that already has a Stories account (for example with a +tag or different dots). No new account was created. If that account is yours, sign in to Stories with its email and password, then connect SAI Cloud from Settings.',
   },
   rate_limited: {
     title: 'Too many new accounts',
@@ -71,6 +71,17 @@ export const PORTAL_ERRORS = {
   unavailable: {
     title: 'SAI Cloud is not reachable',
     body: 'Stories could not reach SAI Cloud just now. Please try again in a minute.',
+  },
+  // the two ways Settings > "Connect SAI Cloud" can be refused
+  already_connected: {
+    title: 'Already connected',
+    body: 'This Stories account is already connected to a different SAI Cloud account. Nothing was changed.',
+    settings: true,
+  },
+  sub_in_use: {
+    title: 'That SAI Cloud account is taken',
+    body: 'The SAI Cloud account you signed in with is already connected to another Stories account. Nothing was changed. Sign in to Stories with that account instead, or connect a different SAI Cloud account.',
+    settings: true,
   },
   failed: {
     title: 'Sign-in failed',
