@@ -942,6 +942,98 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     check('film: the clip is told the characters are already in its first frame (no second Olive coming in)',
       /already in the opening frame: animate them; never add a second copy of anyone/.test(twinVideo?.body?.prompt || ''), (twinVideo?.body?.prompt || '').slice(-200));
     await call('POST', `${jobsUrl}/${twin?.jobId}/ack`, editor.token);
+
+    // ── storyboard, takes and the cut (2.23.61) ──
+    await db.query('UPDATE books SET characters = $2 WHERE id = $1', [book.id, JSON.stringify([{ id: 'c1', name: 'Mira Vale', imageUrl: portraitForFilm }])]);
+    const sbScenes = [{ sceneNumber: 1, title: 'Stairs', visualPrompt: 'Mira climbs the lighthouse stairs', characters: ['Mira'], duration: 1, location: 'Gull Lighthouse' },
+      { sceneNumber: 2, title: 'Top', visualPrompt: 'Mira reaches the lamp room', characters: ['Mira'], duration: 1, location: 'Gull Lighthouse', transition: 'continue' }];
+    const eq0 = await editorQuota();
+    let mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'storyboard', target: { type: 'animation', id: 't3' }, params: { scenes: sbScenes, style: 'animated' }, label: 'Storyboard: scenes 1–2' });
+    const sb = await waitJob(editor.token, r.json?.job?.jobId);
+    const sbCalls = gateway.requests.slice(mark);
+    const sbKeys = sbCalls.filter(q => q.path.endsWith('/images/generations') && q.body?.model === 'qwen-image-2.1');
+    check('storyboard: a still per scene in order, no video, one quota slot, the label kept',
+      sb?.status === 'done' && sb.label === 'Storyboard: scenes 1–2' && sb.result?.stills?.length === 2 && sb.result.stills.every(x => x.status === 'completed' && /^\/api\/media\/images\/keyframe-/.test(x.url)) &&
+      sbKeys.length === 2 && !sbCalls.some(q => q.path.endsWith('/video/generations')) && (await editorQuota()) === eq0 + 1,
+      `${sb?.status} ${sb?.error || ''} ${JSON.stringify(sb?.result?.stills)} keys ${sbKeys.length} quota ${eq0}->${await editorQuota()}`);
+    check('storyboard: scene 2 is drawn from scene 1\'s still, as the same shot a moment later (it continues)',
+      sbKeys[1]?.body?.images?.length >= 2 && /SAME shot a moment later/.test(sbKeys[1]?.body?.prompt || ''), (sbKeys[1]?.body?.prompt || '').slice(-400));
+    await call('POST', `${jobsUrl}/${sb?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'storyboard', target: { type: 'animation', id: 't3' }, params: { scenes: [{ ...sbScenes[1], previousStill: 'https://evil.example/x.png' }] } });
+    check('storyboard: a previous still from outside the app = 400', r.status === 400, `status ${r.status}`);
+
+    // a take from the chosen still: no keyframe drawn, the clip starts from that still, no film
+    const still1 = sb?.result?.stills?.[0]?.url;
+    mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't3' }, params: { scenes: [{ ...sbScenes[0], still: still1 }], options: { style: 'animated', takesOnly: true } } });
+    const tk = await waitJob(editor.token, r.json?.job?.jobId);
+    const tkCalls = gateway.requests.slice(mark);
+    const tkVideo = tkCalls.filter(q => q.path.endsWith('/video/generations'));
+    check('takes: a scene rendered from its chosen still (no keyframe drawn), a take back and no film',
+      tk?.status === 'done' && !tk.result?.project && tk.result?.takes?.length === 1 && /^scene-1-.*\.mp4$/.test(tk.result.takes[0].filename || '') &&
+      tk.result.takes[0].keyframeUrl === still1 && !tkCalls.some(q => q.path.endsWith('/images/generations')) && tkVideo.length === 1 && /^data:image\//.test(tkVideo[0].body?.image || ''),
+      `${tk?.status} ${tk?.error || ''} ${JSON.stringify(tk?.result).slice(0, 300)} images ${tkCalls.filter(q => q.path.endsWith('/images/generations')).length}`);
+    await call('POST', `${jobsUrl}/${tk?.jobId}/ack`, editor.token);
+
+    // scene 2 continues scene 1's KEPT take: scene 1 is not rendered again, scene 2 starts from its last frame
+    const take1 = tk?.result?.takes?.[0] || {};
+    mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't3' }, params: { scenes: [
+      { ...sbScenes[0], reuseTake: { filename: take1.filename, videoUrl: take1.videoUrl, keyframeUrl: take1.keyframeUrl } },
+      { ...sbScenes[1], still: sb?.result?.stills?.[1]?.url }], options: { style: 'animated', takesOnly: true } } });
+    const tk2 = await waitJob(editor.token, r.json?.job?.jobId);
+    const tk2Calls = gateway.requests.slice(mark);
+    check('takes: a kept take is not rendered again and the next scene continues from its last frame',
+      tk2?.status === 'done' && tk2.result?.takes?.length === 1 && tk2.result.takes[0].sceneNumber === 2 &&
+      tk2Calls.filter(q => q.path.endsWith('/video/generations')).length === 1 && !tk2Calls.some(q => q.path.endsWith('/images/generations')) &&
+      /^\/api\/media\/images\/keyframe-/.test(tk2.result.takes[0].keyframeUrl || '') && tk2.result.takes[0].keyframeUrl !== sb?.result?.stills?.[1]?.url,
+      `${tk2?.status} ${tk2?.error || ''} ${JSON.stringify(tk2?.result).slice(0, 300)}`);
+    await call('POST', `${jobsUrl}/${tk2?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't3' }, params: { scenes: [
+      { ...sbScenes[0], reuseTake: { filename: 'scene-1-not-yours.mp4' } }, sbScenes[1]], options: { takesOnly: true } } });
+    check('takes: a kept clip that is not the book\'s = 404', r.status === 404, `status ${r.status}`);
+    r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't3' }, params: { scenes: [{ ...sbScenes[0], still: '../../etc/passwd' }], options: { takesOnly: true } } });
+    check('takes: a still that is not one of the app\'s images = 400', r.status === 400, `status ${r.status}`);
+
+    // the cut: free, from the chosen takes, a new project
+    const take2 = tk2?.result?.takes?.[0] || {};
+    const eq1 = await editorQuota();
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { title: 'Lighthouse', style: 'animated', scenes: [
+      { sceneNumber: 1, title: 'Stairs', filename: take1.filename, keyframeUrl: take1.keyframeUrl },
+      { sceneNumber: 2, title: 'Top', filename: take2.filename, transition: 'continue' }] } }, label: 'Cutting the film' });
+    const cutJob = await waitJob(editor.token, r.json?.job?.jobId);
+    const cp = cutJob?.result?.project;
+    check('cut: the chosen takes joined into a new film, free, with the scene list\'s transitions',
+      cutJob?.status === 'done' && cp?.cutFromTakes === true && cp.transcriptId === 't3' && cp.title === 'Lighthouse' && cp.style === 'animated' &&
+      cp.scenes.map(x => x.filename).join() === [take1.filename, take2.filename].join() && /^\/api\/media\/videos\/film-/.test(cp.finalVideo?.videoUrl || '') &&
+      cp.finalVideo.transitions?.[0]?.transition === 'continue' && (await editorQuota()) === eq1,
+      `${cutJob?.status} ${cutJob?.error || ''} ${JSON.stringify(cp?.finalVideo?.transitions)} quota ${eq1}->${await editorQuota()}`);
+    await call('POST', `${jobsUrl}/${cutJob?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { scenes: [{ filename: take1.filename }, { filename: 'film-123.mp4' }] } } });
+    check('cut: a clip that is not the book\'s = 404 (nothing joined)', r.status === 404, `status ${r.status}`);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { scenes: [{ filename: take1.filename, transition: 'spin' }] } } });
+    check('cut: an unknown transition = 400', r.status === 400, `status ${r.status}`);
+
+    // the scene list (client): stills and takes applied once, the chosen ones used for renders and the cut
+    const ft = await import('../../src/utils/filmTakes.js');
+    let fb = { metadata: { animationDrafts: { t3: { scenes: sbScenes.map(x => ({ ...x })) } } } };
+    fb = ft.applyStoryboard(fb, { ...sb, target: { type: 'animation', id: 't3' } });
+    const again = ft.applyStoryboard(fb, { ...sb, target: { type: 'animation', id: 't3' } });
+    fb = ft.applyTakes(fb, { ...tk, target: { type: 'animation', id: 't3' } });
+    const d3 = fb.metadata.animationDrafts.t3;
+    check('scene list: a storyboard\'s stills and a render\'s takes land on their scenes once, each the chosen one',
+      again === fb || ft.applyStoryboard(fb, { ...sb, target: { type: 'animation', id: 't3' } }) === fb) ;
+    check('scene list: chosen still/take, the render list (still for the rendered scene, the take before it kept) and the cut',
+      ft.chosenStill(d3.scenes[0]) === still1 && ft.chosenTake(d3.scenes[0])?.filename === take1.filename && !ft.chosenTake(d3.scenes[1]) &&
+      JSON.stringify(ft.renderScenes(d3.scenes, [2]).map(x => [x.sceneNumber, x.still ? 'still' : '', x.reuseTake?.filename || ''])) === JSON.stringify([[1, '', take1.filename], [2, 'still', '']]) &&
+      ft.renderScenes(d3.scenes, [2]).every(x => !x.stills && !x.takes) &&
+      JSON.stringify(ft.cutScenes(d3.scenes).map(x => x.filename)) === JSON.stringify([take1.filename]),
+      JSON.stringify(d3.scenes.map(x => ({ still: x.still, take: x.take }))));
+    const d4 = ft.removeTake(fb, 't3', 1, d3.scenes[0].take).metadata.animationDrafts.t3;
+    const withGap = [{ ...d3.scenes[0], takes: [], take: null }, { ...d3.scenes[1], takes: [{ id: 'x', filename: 'b.mp4' }], take: 'x' }];
+    check('scene list: deleting the only take empties the scene; a "continue" after a scene with no take dissolves in the cut',
+      !ft.chosenTake(d4.scenes[0]) && ft.cutScenes(withGap)[0]?.transition === 'dissolve', JSON.stringify(ft.cutScenes(withGap)));
   }
 
   // ── import (rebuilt): ePub structure, formats, review ops, create once, analysis ──

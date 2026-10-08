@@ -6,7 +6,7 @@ import ffmpegPath from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
 import { saiImage } from '../saiClient.js';
 import { mediaStorage } from './mediaStorage.js';
-import { recordMediaOwner } from '../utils/mediaMapping.js';
+import { recordMediaOwner, canAccessMedia } from '../utils/mediaMapping.js';
 import { describeCharacter, mediaUrlToDataUrl } from './characterReferences.js';
 import { VideoGenerator } from './videoGenerator.js';
 import { transitionOf } from './filmShots.js';
@@ -158,7 +158,7 @@ async function closingFrame(videoBuffer) {
   }
 }
 
-function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition, place }) {
+function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition, place, continuing = false }) {
   const lines = [`${style.prompt}.`, `Opening frame of a film scene: ${scene.visualPrompt || scene.title || ''}`];
   if (scene.cameraDirection) lines.push(`Camera: ${scene.cameraDirection}.`);
   // the book's own description of the place (it was the bare name)
@@ -196,7 +196,11 @@ function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition,
     const sameSetting = previous?.location && scene.location && previous.location === scene.location;
     // a new shot of the same moment must not repeat the framing: the same
     // angle with the character in a new pose is a jump cut
-    if (sameSetting && (transition === 'cut' || transition === 'continue')) {
+    if (continuing) {
+      // a storyboard still for a shot that carries on: the next moment of the
+      // same shot (the clip itself starts from the previous clip's last frame)
+      lines.push(`Image ${m} is the previous shot: this is the SAME shot a moment later; keep its framing, lighting and where everyone stands, and show the next moment.`);
+    } else if (sameSetting && (transition === 'cut' || transition === 'continue')) {
       lines.push(`Image ${m} is the previous shot. This is a NEW camera angle on the same moment, in the same place, lighting and time of day: use a clearly different shot size and angle from image ${m} (for example wide to close-up, or a reverse angle); do not repeat its framing.`);
     } else if (sameSetting) {
       lines.push(`Image ${m} is the previous shot: a little later, in the same place; keep its lighting, art style and character designs, with a different framing.`);
@@ -210,9 +214,135 @@ function keyframePrompt({ scene, style, cast, hasPrevious, previous, transition,
   return lines.join(' ').slice(0, 2800);
 }
 
+// The scene's cast with their portraits (at most 4: the bridge takes 6
+// references, one kept for the place and one for the previous shot).
+async function prepareCast(user, book, scene) {
+  const cast = matchCast(scene.characters || [], book.characters || []).slice(0, 4);
+  for (const c of cast) {
+    const pick = castReference(c.character);
+    if (!pick) continue;
+    try {
+      c.ref = await mediaUrlToDataUrl(user, pick.url);
+      c.sheet = pick.sheet;
+    } catch (err) {
+      console.warn(`Film: no usable portrait for ${c.character.name}:`, err.message);
+    }
+  }
+  return cast;
+}
+
+// The scene's place in the book, with its picture as a reference.
+async function preparePlace(user, book, scene, withPicture) {
+  const location = matchLocation(scene.location, book.locations);
+  const place = location ? { location, ref: null } : null;
+  if (place && location.imageUrl && withPicture) {
+    try {
+      place.ref = await mediaUrlToDataUrl(user, location.imageUrl);
+    } catch (err) {
+      console.warn(`Film: no usable picture for ${location.name}:`, err.message);
+    }
+  }
+  return place;
+}
+
+const storeImage = async (user, bookId, buffer) => {
+  const filename = `keyframe-${uuidv4()}.png`;
+  await mediaStorage.upload('images', buffer, filename, { 'x-amz-meta-type': 'film-keyframe' });
+  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
+  return `/api/media/images/${filename}`;
+};
+
+/**
+ * Draw one scene's opening frame (Qwen Image 2.1) from its cast, place and the
+ * previous shot, look at it, and redraw once if someone appears twice.
+ * Returns { buffer, url, check }.
+ */
+async function drawKeyframe({ user, bookId, style, scene, cast, place, previousFrame, previousScene, transition, continuing = false, onRedraw = async () => {} }) {
+  const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(place?.ref ? [place.ref] : []), ...(previousFrame ? [previousFrame] : [])];
+  const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition, place, continuing });
+  const draw = (extra = '') => saiImage({
+    model: 'qwen-image-2.1',
+    size: '1280x720',
+    canvas: 'size', // 16:9 whatever the portraits' shape
+    prompt: `${extra}${prompt}`,
+    negative: `${style.negative}, the same person twice, duplicated person, clone, twins`,
+    ...(refs.length === 1 ? { image: refs[0] } : {}),
+    ...(refs.length > 1 ? { images: refs } : {}),
+  });
+  let image = await draw();
+  let keyframeCheck = null;
+  // someone drawn twice: redraw once, saying so (keyframeCheck.js)
+  if (cast.length) {
+    const castLooks = cast.map(c => ({ name: c.character.name, look: describeCharacter(c.character).slice(0, 200) }));
+    let check = await checkKeyframe({ pngBuffer: image.buffer, scene, cast: castLooks });
+    keyframeCheck = check ? { ...check, redrawn: false } : null;
+    if (check?.duplicated) {
+      await onRedraw();
+      image = await draw(`IMPORTANT: draw each person ONCE. A first attempt showed the same person twice (${check.note || 'a duplicate'}). `);
+      check = await checkKeyframe({ pngBuffer: image.buffer, scene, cast: castLooks });
+      keyframeCheck = { ...(check || {}), redrawn: true };
+    }
+  }
+  const url = await storeImage(user, bookId, image.buffer);
+  return { buffer: image.buffer, url, check: keyframeCheck };
+}
+
+const dataUrlOf = (buffer) => `data:image/png;base64,${buffer.toString('base64')}`;
+
+/**
+ * The storyboard: every scene's opening frame as a still, in order, each drawn
+ * with the previous scene's still as "the previous shot", and no video. A
+ * still takes seconds where a clip takes minutes, so the author fixes the
+ * pictures first. scenes[i].previousStill: the still before the first scene
+ * drawn here (when the batch starts mid-film). onProgress gets
+ * { stage: 'still' | 'still-done' | 'still-failed', sceneNumber, ... }.
+ * Returns [{ sceneNumber, status, url, check, error }].
+ */
+export async function drawStoryboard({ user, bookId, book, scenes, styleKey, onProgress = () => {} }) {
+  const style = filmStyle(styleKey);
+  const results = [];
+  let previousFrame = null;
+  let previousScene = null;
+  if (scenes[0]?.previousStill) {
+    try {
+      previousFrame = await mediaUrlToDataUrl(user, scenes[0].previousStill);
+      previousScene = scenes[0].previousScene || null;
+    } catch (err) {
+      console.warn('Storyboard: the still before this batch is not usable:', err.message);
+    }
+  }
+  for (let i = 0; i < scenes.length; i++) {
+    const scene = scenes[i];
+    const base = { sceneNumber: scene.sceneNumber, current: i + 1, total: scenes.length };
+    try {
+      await onProgress({ stage: 'still', ...base });
+      const cast = await prepareCast(user, book, scene);
+      const transition = transitionOf(scene, previousScene);
+      const continuing = transition === 'continue' && Boolean(previousFrame);
+      const place = await preparePlace(user, book, scene, !continuing);
+      const drawn = await drawKeyframe({ user, bookId, style, scene, cast, place, previousFrame, previousScene, transition, continuing });
+      previousFrame = dataUrlOf(drawn.buffer);
+      previousScene = scene;
+      const row = { sceneNumber: scene.sceneNumber, status: 'completed', url: drawn.url, ...(drawn.check ? { check: drawn.check } : {}) };
+      results.push(row);
+      await onProgress({ stage: 'still-done', ...base, result: row });
+    } catch (err) {
+      results.push({ sceneNumber: scene.sceneNumber, status: 'failed', error: err.message });
+      await onProgress({ stage: 'still-failed', ...base, error: err.message });
+    }
+  }
+  return results;
+}
+
 /**
  * Render every scene with keyframes and continuity. onProgress gets
  * { stage: 'keyframe' | 'generating' | 'scene-complete' | 'scene-failed', sceneNumber, ... }.
+ * A scene may bring:
+ *   still      the storyboard still to animate (instead of drawing one); a
+ *              "continue" still starts from the previous clip's last frame
+ *   reuseTake  { filename, videoUrl, keyframeUrl, duration }: a clip already
+ *              made, kept as it is (not rendered again); the next scene can
+ *              still continue from its last frame
  * Returns one result per scene (status 'completed' with videoUrl, keyframeUrl,
  * cast; or 'failed' with error).
  */
@@ -225,22 +355,44 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
   let previousScene = null;
   let continues = 0; // "continue" shots in a row
 
-  for (let i = 0; i < scenes.length; i++) {
-    const scene = scenes[i];
-    const base = { sceneNumber: scene.sceneNumber, current: i + 1, total: scenes.length };
-    // the scene's cast with their portraits, at most 4 (the bridge takes 6
-    // references; one is kept for the previous shot)
-    const cast = matchCast(scene.characters || [], book.characters || []).slice(0, 4);
-    for (const c of cast) {
-      const pick = castReference(c.character);
-      if (!pick) continue;
-      try {
-        c.ref = await mediaUrlToDataUrl(user, pick.url);
-        c.sheet = pick.sheet;
-      } catch (err) {
-        console.warn(`Film: no usable portrait for ${c.character.name}:`, err.message);
-      }
+  const carryOn = async (buffer, keyframe) => {
+    try {
+      const closing = await closingFrame(buffer);
+      previousFrame = closing.frame || keyframe;
+      previousExact = closing.exact;
+    } catch (err) {
+      console.warn('Film: could not take the last frame:', err.message);
+      previousFrame = keyframe;
+      previousExact = false;
     }
+  };
+
+  for (let i = 0; i < scenes.length; i++) {
+    const { still, reuseTake, previousStill, previousScene: _ps, ...scene } = scenes[i];
+    const base = { sceneNumber: scene.sceneNumber, current: i + 1, total: scenes.length };
+
+    // a take kept from before: no render; its last frame carries on
+    if (reuseTake?.filename) {
+      try {
+        if (!(await canAccessMedia(user, 'videos', reuseTake.filename, 'read'))) throw new Error('That clip is not one of yours');
+        const buffer = await mediaStorage.getFile('videos', reuseTake.filename);
+        await carryOn(buffer, null);
+        const transition = transitionOf(scene, previousScene);
+        continues = transition === 'continue' ? continues + 1 : 0;
+        previousScene = scene;
+        const result = { ...scene, videoUrl: reuseTake.videoUrl || `/api/media/videos/${reuseTake.filename}`, filename: reuseTake.filename,
+          ...(reuseTake.duration ? { duration: reuseTake.duration } : {}), status: 'completed', keyframeUrl: reuseTake.keyframeUrl || null, reused: true };
+        results.push(result);
+        await onProgress({ stage: 'scene-complete', ...base, keyframeUrl: result.keyframeUrl, result });
+      } catch (err) {
+        results.push({ sceneNumber: scene.sceneNumber, status: 'failed', error: err.message });
+        previousExact = false;
+        await onProgress({ stage: 'scene-failed', ...base, error: err.message });
+      }
+      continue;
+    }
+
+    const cast = await prepareCast(user, book, scene);
 
     // what this scene actually gets: a "continue" needs the previous clip's
     // true last frame and a short enough run, else it becomes a cut
@@ -252,14 +404,7 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
     // the scene's place in the book, with its picture as a reference (the
     // bridge takes 6 images: up to 4 portraits, the place, the previous shot)
     const location = matchLocation(scene.location, book.locations);
-    const place = location ? { location, ref: null } : null;
-    if (place && location.imageUrl && !canContinue) {
-      try {
-        place.ref = await mediaUrlToDataUrl(user, location.imageUrl);
-      } catch (err) {
-        console.warn(`Film: no usable picture for ${location.name}:`, err.message);
-      }
-    }
+    const place = canContinue ? (location ? { location, ref: null } : null) : await preparePlace(user, book, scene, true);
 
     let keyframe = null;
     let keyframeUrl = null;
@@ -267,47 +412,33 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
     if (canContinue) {
       keyframe = previousFrame;
       try {
-        const filename = `keyframe-${uuidv4()}.png`;
-        await mediaStorage.upload('images', Buffer.from(previousFrame.split(',')[1], 'base64'), filename, { 'x-amz-meta-type': 'film-keyframe' });
-        await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
-        keyframeUrl = `/api/media/images/${filename}`;
+        keyframeUrl = await storeImage(user, bookId, Buffer.from(previousFrame.split(',')[1], 'base64'));
       } catch (err) {
         console.warn(`Film: could not store scene ${scene.sceneNumber}'s opening frame:`, err.message);
       }
-    } else try {
-      await onProgress({ stage: 'keyframe', ...base });
-      const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(place?.ref ? [place.ref] : []), ...(previousFrame ? [previousFrame] : [])];
-      const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition, place });
-      const draw = (extra = '') => saiImage({
-        model: 'qwen-image-2.1',
-        size: '1280x720',
-        canvas: 'size', // 16:9 whatever the portraits' shape
-        prompt: `${extra}${prompt}`,
-        negative: `${style.negative}, the same person twice, duplicated person, clone, twins`,
-        ...(refs.length === 1 ? { image: refs[0] } : {}),
-        ...(refs.length > 1 ? { images: refs } : {}),
-      });
-      let image = await draw();
-      // someone drawn twice: redraw once, saying so (keyframeCheck.js)
-      if (cast.length) {
-        const castLooks = cast.map(c => ({ name: c.character.name, look: describeCharacter(c.character).slice(0, 200) }));
-        let check = await checkKeyframe({ pngBuffer: image.buffer, scene, cast: castLooks });
-        keyframeCheck = check ? { ...check, redrawn: false } : null;
-        if (check?.duplicated) {
-          await onProgress({ stage: 'keyframe', ...base, redraw: true });
-          image = await draw(`IMPORTANT: draw each person ONCE. A first attempt showed the same person twice (${check.note || 'a duplicate'}). `);
-          check = await checkKeyframe({ pngBuffer: image.buffer, scene, cast: castLooks });
-          keyframeCheck = { ...(check || {}), redrawn: true };
+    } else {
+      // the author's storyboard still, when they chose one
+      if (still) {
+        try {
+          keyframe = await mediaUrlToDataUrl(user, still);
+          keyframeUrl = still;
+        } catch (err) {
+          console.warn(`Film: scene ${scene.sceneNumber}'s still is not usable, drawing one:`, err.message);
         }
       }
-      const filename = `keyframe-${uuidv4()}.png`;
-      await mediaStorage.upload('images', image.buffer, filename, { 'x-amz-meta-type': 'film-keyframe' });
-      await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
-      keyframe = `data:image/png;base64,${image.buffer.toString('base64')}`;
-      keyframeUrl = `/api/media/images/${filename}`;
-    } catch (err) {
-      // no keyframe: the clip is still drawn, from text, in the film's style
-      console.warn(`Film: keyframe for scene ${scene.sceneNumber} failed, animating from text:`, err.message);
+      if (!keyframe) {
+        try {
+          await onProgress({ stage: 'keyframe', ...base });
+          const drawn = await drawKeyframe({ user, bookId, style, scene, cast, place, previousFrame, previousScene, transition,
+            onRedraw: () => onProgress({ stage: 'keyframe', ...base, redraw: true }) });
+          keyframe = dataUrlOf(drawn.buffer);
+          keyframeUrl = drawn.url;
+          keyframeCheck = drawn.check;
+        } catch (err) {
+          // no keyframe: the clip is still drawn, from text, in the film's style
+          console.warn(`Film: keyframe for scene ${scene.sceneNumber} failed, animating from text:`, err.message);
+        }
+      }
     }
 
     try {
@@ -323,15 +454,7 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
         clip = await generator.generateSceneVideo(scene, { image: keyframe || undefined, stylePrompt: style.prompt, keepBuffer: true });
       }
       const { buffer, ...stored } = clip;
-      try {
-        const closing = await closingFrame(buffer);
-        previousFrame = closing.frame || keyframe;
-        previousExact = closing.exact;
-      } catch (err) {
-        console.warn(`Film: could not take scene ${scene.sceneNumber}'s last frame:`, err.message);
-        previousFrame = keyframe;
-        previousExact = false;
-      }
+      await carryOn(buffer, keyframe);
       previousScene = scene;
       const result = { ...scene, ...stored, status: 'completed', keyframeUrl, cast: cast.map(c => c.character.name), ...(keyframeCheck ? { keyframeCheck } : {}), ...(transition ? { transition } : {}), ...(location ? { place: location.name } : {}) };
       results.push(result);
