@@ -4862,8 +4862,9 @@ async function validateMediaJob(req, res, next) {
       if (!String(chapter.content || '').replace(/<[^>]+>/g, '').trim()) return res.status(400).json({ error: 'This chapter has no saved text to adapt yet' });
     }
     if (type === 'film-export') {
-      const film = filmProject(book, params.projectId)?.finalVideo?.filename;
-      if (!film || !(await clipsAllowed(req.user, [film]))) return res.status(404).json({ error: 'That film is not in the saved book' });
+      // the film file itself (a film cut a moment ago is not saved in the book yet)
+      const film = params.filename || filmProject(book, params.projectId)?.finalVideo?.filename;
+      if (!film || !(await clipsAllowed(req.user, [film]))) return res.status(404).json({ error: 'That film is not one of this book\'s films' });
     }
     if (type === 'film-join' && params.cut === undefined) {
       const clips = joinableScenes(filmProject(book, params.projectId)).map(sc => sc.filename);
@@ -5060,10 +5061,10 @@ function mediaJobRunner(req) {
   if (type === 'film-export') {
     // a finished film as a WhatsApp-ready MP4 or a GIF (filmExport.js); free
     return async (report) => {
-      const project = filmProject(req.mediaJobBook, params.projectId);
+      const filename = params.filename || filmProject(req.mediaJobBook, params.projectId)?.finalVideo?.filename;
       await report({ message: `Making the ${EXPORT_FORMATS[params.format].label} version...` });
-      const file = await exportFilm({ user, bookId, filename: project.finalVideo.filename, format: params.format });
-      return { projectId: project.id, ...file };
+      const file = await exportFilm({ user, bookId, filename, format: params.format });
+      return { projectId: params.projectId, ...file };
     };
   }
   if (type === 'film-narration') {

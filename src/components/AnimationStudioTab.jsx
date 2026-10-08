@@ -422,7 +422,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   const exportLabel = (project, format) => `${EXPORT_LABEL[format]} version [${project.id}]`;
   const exporting = (project, format) => exportJobs.some(j => j.status === 'running' && j.label === exportLabel(project, format));
   const exportFilm = (project, format) => run(`export:${project.id}:${format}`, () => startJob('film-export', { type: 'animation', id: project.transcriptId ?? 'film' },
-    { projectId: project.id, format }, exportLabel(project, format)), 'Could not convert the film');
+    { projectId: project.id, filename: project.finalVideo?.filename, format }, exportLabel(project, format)), 'Could not convert the film');
   const showScenes = view === 'scenes' && !!parsedScenes;
   const showStep1 = !showScenes;
   const noStill = (parsedScenes || []).filter(sc => !chosenStill(sc)).map(sc => sc.sceneNumber);
