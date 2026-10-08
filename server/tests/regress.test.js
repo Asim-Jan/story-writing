@@ -906,9 +906,13 @@ async function mainSuite(gateway) {
         r.status === 200 && !!fresh && (await call('GET', '/api/auth/me', su.token)).status === 401 && (await call('GET', '/api/auth/me', fresh)).status === 200);
       r = await call('POST', '/api/auth/portal/attach', fresh, { password: 'x' });
       check('settings: Connect SAI Cloud is a 404 while the feature is off', r.status === 404, `got ${r.status}`);
+      const unknownPath = await fetch(call.base + '/admin/no-such-page-here');
+      const unknownBody = (await unknownPath.text()).replace('/admin/no-such-page-here', '/x');
       for (const pth of ['/admin/local-login', '/admin/local-login.js']) {
         const off = await fetch(call.base + pth);
-        check(`admin sign-in page ${pth} is a JSON 404 while SAI Cloud sign-in is off (the normal form is the way in)`, off.status === 404 && /json/.test(off.headers.get('content-type') || ''), `got ${off.status}`);
+        const offBody = (await off.text()).replace(pth, '/x');
+        check(`admin sign-in page ${pth} answers EXACTLY like any unknown path while SAI Cloud sign-in is off (status, type, body: no fingerprint)`,
+          off.status === unknownPath.status && off.headers.get('content-type') === unknownPath.headers.get('content-type') && offBody === unknownBody, `got ${off.status} vs ${unknownPath.status}`);
       }
       r = await fetch(call.base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Stories-Entry': 'admin-local-login', Origin: call.base }, body: JSON.stringify({ email: 'nobody@regress.local', password: 'x' }) });
       check('...and a marked login is a 404 too, while an unmarked one still answers 401', r.status === 404 && (await call('POST', '/api/auth/login', null, { email: 'nobody@regress.local', password: 'x' })).status === 401, `got ${r.status}`);

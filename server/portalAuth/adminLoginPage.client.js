@@ -21,6 +21,10 @@
   var button = document.getElementById('go');
   var msg = document.getElementById('msg');
   if (!form || !email || !password || !button || !msg) return;
+  // the form is `hidden` in the page (and has no action): it exists for the visitor only once this script is running
+  var boot = document.getElementById('boot');
+  if (boot) boot.hidden = true;
+  form.hidden = false;
 
   function show(text) { msg.textContent = text; msg.hidden = !text; }
 

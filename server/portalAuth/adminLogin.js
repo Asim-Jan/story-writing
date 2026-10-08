@@ -10,8 +10,9 @@
 //                                  rules decide who gets in (PORTAL_ONLY lets only admin accounts through, as before).
 //
 // What the guard adds for marked requests (unmarked requests are untouched, byte for byte):
-//   * 404 unless SAI Cloud sign-in is enabled (PORTAL_OIDC): without it the normal form is the way in and this surface is
-//     pointless, so it is not there at all;
+//   * not there unless SAI Cloud sign-in is enabled (PORTAL_OIDC): without it the normal form is the way in and this surface is
+//     pointless. The page and its script then fall through to whatever the app answers for any unknown path (so the build is
+//     not fingerprinted by them); a marked POST is a 404;
 //   * same-origin only: Sec-Fetch-Site (when sent) must be `same-origin` and Origin must be this site; JSON content type;
 //     a 2 KB body cap (read here, before the 10 MB global parser);
 //   * its own strict budget: 5 failures per 15 minutes per ACCOUNT and per IP CLASS (/24 for IPv4, /64 for IPv6), counted
@@ -48,7 +49,11 @@ export const UNAVAILABLE = 'Sign-in is not available right now. Try again later.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_SRC = fs.readFileSync(path.join(here, 'adminLoginPage.client.js'), 'utf8');
 
-/** The page itself. Styles are inline (the CSP below allows them), the script is the file above. ORDNANCE tokens, no emoji. */
+/**
+ * The page itself. Styles are inline (the CSP below allows them), the script is the file above. ORDNANCE tokens, no emoji.
+ * The form is `hidden` and has no action: without the script it cannot be reached, and a submit of a form with
+ * method="dialog" outside a <dialog> does nothing, so credentials can never be sent anywhere (not even as a GET query) if the
+ * script fails to load. The script is what un-hides it. */
 export function renderPage() {
   return `<!doctype html>
 <html lang="en">
@@ -79,20 +84,20 @@ input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--foc
 button{width:100%;padding:11px 16px;font:inherit;font-weight:600;color:var(--onblue);background:var(--blue);border:1px solid var(--blue);border-radius:3px;cursor:pointer}
 button:disabled{opacity:.45;cursor:default}
 #msg{border:1px solid var(--red);color:var(--red);border-radius:3px;padding:10px 12px;margin-bottom:16px;font-size:.9rem}
-#msg[hidden]{display:none}
+#msg[hidden],#f[hidden],#boot[hidden]{display:none}
 </style>
 </head>
 <body>
 <main>
 <h1>Administrator sign-in</h1>
 <p>This page is for Stories administrators only. Everyone else signs in with <a href="/auth/portal/login">SAI Cloud</a>.</p>
-<form id="f" method="post" action="#" autocomplete="on">
+<p id="boot">This page needs JavaScript to sign in.</p>
+<form id="f" method="dialog" autocomplete="on" hidden>
 <div id="msg" role="alert" hidden></div>
 <div class="field"><label class="lbl" for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
 <div class="field"><label class="lbl" for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
 <button id="go" type="submit">Sign in</button>
 </form>
-<noscript><p style="margin-top:16px">This page needs JavaScript.</p></noscript>
 </main>
 <script src="${ADMIN_LOGIN_SCRIPT}"></script>
 </body>
@@ -102,7 +107,7 @@ button:disabled{opacity:.45;cursor:default}
 
 // Its own CSP (helmet's global one is overridden for this page): nothing but this origin, inline styles, no framing, no base.
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data:; "
-  + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+  + "form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
 
 /** Headers every response of this surface carries. */
 export function surfaceHeaders(res) {
@@ -131,13 +136,14 @@ export function createAdminLogin({ cfg, log = console, now = Date.now, redis = (
   const appOrigin = () => { try { return new URL(cfg.redirectUri).origin; } catch { return ''; } };
   const notFound = (res) => res.status(404).json({ error: 'Not found' });
 
-  router.get(ADMIN_LOGIN_PATH, (req, res) => {
-    if (!enabled()) return notFound(res);
+  // disabled: the page and its script are simply not there; next() lets the app answer them as it answers ANY unknown path
+  router.get(ADMIN_LOGIN_PATH, (req, res, next) => {
+    if (!enabled()) return next();
     surfaceHeaders(res);
     res.type('html').send(renderPage());
   });
-  router.get(ADMIN_LOGIN_SCRIPT, (req, res) => {
-    if (!enabled()) return notFound(res);
+  router.get(ADMIN_LOGIN_SCRIPT, (req, res, next) => {
+    if (!enabled()) return next();
     surfaceHeaders(res);
     res.type('application/javascript').send(SCRIPT_SRC);
   });

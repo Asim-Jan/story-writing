@@ -95,13 +95,40 @@ test('nothing else links to the page: no served page, no SPA source, no robots.t
   assert.deepEqual(hits, []);
 });
 
+test('without its script the page cannot send credentials anywhere: the form is hidden, has no action, is method=dialog, and the CSP allows no form submission', async () => {
+  await withApp({}, async (t) => {
+    const r = await fetch(t.base + ADMIN_LOGIN_PATH);
+    const html = await r.text();
+    const forms = html.match(/<form\b[^>]*>/gi) || [];
+    assert.equal(forms.length, 1);
+    const tag = forms[0];
+    assert.match(tag, /\shidden(\s|>|=)/);                            // not reachable until the script un-hides it
+    assert.match(tag, /method="dialog"/);                              // a submit outside a <dialog> does nothing
+    assert.doesNotMatch(tag, /\saction\s*=/i);                         // nowhere to go (a form with none would GET the same URL, credentials in the query)
+    assert.doesNotMatch(html, /method\s*=\s*["']?(post|get)/i);
+    assert.doesNotMatch(html, /formaction/i);
+    assert.match(r.headers.get('content-security-policy'), /form-action 'none'/);   // and the browser would refuse it anyway
+    assert.match(html, /id="boot"[^>]*>[^<]*needs JavaScript/);        // what a visitor sees if the script never runs
+    assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)/i);
+    // every input is inside that hidden form
+    assert.equal((html.match(/<input\b/g) || []).length, 2);
+    assert.ok(html.indexOf('<form') < html.indexOf('<input') && html.lastIndexOf('<input') < html.indexOf('</form>'));
+  });
+});
+
+test('page script: un-hides the form and hides the "needs JavaScript" notice', () => {
+  const p = runPage({ fetchImpl: reply(200, {}) });
+  assert.equal(p.els.f.hidden, false);
+  assert.equal(p.els.boot.hidden, true);
+});
+
 /* ── the script, run as a browser would (vm with stubs) ────────────────────────────────────────── */
 const SCRIPT = fs.readFileSync(path.join(here, '..', 'adminLoginPage.client.js'), 'utf8');
 function runPage({ fetchImpl, storageFails = false, savedTheme = null }) {
   const store = new Map(savedTheme ? [['sw-theme', savedTheme]] : []);
   const listeners = {};
-  const el = (id) => ({ id, value: '', hidden: id === 'msg', disabled: false, textContent: '', addEventListener: (ev, fn) => { listeners[id + ':' + ev] = fn; } });
-  const els = Object.fromEntries(['f', 'email', 'password', 'go', 'msg'].map((id) => [id, el(id)]));
+  const el = (id) => ({ id, value: '', hidden: id === 'msg' || id === 'f', disabled: false, textContent: '', addEventListener: (ev, fn) => { listeners[id + ':' + ev] = fn; } });
+  const els = Object.fromEntries(['f', 'email', 'password', 'go', 'msg', 'boot'].map((id) => [id, el(id)]));
   const attrs = {};
   const calls = [];
   const ctx = {
@@ -416,13 +443,18 @@ test('one audit line per attempt: outcome, account id or unknown, IP class; neve
 });
 
 /* ── off, and off by mode ──────────────────────────────────────────────────────────────────────── */
-test('PORTAL_OIDC off (or misconfigured): the page and the script are 404 (not the SPA fallback) and a marked login is 404; unmarked is untouched', async () => {
+test('PORTAL_OIDC off (or misconfigured): the page and the script answer EXACTLY like any unknown path, a marked login is 404, unmarked is untouched', async () => {
   for (const env of [{ PORTAL_OIDC: '' }, { PORTAL_CLIENT_SECRET: '' }]) {
     await withApp({ env }, async (t) => {
+      const grab = async (p) => { const r = await fetch(t.base + p); return [r.status, r.headers.get('content-type'), await r.text()]; };
+      const unknown = await grab('/admin/no-such-page-here');
       for (const p of [ADMIN_LOGIN_PATH, ADMIN_LOGIN_SCRIPT]) {
-        const r = await fetch(t.base + p);
-        assert.equal(r.status, 404, p);
-        assert.match(r.headers.get('content-type'), /json/);
+        const got = await grab(p);
+        assert.equal(got[0], 404, p);
+        // same status, type and body as an unknown path (the paths are named in Express's own default body, so compare the shape)
+        assert.equal(got[1], unknown[1], p);
+        assert.equal(got[2].replace(p, '/x'), unknown[2].replace('/admin/no-such-page-here', '/x'), p);
+        assert.ok(!/local-login/i.test(JSON.stringify([...got].slice(0, 2))), p);
       }
       assert.equal((await post(t, { email: ADMIN, password: PW })).status, 404);
       const plain = await fetch(t.base + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: ADMIN, password: PW }) });
