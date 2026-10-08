@@ -73,13 +73,44 @@ under `services.portalAuth` on `/api/health`.
   and key set. PORTAL_ONLY is enforced while both were fetched OK within the last **10 minutes**. Before the first success (just booted)
   and when the portal is unreachable, local password sign-in stays available; `/api/auth/portal/config` says `only:false` and
   `/api/health` (`services.portalAuth`) shows `providerHealthy:false` and a note.
-* **Admins are never locked out.** An admin account can always sign in (and reset) with its password: break-glass. Side effect: under
+* **Admins are never locked out.** An admin account can always sign in (and reset) with its password: break-glass (the SPA hides the form; use the hidden page described below). Side effect: under
   PORTAL_ONLY a non-admin gets `403` where an admin gets the normal `401`, so admin addresses can be told apart.
 * **Accounts without a SAI Cloud link** can still use "forgot password" / reset (reset-then-link); linked accounts get the same generic
   answer as an unknown address and no mail.
 * **What the probe cannot see:** a wrong client secret, a redirect URI that is not registered at the portal, or a client disabled there.
   Those only fail at the token step of a real sign-in. **Keep PORTAL_ONLY off until a real round trip has worked for every person**
   and the admin break-glass path has been tried.
+
+## Admin break-glass page (hidden local sign-in)
+
+Under `PORTAL_ONLY` the SPA hides the password form, so an administrator who needs the password route (SAI Cloud
+misconfigured in a way the health probe cannot see, or down while the probe still says healthy) has a page for it:
+
+* **Where:** `/admin/local-login` (the constant is `ADMIN_LOGIN_PATH` in `server/portalAuth/adminLogin.js`). It is **not linked** from any
+  page or the SPA bundle, not in `robots.txt` or a sitemap, and is served `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow, noarchive`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and its own CSP (`frame-ancestors 'none'`, scripts from this origin only).
+  **Obscurity is not the protection.** Anyone can guess a path. The protection is on the server (below).
+* **How to use it:** open the page, enter the admin email and password. On success it stores the session the way the normal login does
+  (localStorage `token` and `user`, plus the HttpOnly `token` cookie the server sets) and opens `/`. Everyone else uses "Sign in with SAI Cloud".
+* **Which endpoint:** the existing `POST /api/auth/login`, marked with the header `X-Stories-Entry: admin-local-login`. There is **no second login
+  code path**: who may sign in is decided by the same code as before (under `PORTAL_ONLY` only an admin account gets through; local
+  registration and non-admin password sign-in stay `403` on the normal endpoint). The marker only adds the hardening below.
+* **What the marker adds** (`guard`, mounted ahead of the 10 MB body parser; requests without the marker are untouched):
+  same-origin only (`Sec-Fetch-Site` must be `same-origin` when sent, `Origin` must be this site, else `403`); `application/json` only (`415`);
+  2 KB body cap (`413`); its **own budget of 5 failures per 15 minutes per account and per IP class** (/24 for IPv4, /64 for IPv6), spent before
+  the attempt and given back on success so parallel guesses cannot slip through, kept in Redis when connected (so replicas agree) and in process
+  memory otherwise; a locked request gets `429` and never reaches the login handler; and **one uniform failure**: a wrong password, an unknown
+  address, a non-admin under `PORTAL_ONLY` and a suspended account all answer the same `401` with the same text, and each costs one bcrypt
+  compare, so neither answer nor timing class tells them apart. The page shows "Too many attempts. Try again later." for `429` only.
+  Every attempt writes one log line `[admin-local-login] outcome=... acct=<user id or unknown> ipclass=<a.b.c.0/24> ...` (never the email, the password or the full address).
+* **When it exists:** only while SAI Cloud sign-in is enabled (`PORTAL_OIDC=1` and correctly configured). Otherwise the page, its script and the
+  marked login answer `404` (the normal form is the way in, and a hidden extra surface would be pointless). With `PORTAL_ONLY` off the page works
+  and is simply the same login.
+* **What it does not protect against:** an administrator's password being weak, reused or phished. **Stories has no MFA**, so this page makes a
+  session from a password alone; use a long, unique admin password. An attacker can lock one admin account out of this page for 15 minutes by
+  failing five times on purpose (SAI Cloud sign-in and the unmarked endpoint are unaffected). The session is the normal 7 day password token
+  and the page does not appear in the SPA, but a signed-in admin's browser is as trusted as ever. The existing login handler's own
+  `login_history` row still records the address typed (as for every login).
 
 ## Known limits
 
