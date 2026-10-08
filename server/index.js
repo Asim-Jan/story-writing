@@ -9255,7 +9255,8 @@ const httpServer = app.listen(PORT, () => {
 
   if (minioAvailable && !process.env.AWS_S3_BUCKET) {
     console.log(`    MinIO Console: http://${process.env.MINIO_ENDPOINT || 'localhost'}:9001`);
-    console.log(`    Username: ${process.env.MINIO_ACCESS_KEY || 'minioadmin'}`);
+    // development convenience only: production logs never carry an access key (or a default one)
+    if (process.env.NODE_ENV !== 'production') console.log(`    Username: ${process.env.MINIO_ACCESS_KEY || 'minioadmin'}`);
   }
 
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';

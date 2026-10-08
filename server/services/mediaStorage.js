@@ -50,13 +50,18 @@ export class MediaStorage {
         videos: 'videos',
       };
     } else {
-      // MinIO Configuration
+      // MinIO Configuration. Production must name its own credentials: the built-in development pair is public knowledge
+      // (it is what a stock MinIO ships with), so it is used only when NODE_ENV is not "production".
+      const isProd = process.env.NODE_ENV === 'production';
+      if (isProd && (!process.env.MINIO_ACCESS_KEY || !process.env.MINIO_SECRET_KEY)) {
+        throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set in production (or set AWS_S3_BUCKET to use S3)');
+      }
       this.client = new Minio.Client({
         endPoint: process.env.MINIO_ENDPOINT || 'localhost',
         port: parseInt(process.env.MINIO_PORT) || 9000,
         useSSL: process.env.MINIO_USE_SSL === 'true',
-        accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-        secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin123',
+        accessKey: process.env.MINIO_ACCESS_KEY || (isProd ? '' : 'minioadmin'),
+        secretKey: process.env.MINIO_SECRET_KEY || (isProd ? '' : 'minioadmin123'),
       });
 
       this.buckets = {
