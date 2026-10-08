@@ -4,7 +4,8 @@ import { getMediaUrl } from '../utils/mediaUrl';
 import { useMediaJobsContext, MediaJobList, MediaJobStatus } from '../contexts/MediaJobsContext';
 import { characterFields } from './CharacterReferences';
 import { FILM_STYLES, DEFAULT_FILM_STYLE, filmStyle, buildCast, sceneTransition } from '../utils/filmCast';
-import { chosenStill, chosenTake, chooseStill, chooseTake, removeStill, removeTake, storyboardScenes, renderScenes, cutScenes, sceneListLabel, scenesInLabel } from '../utils/filmTakes';
+import { chosenStill, chosenTake, chooseStill, chooseTake, removeStill, removeTake, storyboardScenes, renderScenes, cutScenes, sceneListLabel, scenesInLabel, soundForServer } from '../utils/filmTakes';
+import FilmSoundPanel from './FilmSoundPanel';
 import FilmSceneCard from './FilmSceneCard';
 
 // Rendering a film is a book media job (type "animation", target the
@@ -338,11 +339,11 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
 
   // render every scene without a take, then cut the film with the kept ones
   const makeFilm = (numbers) => run('film', () => startJob('animation', target(),
-    { scenes: renderScenes(parsedScenes, numbers, { wholeFilm: true }), options: { ...RENDER_OPTIONS, style: styleId } }, sceneListLabel('Film', numbers)), 'Could not make the film');
+    { scenes: renderScenes(parsedScenes, numbers, { wholeFilm: true }), options: { ...RENDER_OPTIONS, style: styleId, sound: soundForServer(draft?.sound) } }, sceneListLabel('Film', numbers)), 'Could not make the film');
 
   // the film from the chosen takes: free, no rendering
   const cutFilm = () => run('cut', () => startJob('film-join', target(),
-    { cut: { scenes: cutScenes(parsedScenes), title: transcriptTitle(selectedTranscript), style: styleId } }, 'Cutting the film'), 'Could not cut the film');
+    { cut: { scenes: cutScenes(parsedScenes), title: transcriptTitle(selectedTranscript), style: styleId, sound: soundForServer(draft?.sound) } }, 'Cutting the film'), 'Could not cut the film');
 
   const handleRejoin = async (project) => {
     setJoining(project.id);
@@ -558,6 +559,8 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
               />
             ))}
           </div>
+
+          <FilmSoundPanel data={data} setData={setData} transcriptId={selectedTranscript} scenes={parsedScenes} bookId={bookId} />
 
           <p className="text-xs text-gray-600 mb-2">
             In one go: render every scene that has no clip yet (each from its still, or a new one), then cut the film. About {Math.max(1, Math.ceil(noTake.length * 1.5))} to {Math.max(2, Math.ceil(noTake.length * 3))} minutes; it keeps going if you leave this tab.

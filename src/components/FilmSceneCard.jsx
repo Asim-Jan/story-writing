@@ -160,6 +160,14 @@ const FilmSceneCard = ({
               ))}
             </div>
           )}
+          {take && (
+            <label className="flex items-center gap-2 text-xs text-gray-700 mt-2" title="This clip's own sound in the film (0% mutes it)">
+              <span>Clip sound</span>
+              <input type="range" min="0" max="150" step="5" value={Math.round((Number.isFinite(scene.clipVolume) ? scene.clipVolume : 1) * 100)}
+                onChange={(e) => onUpdate({ clipVolume: Number(e.target.value) / 100 })} data-testid="clip-volume" className="flex-1 max-w-[9rem]" />
+              <span className="mono w-10 text-right">{Math.round((Number.isFinite(scene.clipVolume) ? scene.clipVolume : 1) * 100)}%</span>
+            </label>
+          )}
           <div className="flex flex-wrap gap-2 mt-2">
             <button type="button" onClick={onRenderTake} disabled={takeBusy} data-testid="render-take"
               title={still ? 'Animate the chosen still into a clip (a few minutes)' : 'Draws a still first, then animates it (a few minutes)'}
