@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Film, Play, Download, Trash2, Loader, CheckCircle2, Video, Users, UserPlus, Palette, Image as ImageIcon, Scissors } from 'lucide-react';
+import { Film, Play, Download, Trash2, Loader, CheckCircle2, Video, Users, UserPlus, Palette, Image as ImageIcon, Scissors, Clapperboard, Share2 } from 'lucide-react';
 import { getMediaUrl } from '../utils/mediaUrl';
 import { useMediaJobsContext, MediaJobList, MediaJobStatus } from '../contexts/MediaJobsContext';
 import { characterFields } from './CharacterReferences';
 import { FILM_STYLES, DEFAULT_FILM_STYLE, filmStyle, buildCast, sceneTransition } from '../utils/filmCast';
-import { chosenStill, chosenTake, chooseStill, chooseTake, removeStill, removeTake, storyboardScenes, renderScenes, cutScenes, sceneListLabel, scenesInLabel, soundForServer } from '../utils/filmTakes';
+import { chosenStill, chosenTake, chooseStill, chooseTake, removeStill, removeTake, storyboardScenes, renderScenes, cutScenes, sceneListLabel, scenesInLabel, soundForServer, addStill, setTrim, moveScene, dismissAdvice, takeReviewSuggestion, dismissReview, sceneForServer } from '../utils/filmTakes';
 import FilmSoundPanel from './FilmSoundPanel';
 import FilmSceneCard from './FilmSceneCard';
 
@@ -362,6 +362,67 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
   };
 
   const draftEdit = (fn) => setData(prev => fn(prev));
+  const [uploadingStill, setUploadingStill] = useState(null); // scene number
+
+  // the shot doctor on a scene's chosen still (and the still before it)
+  const adviseStill = (scene, idx) => run(`advice:${scene.sceneNumber}`, () => startJob('film-advice', target(), {
+    scene: sceneForServer(scene), still: chosenStill(scene), previousStill: idx > 0 ? chosenStill(parsedScenes[idx - 1]) || undefined : undefined,
+  }, `Notes on scene ${scene.sceneNumber}'s still`), 'Could not get notes');
+  const adviceBusy = (n) => starting === `advice:${n}` || runningHere.some(j => j.type === 'film-advice' && j.label === `Notes on scene ${n}'s still`);
+  const takeAdvice = (scene, redraw) => {
+    const prompt = scene.advice?.prompt;
+    if (!prompt) return;
+    draftEdit(b => dismissAdvice(b, selectedTranscript, scene.sceneNumber));
+    updateScene(scene.sceneNumber, { visualPrompt: prompt });
+    if (redraw) {
+      const scenes = parsedScenes.map(sc => (sc.sceneNumber === scene.sceneNumber ? { ...sc, visualPrompt: prompt } : sc));
+      run(`still:${scene.sceneNumber}`, () => startJob('storyboard', target(), { scenes: storyboardScenes(scenes, [scene.sceneNumber]), style: styleId },
+        sceneListLabel('Storyboard', [scene.sceneNumber])), 'Could not redraw the still');
+    }
+  };
+
+  // change something in the chosen still ("make it night")
+  const editStill = (scene, instruction) => run(`still:${scene.sceneNumber}`, () => startJob('storyboard', target(), {
+    scenes: [{ ...sceneForServer(scene), edit: { from: chosenStill(scene), instruction } }], style: styleId,
+  }, sceneListLabel('Storyboard', [scene.sceneNumber])), 'Could not edit the still');
+
+  // the author's own picture as the scene's opening frame
+  const uploadStill = async (scene, file) => {
+    if (!file) return;
+    setUploadingStill(scene.sceneNumber);
+    setActionError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const form = new FormData();
+      form.append('file', file);
+      form.append('bucketType', 'images');
+      if (bookId) form.append('bookId', bookId);
+      const response = await fetch('/api/media/upload', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: 'include', body: form });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body?.url) throw new Error(body?.error || `Upload failed (${response.status})`);
+      draftEdit(b => addStill(b, selectedTranscript, scene.sceneNumber, body.url, 'uploaded'));
+    } catch (error) {
+      setActionError(`Could not upload the still: ${error.message}`);
+    } finally {
+      setUploadingStill(null);
+    }
+  };
+
+  // the director: pacing, lengths and transitions for the whole list
+  const reviewing = runningHere.some(j => j.type === 'film-review') || starting === 'review';
+  const reviewFilm = () => run('review', () => startJob('film-review', target(), {
+    scenes: parsedScenes.map((sc, i) => ({ sceneNumber: sc.sceneNumber, title: sc.title, visualPrompt: sc.visualPrompt, duration: sc.duration,
+      transition: i > 0 ? sceneTransition(parsedScenes, i) : undefined, clipSeconds: chosenTake(sc)?.duration || undefined })),
+  }, 'Director\'s review'), 'Could not review the film');
+  const review = draft?.review;
+
+  // a finished film as WhatsApp MP4 / GIF
+  const exportJobs = jobsFor('animation').filter(j => j.type === 'film-export');
+  const EXPORT_LABEL = { whatsapp: 'WhatsApp', gif: 'GIF' };
+  const exportLabel = (project, format) => `${EXPORT_LABEL[format]} version [${project.id}]`;
+  const exporting = (project, format) => exportJobs.some(j => j.status === 'running' && j.label === exportLabel(project, format));
+  const exportFilm = (project, format) => run(`export:${project.id}:${format}`, () => startJob('film-export', { type: 'animation', id: project.transcriptId ?? 'film' },
+    { projectId: project.id, format }, exportLabel(project, format)), 'Could not convert the film');
   const showScenes = view === 'scenes' && !!parsedScenes;
   const showStep1 = !showScenes;
   const noStill = (parsedScenes || []).filter(sc => !chosenStill(sc)).map(sc => sc.sceneNumber);
@@ -537,6 +598,42 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
             )}
           </div>
 
+          <div className="mb-4" data-testid="film-review">
+            <button type="button" onClick={reviewFilm} disabled={reviewing} data-testid="review-film"
+              title="SAI reads the scene list as a director: pacing, scene lengths and transitions"
+              className="px-3 py-1.5 bg-white border border-gray-300 text-gray-800 hover:bg-gray-50 disabled:opacity-50 rounded text-sm flex items-center gap-2">
+              {reviewing ? <Loader className="w-4 h-4 animate-spin" /> : <Clapperboard className="w-4 h-4" />}
+              {reviewing ? 'Reviewing...' : review ? 'Review the film again' : "Director's review"}
+            </button>
+            {review && (
+              <div className="mt-2 p-3 border border-blue-200 bg-blue-50 rounded text-sm" data-testid="review-panel">
+                {review.overall && <p className="text-gray-900">{review.overall}</p>}
+                {review.scenes?.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {review.scenes.map(r => (
+                      <li key={r.sceneNumber} className="flex flex-wrap items-start gap-2 text-xs" data-testid="review-row">
+                        <span className="font-semibold">Scene {r.sceneNumber}:</span>
+                        <span className="flex-1 min-w-[12rem]">{r.note}{r.duration ? ` (${r.duration} s)` : ''}{r.transition ? ` (begin with: ${r.transition})` : ''}</span>
+                        {(r.duration || r.transition) && (
+                          <button type="button" onClick={() => draftEdit(b => takeReviewSuggestion(b, selectedTranscript, r.sceneNumber))} data-testid="review-apply"
+                            className="px-1.5 py-0.5 bg-white border border-blue-300 text-blue-700 rounded hover:bg-blue-100">Apply</button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="text-xs text-gray-600 mt-1">No changes suggested.</p>}
+                <div className="flex gap-2 mt-2">
+                  {review.scenes?.some(r => r.duration || r.transition) && (
+                    <button type="button" onClick={() => draftEdit(b => takeReviewSuggestion(b, selectedTranscript, null))} data-testid="review-apply-all"
+                      className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded">Apply all lengths and transitions</button>
+                  )}
+                  <button type="button" onClick={() => draftEdit(b => dismissReview(b, selectedTranscript))} className="px-2 py-1 text-xs text-gray-600 hover:underline">Dismiss</button>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1">A new length takes effect when the scene is rendered again.</p>
+              </div>
+            )}
+          </div>
+
           <div className="space-y-4 max-h-[75vh] overflow-y-auto mb-6 pr-1">
             {parsedScenes.map((scene, idx) => (
               <FilmSceneCard
@@ -556,6 +653,17 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                 onRemoveStill={(url) => draftEdit(b => removeStill(b, selectedTranscript, scene.sceneNumber, url))}
                 onChooseTake={(id) => draftEdit(b => chooseTake(b, selectedTranscript, scene.sceneNumber, id))}
                 onRemoveTake={(id) => { if (confirm('Delete this take?')) draftEdit(b => removeTake(b, selectedTranscript, scene.sceneNumber, id)); }}
+                onMove={(by) => draftEdit(b => moveScene(b, selectedTranscript, scene.sceneNumber, by))}
+                canMoveUp={idx > 0}
+                canMoveDown={idx < parsedScenes.length - 1}
+                onAdvise={() => adviseStill(scene, idx)}
+                adviceBusy={adviceBusy(scene.sceneNumber)}
+                onUseAdvice={(redraw) => takeAdvice(scene, redraw)}
+                onDismissAdvice={() => draftEdit(b => dismissAdvice(b, selectedTranscript, scene.sceneNumber))}
+                onEditStill={(instruction) => editStill(scene, instruction)}
+                onUploadStill={(file) => uploadStill(scene, file)}
+                uploadBusy={uploadingStill === scene.sceneNumber}
+                onTrim={(takeId, patch) => draftEdit(b => setTrim(b, selectedTranscript, scene.sceneNumber, takeId, patch))}
               />
             ))}
           </div>
@@ -581,13 +689,13 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
       {animationProjects.length > 0 && (
         <div className="bg-white rounded-lg p-6 border-2 border-gray-200">
           <h3 className="text-xl font-bold text-gray-900 mb-4">Your Animation Films</h3>
-          <MediaJobList jobs={joinJobs} className="mb-4" hint="Joining the existing scenes; this takes a minute or two. The new film appears below." />
+          <MediaJobList jobs={[...joinJobs, ...exportJobs.filter(j => j.status === 'failed')]} className="mb-4" hint="Joining the existing scenes; this takes a minute or two. The new film appears below." />
 
           <div className="space-y-4">
             {animationProjects.map(project => (
               <div key={project.id} className="border-2 border-gray-200 rounded-lg p-4 hover:border-purple-300 transition-colors">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1">
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                  <div className="flex-1 min-w-[14rem]">
                     <h4 className="font-bold text-gray-900 text-lg">{project.title}</h4>
                     <div className="flex gap-4 text-sm text-gray-600 mt-1">
                       <span>{project.scenes?.length || 0} scenes</span>
@@ -600,7 +708,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                       {project.rejoinedFrom && <span className="text-gray-500" data-testid="project-rejoined">Rejoined</span>}
                     </div>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     {canRejoin(project) && (
                       <button
                         onClick={() => handleRejoin(project)}
@@ -621,6 +729,26 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
                       <Download className="w-4 h-4" />
                       Download
                     </a>
+                    {project.finalVideo?.filename && [['whatsapp', 'WhatsApp'], ['gif', 'GIF']].map(([format, label]) => {
+                      const file = project.finalVideo.files?.[format];
+                      if (file) {
+                        return (
+                          <a key={format} href={file.url} download data-testid={`film-export-${format}-link`}
+                            title={`${label} version (${(file.size / 1024 / 1024).toFixed(1)} MB)`}
+                            className="px-3 py-2 bg-white border-2 border-green-600 text-green-700 hover:bg-green-50 rounded-lg transition-colors flex items-center gap-2 text-sm">
+                            <Download className="w-4 h-4" />{label}
+                          </a>
+                        );
+                      }
+                      const busy = exporting(project, format) || starting === `export:${project.id}:${format}`;
+                      return (
+                        <button key={format} type="button" onClick={() => exportFilm(project, format)} disabled={busy} data-testid={`film-export-${format}`}
+                          title={format === 'whatsapp' ? 'A smaller MP4 (720p) that chat apps send without compressing it again' : 'A silent looping GIF, 480 px wide'}
+                          className="px-3 py-2 bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2 text-sm">
+                          {busy ? <Loader className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}{label}
+                        </button>
+                      );
+                    })}
                     <button
                       onClick={() => {
                         if (confirm('Delete this animation project?')) {
