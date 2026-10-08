@@ -385,7 +385,8 @@ function finish(router, { cfg, store, onlyActive, providerHealth, adminLogin }) 
   return {
     router,
     config: cfg,
-    /** The hidden administrator sign-in page: `guard` (mount ahead of the body parser on /api/auth/login) and `dummyCompare`. */
+    /** The hidden administrator sign-in page: `guard` (mount ahead of the body parser on /api/auth/login), `accountBudget`
+     *  (the per-account failure budget every password login shares; mount on the route after the body parser) and `dummyCompare`. */
     adminLogin,
     /** PORTAL_ONLY is requested AND the portal is healthy: the password routes are really off. */
     onlyActive,

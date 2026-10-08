@@ -102,7 +102,7 @@ export function memoryStore() {
 }
 
 /* ── the real routes on a real server ──────────────────────────────────────────────────────────── */
-export async function startApp({ env = {}, store = memoryStore(), provider = fakeProvider(), now, probe = true, allowSignup, handoff, log, realLogin = false, adminLoginCounter } = {}) {
+export async function startApp({ env = {}, store = memoryStore(), provider = fakeProvider(), now, probe = true, allowSignup, handoff, log, realLogin = false, adminLoginCounter, redis, trustProxy = 1 } = {}) {
   const cfg = loadPortalConfig({ ...baseEnv(), ...env });
   const audit = [];
   const quiet = log || { error() {}, warn() {}, log() {} };
@@ -117,10 +117,10 @@ export async function startApp({ env = {}, store = memoryStore(), provider = fak
     } catch { res.status(401).json({ ok: false }); }
   };
   const portal = createPortalAuth({ cfg, store, jwtSecret: JWT_SECRET, fetch: provider.fetch, log: quiet, ...(now ? { now } : {}), authenticate,
-    probe: { autoStart: false }, ...(allowSignup ? { allowSignup } : {}), ...(handoff ? { handoff } : {}), ...(adminLoginCounter ? { adminLoginCounter } : {}),
+    probe: { autoStart: false }, ...(allowSignup ? { allowSignup } : {}), ...(handoff ? { handoff } : {}), ...(adminLoginCounter ? { adminLoginCounter } : {}), ...(redis ? { redis } : {}),
     audit: async (email, userId, ok, reason) => { audit.push({ email, userId, ok, reason }); } });
   const app = express();
-  app.set('trust proxy', 1);
+  app.set('trust proxy', trustProxy);
   app.use('/api/auth/login', (req, res, next) => portal.adminLogin.guard(req, res, next));   // as index.js: ahead of the global parser
   app.use(express.json());
   app.use(cookieParser());
@@ -128,9 +128,9 @@ export async function startApp({ env = {}, store = memoryStore(), provider = fak
   // realLogin: the same decisions index.js's login handler makes (lookup, dummy compare for an unknown address, bcrypt, suspended,
   // the same JWT and cookie), behind the same blockPasswordLogin. Default: a stub that only says it ran.
   if (realLogin) {
-    app.post('/api/auth/login', portal.blockPasswordLogin, async (req, res) => {
+    app.post('/api/auth/login', portal.adminLogin.accountBudget, portal.blockPasswordLogin, async (req, res) => {
       const { email, password } = req.body;
-      const user = (await store.findUsersByEmail(String(email || '')))[0];
+      const user = (await store.findUsersByEmail(String(email || '').trim()))[0];   // the repository trims
       if (!user) {
         if (req.adminLocalLogin) await portal.adminLogin.dummyCompare(password);
         return res.status(401).json({ error: 'Invalid email or password' });

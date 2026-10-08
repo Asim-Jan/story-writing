@@ -8,9 +8,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { startApp, hash, JWT_SECRET } from './harness.js';
-import {
+import * as AL from '../adminLogin.js';
+
+const {
   ADMIN_LOGIN_PATH, ADMIN_LOGIN_SCRIPT, ENTRY_HEADER, ENTRY_VALUE, GENERIC, LOCKED, MAX_FAILURES, ipClass, createWindowCounter,
-} from '../adminLogin.js';
+} = AL;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(here, '..', '..', '..');
@@ -304,9 +306,22 @@ test('ipClass: /24 for IPv4 (also mapped), /64 for IPv6, never throws', () => {
   for (const bad of ['', undefined, 'not an ip', '1:2:3', '::g']) assert.equal(ipClass(bad), 'unknown');
 });
 
+/** A Redis stand-in that understands the two scripts by identity (the real thing is exercised in login-budget.test.js). */
+function luaFake() {
+  const data = new Map();
+  return {
+    data,
+    async eval(script, { keys, arguments: args = [] }) {
+      const k = keys[0];
+      if (script === AL.HIT_LUA) { data.set(k, (data.get(k) || 0) + 1); return data.get(k); }
+      if (script === AL.RELEASE_LUA) { if ((data.get(k) || 0) > 0) data.set(k, data.get(k) - 1); return data.get(k) || 0; }
+      throw new Error('unknown script');
+    },
+  };
+}
+
 test('the counter: Redis when it answers (shared, with release), process memory when it does not or hangs', async () => {
-  const store = new Map();
-  const fake = { async incr(k) { store.set(k, (store.get(k) || 0) + 1); return store.get(k); }, async expire() {}, async decr(k) { store.set(k, store.get(k) - 1); } };
+  const fake = luaFake();
   const quiet = { warn() {}, log() {} };
   const c = createWindowCounter({ redis: () => fake, log: quiet });
   const a = await c.hit('k');
@@ -314,8 +329,8 @@ test('the counter: Redis when it answers (shared, with release), process memory 
   assert.equal((await c.hit('k')).n, 2);
   await a.release();
   assert.equal((await c.hit('k')).n, 2);
-  assert.ok([...store.keys()].every((k) => k.startsWith('stories:admin-login:')));
-  const hung = createWindowCounter({ redis: () => ({ incr: () => new Promise(() => {}) }), redisTimeoutMs: 20, log: quiet });
+  assert.ok([...fake.data.keys()].every((k) => k.startsWith('stories:admin-login:')));
+  const hung = createWindowCounter({ redis: () => ({ eval: () => new Promise(() => {}) }), redisTimeoutMs: 20, log: quiet });
   assert.equal((await hung.hit('k')).n, 1);
   assert.equal((await hung.hit('k')).n, 2);        // memory took over and keeps counting
   const broken = createWindowCounter({ redis: () => { throw new Error('no client'); }, log: quiet });
@@ -365,13 +380,16 @@ test('JSON only, 2 KB at most, valid JSON, both fields present', async () => {
   });
 });
 
-test('unmarked login requests are untouched: no Origin check, no extra budget, the old answers', async () => {
+test('unmarked login requests are untouched: no Origin check, the old answers, and a looser per-account budget than the page', async () => {
   await withApp({}, async (t) => {
     const plain = (body, headers = {}) => fetch(t.base + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://other.example', ...headers }, body: JSON.stringify(body) });
     for (let i = 0; i < MAX_FAILURES + 2; i++) assert.equal((await plain({ email: ADMIN, password: 'wrong' })).status, 401);
     const r = await plain({ email: ADMIN, password: 'wrong' });
     assert.deepEqual(await r.json(), { error: 'Invalid email or password' });   // the normal endpoint keeps its own wording
-    assert.equal((await post(t, { email: ADMIN, password: PW }, fromIp('10.8.0.1'))).status, 200);   // and spent nothing of the page's budget
+    // the account counter is SHARED: after eight failures the page (limit 5) is locked for that account, the normal form (limit 10) is not yet
+    assert.equal((await post(t, { email: ADMIN, password: PW }, fromIp('10.8.0.1'))).status, 429);
+    assert.equal((await plain({ email: ADMIN, password: PW })).status, 200);
+    assert.equal((await post(t, { email: READER, password: PW }, fromIp('10.8.0.1'))).status, 200);   // another account is unaffected
   });
 });
 

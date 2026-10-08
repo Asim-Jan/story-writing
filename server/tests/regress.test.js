@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import { createClient } from 'redis';
+import { accountKey } from '../portalAuth/loginBudget.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.join(__dirname, '..');
@@ -532,6 +533,48 @@ async function portalOnlyEnforced(db, gateway) {
         ![boss2.email, boss3.email, reader2.email, PW, 'wrong-pw', '198.51.100.10', 'wrong-0'].some((x) => slog.includes(x)));
       r = await call('POST', '/api/auth/login', null, { email: reader2.email, password: PW });
       check('admin page: the marker grants nothing; the normal endpoint still refuses a non-admin under PORTAL_ONLY (403)', r.status === 403 && r.json?.code === 'PORTAL_ONLY', `got ${r.status}`);
+    }
+
+    // review of the admin page, finding 1: the NORMAL login (unmarked) is limited per normalised address and per ACCOUNT, whatever
+    // the client address or X-Forwarded-For says. Every guess here is from a made-up client address ("<client>, <proxy>": two trusted hops).
+    {
+      const bossA = await mk('bossa', { role: 'admin' });
+      const bossB = await mk('bossb', { role: 'admin' });
+      const bossC = await mk('bossc', { role: 'admin' });
+      const bossD = await mk('bossd', { role: 'admin' });
+      let un = 0;
+      const plainLogin = (email, password, ip) => fetch(srv.base + '/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `${ip || `192.0.${(un++ % 250) + 1}.${(un % 200) + 1}`}, 10.9.9.9` }, body: JSON.stringify({ email, password }),
+      });
+      const spell = (e, i) => [e, e.toUpperCase(), ` ${e} `, e[0].toUpperCase() + e.slice(1), `\t${e}`][i % 5];
+      let st = [];
+      for (let i = 0; i < 12; i++) st.push((await plainLogin(spell(bossA.email, i), `guess-${i}`, '192.0.2.10')).status);
+      check('login: case and space variants of one address from ONE client share one budget (5 x 401, then 429)', st.join(',') === '401,401,401,401,401,429,429,429,429,429,429,429', st.join(','));
+      st = [];
+      for (let i = 0; i < 25; i++) st.push((await plainLogin(spell(bossB.email, i), `guess-${i}`)).status);
+      check('login: 25 guesses at one account from 25 different client addresses: ten reach the handler, the rest are 429', st.filter((x) => x === 401).length === 10 && st.filter((x) => x === 429).length === 15 && st.slice(10).every((x) => x === 429), st.join(','));
+      check('...the account stays locked for the right password, from yet another address; another admin is unaffected',
+        (await plainLogin(bossB.email, PW, '192.0.250.250')).status === 429 && (await plainLogin(bossD.email, PW, '192.0.250.251')).status === 200);
+      const acctTtl = await redis.ttl(`stories:admin-login:${accountKey(bossB.email)}`);
+      check('...the account budget lives in Redis with a window (TTL 1..900 s)', acctTtl > 0 && acctTtl <= 900, `ttl ${acctTtl}`);
+      st = [];
+      for (let i = 0; i < 8; i++) st.push((await fetch(srv.base + '/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `${i + 1}.${i + 1}.${i + 1}.${i + 1}, 192.0.2.77, 10.9.9.9` }, body: JSON.stringify({ email: bossC.email, password: `g${i}` }),
+      })).status);
+      check('login: a client-typed LEFTMOST X-Forwarded-For entry is not a fresh budget (the per-address limiter follows the real client: 5 x 401 then 429)', st.join(',') === '401,401,401,401,401,429,429,429', st.join(','));
+      // finding 2 on the real server: an account key that lost its TTL is given one by the next hit, and the lock ends
+      const bossE = await mk('bosse', { role: 'admin' });
+      const eKey = `stories:admin-login:${accountKey(bossE.email)}`;
+      await redis.set(eKey, '6');
+      check('Redis key without a TTL: set up (TTL -1)', (await redis.ttl(eKey)) === -1);
+      const m = await fetch(srv.base + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Stories-Entry': 'admin-local-login', Origin: srv.base, 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': '203.0.113.201, 10.9.9.9' },
+        body: JSON.stringify({ email: bossE.email, password: PW }),
+      });
+      const eTtl = await redis.ttl(eKey);
+      check('...the next hit gives it a window instead of leaving a permanent lock-out (429 now, TTL 1..900 s)', m.status === 429 && eTtl > 0 && eTtl <= 900, `status ${m.status} ttl ${eTtl}`);
+      check('SAI Cloud sign-in is not counted by any of this (the portal config still answers)', (await call('GET', '/api/auth/portal/config')).status === 200);
     }
 
     // second review, finding 3: the PORTAL_ONLY refusal runs AFTER the limiters, so a flood of blocked logins is throttled

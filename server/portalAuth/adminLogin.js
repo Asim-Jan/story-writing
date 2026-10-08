@@ -15,8 +15,10 @@
 //   * same-origin only: Sec-Fetch-Site (when sent) must be `same-origin` and Origin must be this site; JSON content type;
 //     a 2 KB body cap (read here, before the 10 MB global parser);
 //   * its own strict budget: 5 failures per 15 minutes per ACCOUNT and per IP CLASS (/24 for IPv4, /64 for IPv6), counted
-//     BEFORE the attempt and given back on success, so parallel guesses cannot all slip through; Redis when connected, this
-//     process otherwise; a locked request gets 429 and never reaches the login handler;
+//     BEFORE the attempt and given back on success, so parallel guesses cannot all slip through; the IP class is charged
+//     first and an account key only after it; Redis when connected, this process otherwise (loginBudget.js); a locked
+//     request gets 429 and never reaches the login handler. The ACCOUNT counter is the one every password sign-in shares:
+//     the unmarked form is held to 10 failures on the same key (`accountBudget` below), the marked page to 5;
 //   * one uniform failure: every refusal (wrong password, unknown address, not an admin under PORTAL_ONLY, suspended, bad
 //     body) is the same 401 with the same text, and a "not an admin" or "no such address" answer costs one bcrypt compare,
 //     like a wrong password, so neither status, text nor timing class tells them apart;
@@ -27,14 +29,17 @@ import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
+import {
+  MAX_FAILURES, ACCOUNT_MAX_FAILURES, WINDOW_MS, ipClass, normalizeEmail, accountKey, createWindowCounter,
+} from './loginBudget.js';
+
+export { MAX_FAILURES, ACCOUNT_MAX_FAILURES, WINDOW_MS, ipClass, normalizeEmail, accountKey, createWindowCounter, loginLimiterKey, HIT_LUA, RELEASE_LUA } from './loginBudget.js';
 
 export const ADMIN_LOGIN_PATH = '/admin/local-login';
 export const ADMIN_LOGIN_SCRIPT = ADMIN_LOGIN_PATH + '.js';
 export const ADMIN_LOGIN_API = '/api/auth/login';
 export const ENTRY_HEADER = 'x-stories-entry';
 export const ENTRY_VALUE = 'admin-local-login';
-export const MAX_FAILURES = 5;
-export const WINDOW_MS = 15 * 60 * 1000;
 export const BODY_LIMIT = '2kb';
 export const GENERIC = 'That did not work. Check the details and try again.';
 export const LOCKED = 'Too many attempts. Try again later.';
@@ -110,73 +115,6 @@ export function surfaceHeaders(res) {
   });
 }
 
-/** "203.0.113.0/24" for IPv4 (also ::ffff:a.b.c.d), "2001:db8:1:2::/64" for IPv6; "unknown" when there is no address. */
-export function ipClass(ip) {
-  let s = String(ip || '').trim().toLowerCase();
-  if (!s) return 'unknown';
-  const mapped = s.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
-  if (mapped) s = mapped[1];
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(s)) return s.split('.').slice(0, 3).join('.') + '.0/24';
-  if (!s.includes(':')) return 'unknown';
-  const [head, tail = null] = s.split('::');
-  const a = head ? head.split(':') : [];
-  const b = tail === null ? [] : (tail ? tail.split(':') : []);
-  const groups = tail === null ? a : [...a, ...Array(Math.max(0, 8 - a.length - b.length)).fill('0'), ...b];
-  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return 'unknown';
-  return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':') + '::/64';
-}
-
-/**
- * A counter per fixed window: hit(key) adds one and says how many there are now; the returned release() gives the one
- * back (a success is not a failure). Redis (when `redis()` yields a client) so replicas agree and a restart does not
- * forget; the process's memory otherwise, and also when Redis does not answer within `redisTimeoutMs` (node-redis queues
- * commands while it reconnects, so a dead Redis must never make a sign-in wait). hit and release use the SAME backend.
- */
-export function createWindowCounter({ now = Date.now, redis = () => null, windowMs = WINDOW_MS, redisTimeoutMs = 750, maxKeys = 20000, log = console } = {}) {
-  const mem = new Map();                       // key -> { n, exp }
-  const ttlS = Math.ceil(windowMs / 1000);
-  let lastWarn = -Infinity;
-  const warn = (what) => {
-    if (now() - lastWarn < 60_000) return;
-    lastWarn = now();
-    log.warn?.(`[admin-local-login] limiter store (redis) ${what}, using process memory`);
-  };
-  const sweep = () => {
-    const t = now();
-    for (const [k, v] of mem) if (v.exp <= t) mem.delete(k);
-    while (mem.size >= maxKeys) mem.delete(mem.keys().next().value);   // oldest first: bounded however many addresses are tried
-  };
-  const withTimeout = (p) => {
-    let timer;
-    return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timed out')), redisTimeoutMs); })]).finally(() => clearTimeout(timer));
-  };
-  const memHit = (key) => {
-    const t = now();
-    let e = mem.get(key);
-    if (!e || e.exp <= t) { if (mem.size >= maxKeys) sweep(); e = { n: 0, exp: t + windowMs }; mem.set(key, e); }
-    e.n += 1;
-    return { n: e.n, release: async () => { const x = mem.get(key); if (x && x === e && x.n > 0) x.n -= 1; } };
-  };
-  return {
-    async hit(key) {
-      let client = null;
-      try { client = redis(); } catch { client = null; }
-      if (client) {
-        const k = 'stories:admin-login:' + key;
-        try {
-          const n = await withTimeout((async () => { const v = await client.incr(k); if (v === 1) await client.expire(k, ttlS); return v; })());
-          return { n, release: async () => { try { await withTimeout(client.decr(k)); } catch { /* the window expires on its own */ } } };
-        } catch (e) {
-          warn(e && e.message === 'timed out' ? 'did not answer in time' : 'failed');
-        }
-      }
-      return memHit(key);
-    },
-  };
-}
-
-const hashKey = (s) => crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 24);
-
 /**
  * @param {object} o
  * @param {object} o.cfg                 the portal config (read live: it flips to disabled on a bad client config)
@@ -238,13 +176,18 @@ export function createAdminLogin({ cfg, log = console, now = Date.now, redis = (
       if (!/^application\/json\s*(;|$)/i.test(req.get('content-type') || '')) return refuse(req, res, 415, 'content_type');
       await new Promise((resolve, reject) => json(req, res, (err) => (err ? reject(err) : resolve())));
       const b = req.body;
-      const email = typeof b?.email === 'string' ? b.email.trim().toLowerCase() : '';
+      const email = normalizeEmail(b?.email);
       if (!email || email.length > 320 || typeof b.password !== 'string' || !b.password || b.password.length > 1024) return refuse(req, res, 400, 'body');
 
-      // the budget is spent BEFORE the attempt and given back when it succeeds
-      const a = await limits.hit('a:' + hashKey(email));
-      const i = await limits.hit('i:' + ipClass(req.ip));
-      if (a.n > maxFailures || i.n > maxFailures) return refuse(req, res, 429, a.n > maxFailures ? 'account_budget' : 'ip_budget', LOCKED);
+      // the budget is spent BEFORE the attempt and given back when it succeeds. The IP class is charged FIRST: a request that
+      // is over it is refused without ever creating (or touching) an account key, so a flood of made-up addresses from one
+      // class cannot push the real account's counter out of the table. The account counter is the one every password
+      // sign-in shares (`accountBudget`), here held to the tighter limit.
+      const cls = ipClass(req.ip);
+      const i = await limits.hit('i:' + cls, { budget: maxFailures });
+      if (i.n > maxFailures) return refuse(req, res, 429, 'ip_budget', LOCKED);
+      const a = await limits.hit(accountKey(email), { budget: maxFailures, cls });
+      if (a.n > maxFailures) return refuse(req, res, 429, 'account_budget', LOCKED);
 
       // every failure leaves as the same 401 (a PORTAL_ONLY refusal costs one bcrypt compare, like a wrong password does)
       const send = res.json.bind(res);
@@ -277,8 +220,34 @@ export function createAdminLogin({ cfg, log = console, now = Date.now, redis = (
     }
   }
 
+  /**
+   * The per-ACCOUNT failure budget for every password sign-in that did NOT come through the admin page (that one is charged by
+   * `guard`, on the same key, with the tighter limit). Mounted on POST /api/auth/login after the body is parsed and after the
+   * per-IP limiters. 10 failures per 15 minutes per normalised address, whatever the client address or X-Forwarded-For
+   * says, so rotating addresses cannot multiply guesses at one account. The attempt is counted before it runs and given
+   * back when it succeeds: a correct password never counts. A locked address gets 429 and the login handler never runs.
+   * SAI Cloud sign-in does not pass through here (it is the primary path and has no password to guess).
+   */
+  async function accountBudget(req, res, next) {
+    if (req.adminLocalLogin) return next();
+    try {
+      const email = normalizeEmail(req.body?.email);
+      if (!email) return next();                   // nothing to charge; the handler answers 400
+      const a = await limits.hit(accountKey(email), { budget: ACCOUNT_MAX_FAILURES, cls: ipClass(req.ip) });
+      if (a.n > ACCOUNT_MAX_FAILURES) {
+        res.set('Retry-After', String(Math.ceil(WINDOW_MS / 1000)));
+        return res.status(429).json({ error: 'Too many login attempts, please try again later' });
+      }
+      res.on('finish', () => { if (res.statusCode >= 200 && res.statusCode < 300) a.release(); });
+      return next();
+    } catch (e) {
+      log.error?.('[login-budget] account budget failed:', e && (e.code || e.name));
+      return next();
+    }
+  }
+
   return {
-    router, guard,
+    router, guard, accountBudget,
     /** An unknown address costs what a wrong password costs (the login handler calls this when the lookup finds nobody). */
     dummyCompare: (password) => bcrypt.compare(String(password || ''), dummyHash).catch(() => false),
   };

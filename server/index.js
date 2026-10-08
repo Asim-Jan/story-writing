@@ -59,6 +59,7 @@ import { initializeAuthorization } from './middleware/authorization.js';
 import { features } from './config/features.js';
 import { loadPortalConfig } from './portalAuth/config.js';
 import { createPortalAuth } from './portalAuth/routes.js';
+import { loginLimiterKey, normalizeEmail } from './portalAuth/loginBudget.js';
 import { pgStore as portalStore } from './portalAuth/store.js';
 import { createOnceStore, reissueLifetimeS } from './portalAuth/session.js';
 import { ApiResponse } from './utils/responses.js';
@@ -590,10 +591,10 @@ const authLimiter = rateLimit({
   message: 'Too many login attempts, please try again later',
   skipSuccessfulRequests: true, // Only count failed attempts
   // SECURITY: Use email + IP to prevent both distributed attacks and targeted attacks
-  keyGenerator: (req) => {
-    const email = req.body?.email || 'unknown';
-    return `auth:${email}:${req.ip}`;
-  },
+  // The address is NORMALISED (trim, lower case, NFKC) the way the account lookup is blind to case and spaces: "Admin@x",
+  // " admin@x " and "ADMIN@X" are one account, so they share one budget. The per-ACCOUNT budget (accountBudget, below) is what
+  // stops a client that rotates its address.
+  keyGenerator: loginLimiterKey,
 });
 
 // SECURITY: Rate limit registration endpoint to prevent spam/bot accounts
@@ -620,7 +621,7 @@ const emailSendLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many emails requested. Please wait a while and try again.' },
-  keyGenerator: (req) => `email:${String(req.body?.email || req.user?.userId || '').toLowerCase()}:${req.ip}`,
+  keyGenerator: (req) => `email:${normalizeEmail(req.body?.email) || String(req.user?.userId || '').toLowerCase()}:${req.ip}`,
 });
 
 // Redis client - MUST be created before session middleware
@@ -1010,8 +1011,9 @@ const portalOnlyRefusalLimiter = rateLimit({
   skip: () => !portalAuth.onlyActive(),
   keyGenerator: (req) => `portal-only:${req.ip}`,
 });
-// both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query
-app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.blockPasswordLogin, async (req, res) => {
+// both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query. accountBudget comes
+// after them (a request an IP limiter already refused does not spend the account's budget) and before the query too.
+app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.adminLogin.accountBudget, portalAuth.blockPasswordLogin, async (req, res) => {
   try {
     // the admin sign-in page's requests keep the address out of the log (its own audit line says what happened)
     const loginLog = (...a) => { if (!req.adminLocalLogin) console.log(...a); };
