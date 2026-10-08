@@ -17,6 +17,7 @@ export const FEATURE_LABELS = {
   version_history: 'Version history',
   priority_processing: 'Priority processing',
   model_choice: 'Choose the Writer model',
+  premium_images: 'Qwen Image 2.1 for pictures and edits',
 };
 
 export const UNLIMITED = 999999;
