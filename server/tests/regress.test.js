@@ -477,6 +477,63 @@ async function portalOnlyEnforced(db, gateway) {
     r = await call('GET', '/api/auth/me', t1);
     check('6a. the replacement token works (it carries the bumped token_version)', r.status === 200, `got ${r.status}`);
 
+    // the hidden administrator sign-in page, on the real server (index.js wiring, Redis-backed budget, real bcrypt, real JWT).
+    // Each check uses its own client address (X-Forwarded-For: <client>, <proxy>; two trusted hops) so this section does not
+    // spend the per-IP budgets the checks around it measure.
+    {
+      const boss2 = await mk('boss2', { role: 'admin' });
+      const boss3 = await mk('boss3', { role: 'admin' });
+      const reader2 = await mk('reader2');
+      let cn = 0;
+      const marked = (body, { ip = `203.0.${cn++ % 250}.5`, headers = {}, raw } = {}) => fetch(srv.base + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Stories-Entry': 'admin-local-login', Origin: srv.base, 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': `${ip}, 10.9.9.9`, ...headers },
+        body: raw !== undefined ? raw : JSON.stringify(body),
+      });
+      const page = await fetch(srv.base + '/admin/local-login');
+      const html = await page.text();
+      check('admin page: served with no-store, noindex, no-referrer, frame-ancestors none; email + password form; administrators only',
+        page.status === 200 && /no-store/.test(page.headers.get('cache-control') || '') && /noindex/.test(page.headers.get('x-robots-tag') || '')
+        && page.headers.get('referrer-policy') === 'no-referrer' && /frame-ancestors 'none'/.test(page.headers.get('content-security-policy') || '')
+        && /type="password"/.test(html) && /administrators only/i.test(html), `got ${page.status}`);
+      const scr = await fetch(srv.base + '/admin/local-login.js');
+      check('admin page: its script is served the same way', scr.status === 200 && /javascript/.test(scr.headers.get('content-type') || '') && /no-store/.test(scr.headers.get('cache-control') || ''), `got ${scr.status}`);
+      let m = await marked({ email: boss2.email, password: PW });
+      const mj = await m.json();
+      check('admin page: an ADMIN signs in through the marked login; the token works and the HttpOnly cookie is set',
+        m.status === 200 && !!mj.token && mj.user?.role === 'admin' && /^token=.*HttpOnly/i.test(m.headers.get('set-cookie') || '') && (await call('GET', '/api/auth/me', mj.token)).status === 200, `got ${m.status}`);
+      const answers = [];
+      for (const body of [{ email: boss2.email, password: 'wrong-pw' }, { email: reader2.email, password: PW }, { email: reader2.email, password: 'wrong-pw' }, { email: `ghost-${Date.now()}@regress.local`, password: PW }]) {
+        const x = await marked(body);
+        answers.push(`${x.status} ${JSON.stringify(await x.json())}`);
+      }
+      check('admin page: wrong password, a non-admin with the RIGHT password, and an unknown address all get the SAME 401 and text', new Set(answers).size === 1 && answers[0].startsWith('401 '), answers.join(' | '));
+      m = await marked({ email: boss2.email, password: PW }, { headers: { Origin: 'https://evil.example' } });
+      check('admin page: a foreign Origin is refused (403) before anything is checked', m.status === 403, `got ${m.status}`);
+      m = await marked({ email: boss2.email, password: PW }, { headers: { 'Sec-Fetch-Site': 'cross-site' } });
+      check('admin page: Sec-Fetch-Site cross-site is refused (403)', m.status === 403, `got ${m.status}`);
+      m = await marked(null, { raw: 'email=a&password=b', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      check('admin page: a form post is refused (415)', m.status === 415, `got ${m.status}`);
+      m = await marked({ email: boss2.email, password: 'x'.repeat(5000) });
+      check('admin page: a body over 2 KB is refused (413)', m.status === 413, `got ${m.status}`);
+      const lockStatuses = [];
+      for (let i = 0; i < 7; i++) lockStatuses.push((await marked({ email: boss3.email, password: `wrong-${i}` })).status);
+      check('admin page: five failures per account lock it (401 x5, then 429), from five different addresses', lockStatuses.join(',') === '401,401,401,401,401,429,429', lockStatuses.join(','));
+      check('...even for the right password, while another admin is unaffected', (await marked({ email: boss3.email, password: PW })).status === 429 && (await marked({ email: boss2.email, password: PW })).status === 200);
+      const ipStatuses = [];
+      for (let i = 0; i < 6; i++) ipStatuses.push((await marked({ email: `spray${i}-${Date.now()}@regress.local`, password: 'x' }, { ip: `198.51.100.${10 + i}` })).status);
+      check('admin page: five failures from one /24 lock the whole class (a sixth, different address and host, is 429)', ipStatuses.join(',') === '401,401,401,401,401,429', ipStatuses.join(','));
+      check('admin page: the budget lives in Redis (shared across replicas)', (await redis.keys('stories:admin-login:*')).length >= 2);
+      const slog = srv.log();
+      const auditLines = slog.split('\n').filter((l) => l.startsWith('[admin-local-login]'));
+      check('admin page: audit lines exist for success, failure, refused and locked',
+        ['success', 'failure', 'refused', 'locked'].every((o) => auditLines.some((l) => l.includes(`outcome=${o}`))), auditLines.slice(0, 3).join(' | '));
+      check('admin page: no audit or log line carries the addresses typed here, the password, or the client address',
+        ![boss2.email, boss3.email, reader2.email, PW, 'wrong-pw', '198.51.100.10', 'wrong-0'].some((x) => slog.includes(x)));
+      r = await call('POST', '/api/auth/login', null, { email: reader2.email, password: PW });
+      check('admin page: the marker grants nothing; the normal endpoint still refuses a non-admin under PORTAL_ONLY (403)', r.status === 403 && r.json?.code === 'PORTAL_ONLY', `got ${r.status}`);
+    }
+
     // second review, finding 3: the PORTAL_ONLY refusal runs AFTER the limiters, so a flood of blocked logins is throttled
     // before each one costs a database query. (Last in this section: it spends this client's whole per-IP budget.)
     const same = [];
@@ -806,6 +863,12 @@ async function mainSuite(gateway) {
         r.status === 200 && !!fresh && (await call('GET', '/api/auth/me', su.token)).status === 401 && (await call('GET', '/api/auth/me', fresh)).status === 200);
       r = await call('POST', '/api/auth/portal/attach', fresh, { password: 'x' });
       check('settings: Connect SAI Cloud is a 404 while the feature is off', r.status === 404, `got ${r.status}`);
+      for (const pth of ['/admin/local-login', '/admin/local-login.js']) {
+        const off = await fetch(call.base + pth);
+        check(`admin sign-in page ${pth} is a JSON 404 while SAI Cloud sign-in is off (the normal form is the way in)`, off.status === 404 && /json/.test(off.headers.get('content-type') || ''), `got ${off.status}`);
+      }
+      r = await fetch(call.base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Stories-Entry': 'admin-local-login', Origin: call.base }, body: JSON.stringify({ email: 'nobody@regress.local', password: 'x' }) });
+      check('...and a marked login is a 404 too, while an unmarked one still answers 401', r.status === 404 && (await call('POST', '/api/auth/login', null, { email: 'nobody@regress.local', password: 'x' })).status === 401, `got ${r.status}`);
       const h = await import('../../src/utils/settings.js');
       const aid = 'a'.repeat(32);
       check('settings helpers: meters, arrival from the URL, initials',
