@@ -697,6 +697,47 @@ async function mainSuite(gateway) {
       await db.query(`UPDATE users SET role = 'user' WHERE id = $1`, [owner.id]);
     }
 
+    console.log('\n== Settings > AI models (plan-gated Writer choice)');
+    {
+      const chatModels = () => gateway.requests.filter(q => q.path.endsWith('/chat/completions')).map(q => q.body?.model);
+      const chooser = await makeUser(db, 'chooser');
+      const other = await makeUser(db, 'not-choosing');
+      r = await call('GET', '/api/ai-models', chooser.token);
+      check('models: a free user sees the Writer (plan default), the Assistant and 5 media jobs, and cannot choose',
+        r.status === 200 && r.json?.writer?.model?.id === 'sai-chat-fast' && r.json?.writer?.canChoose === false && r.json?.assistant?.model?.id === 'sai-chat-fast'
+        && r.json?.media?.length === 5 && r.json?.writer?.choices?.map(c => c.id).join() === 'sai-chat,sai-chat-fast', JSON.stringify(r.json?.writer));
+      r = await call('PUT', '/api/users/ai-model', chooser.token, { writer: 'sai-chat' });
+      check('models: choosing is refused below Premium (403 PLAN)', r.status === 403 && r.json?.code === 'PLAN', `got ${r.status}`);
+      await db.query(`UPDATE users SET tier = 'premium' WHERE id = $1`, [chooser.id]);
+      r = await call('PUT', '/api/users/ai-model', chooser.token, { writer: 'gpt-9' });
+      check('models: Premium cannot pick a model outside the list', r.status === 400, `got ${r.status}`);
+      r = await call('PUT', '/api/users/ai-model', chooser.token, { writer: 'sai-chat' });
+      const after = await call('GET', '/api/ai-models', chooser.token);
+      check('models: Premium picks sai-chat and the page reports it', r.status === 200 && after.json?.writer?.canChoose === true && after.json?.writer?.chosen === 'sai-chat' && after.json?.writer?.model?.id === 'sai-chat' && after.json?.writer?.planDefault?.id === 'sai-chat-fast',
+        JSON.stringify(after.json?.writer));
+      let n = chatModels().length;
+      await call('POST', '/api/generate', chooser.token, { type: 'character', prompt: 'a lighthouse keeper' });
+      const mine = chatModels().slice(n);
+      n = chatModels().length;
+      await call('POST', '/api/generate', other.token, { type: 'character', prompt: 'a lighthouse keeper' });
+      const theirs = chatModels().slice(n);
+      check('models: the Premium user\'s Writer calls go to their model; everyone else keeps the default', mine.includes('sai-chat') && !mine.includes('sai-chat-fast') && theirs.includes('sai-chat-fast') && !theirs.includes('sai-chat'),
+        `mine=${mine.join(',')} theirs=${theirs.join(',')}`);
+      await call('PUT', '/api/users/settings', chooser.token, { preferences: { defaultVoice: { engine: 'vibevoice', voice: 'en-emma_woman' } } });
+      const kept = (await db.query(`SELECT preferences FROM user_settings WHERE user_id = $1`, [chooser.id])).rows[0]?.preferences;
+      check('models: saving other preferences keeps the Writer choice', kept?.writerModel === 'sai-chat' && kept?.defaultVoice?.voice === 'en-emma_woman', JSON.stringify(kept));
+      await db.query(`UPDATE users SET tier = 'basic' WHERE id = $1`, [chooser.id]);
+      n = chatModels().length;
+      await call('POST', '/api/generate', chooser.token, { type: 'character', prompt: 'a lighthouse keeper' });
+      const down = chatModels().slice(n);
+      r = await call('GET', '/api/ai-models', chooser.token);
+      check('models: after a downgrade the default applies again (the saved choice waits)', down.includes('sai-chat-fast') && !down.includes('sai-chat') && r.json?.writer?.canChoose === false && r.json?.writer?.model?.id === 'sai-chat-fast',
+        `calls=${down.join(',')} ${JSON.stringify(r.json?.writer)}`);
+      await db.query(`UPDATE users SET tier = 'premium' WHERE id = $1`, [chooser.id]);
+      r = await call('PUT', '/api/users/ai-model', chooser.token, { writer: null });
+      check('models: back to the plan default', r.status === 200 && (await call('GET', '/api/ai-models', chooser.token)).json?.writer?.chosen === null);
+    }
+
     console.log('\n== chat wiring');
     const chatCalls = gateway.requests.filter(q => q.path.endsWith('/chat/completions'));
     check('every chat call turns thinking off', chatCalls.length > 0 && chatCalls.every(q => q.body?.chat_template_kwargs?.enable_thinking === false),

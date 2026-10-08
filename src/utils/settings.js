@@ -16,6 +16,7 @@ export const FEATURE_LABELS = {
   collaboration: 'Collaborators',
   version_history: 'Version history',
   priority_processing: 'Priority processing',
+  model_choice: 'Choose the Writer model',
 };
 
 export const UNLIMITED = 999999;
@@ -45,7 +46,7 @@ export function initialsOf(name, email) {
  * What a URL asks the Settings page to open with: ?settings=<section>, plus ?connect=<id> after a SAI Cloud connect and
  * ?checkout=success|canceled after Stripe. null when the URL does not ask for Settings.
  */
-export function settingsArrival(search, sections = ['account', 'security', 'plan', 'preferences']) {
+export function settingsArrival(search, sections = ['account', 'security', 'plan', 'models', 'preferences']) {
   const q = new URLSearchParams(search || '');
   if (!q.has('settings')) return null;
   const s = q.get('settings');
