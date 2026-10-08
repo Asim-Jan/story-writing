@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, User, Shield, BookTemplate, History, ArrowRight } from 'lucide-react';
+import { Book, Plus, Trash2, Edit3, Clock, Search, Wand2, Upload, Settings, Shield, BookTemplate, History, ArrowRight } from 'lucide-react';
 import AIBookGeneratorModal from './AIBookGeneratorModal';
 import ImportUploadDialog from './ImportUploadDialog';
 import RecentImports from './RecentImports';
 import ImportReview from './ImportReview';
 import { importsApi } from '../utils/importsApi';
-import SettingsModal from './SettingsModal';
-import ProfilePage from './ProfilePage';
+import SettingsPage from './SettingsPage';
+import { settingsArrival } from '../utils/settings';
 import TemplateGalleryModal from './TemplateGalleryModal';
 import TemplatePreviewModal from './TemplatePreviewModal';
 
@@ -26,8 +26,11 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
   const [importView, setImportView] = useState(null);
   const [pendingImports, setPendingImports] = useState([]); // imports waiting for review
   const setShowImport = (open) => setImportView(open ? { mode: 'upload' } : null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
+  // Settings: null, or { section, arrival } (arrival: back from SAI Cloud or from checkout, read off the URL once)
+  const [settings, setSettings] = useState(() => {
+    const arrival = settingsArrival(window.location.search);
+    return arrival ? { section: arrival.section, arrival } : null;
+  });
   const [quotas, setQuotas] = useState(null);
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   const [showTemplatePreview, setShowTemplatePreview] = useState(false);
@@ -37,6 +40,8 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
     loadBooks();
     loadQuotas();
     loadPendingImports();
+    // the one-time parameters have done their job: a reload must not replay "connected" or "payment received"
+    if (settings?.arrival) window.history.replaceState({}, '', '/');
   }, []);
 
   const loadPendingImports = async () => {
@@ -185,8 +190,8 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
     );
   }
 
-  if (showProfile) {
-    return <ProfilePage onBack={() => setShowProfile(false)} />;
+  if (settings) {
+    return <SettingsPage section={settings.section} arrival={settings.arrival} onBack={() => { setSettings(null); loadQuotas(); }} />;
   }
 
   return (
@@ -219,18 +224,11 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
               </button>
             )}
             <button
-              onClick={() => setShowProfile(true)}
+              onClick={() => setSettings({ section: 'account' })}
               className="iconb"
-              title="Profile"
-              aria-label="Profile"
-            >
-              <User size={18} />
-            </button>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="iconb"
-              title="AI & Usage"
-              aria-label="AI and Usage"
+              title="Settings"
+              aria-label="Settings"
+              data-testid="open-settings"
             >
               <Settings size={18} />
             </button>
@@ -438,12 +436,6 @@ const BooksList = ({ onSelectBook, onNewBook, onOpenAdmin }) => {
           onOpenBook={openImportedBook}
         />
       )}
-
-      {/* Settings Modal */}
-      <SettingsModal
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-      />
 
       {/* Template Gallery Modal */}
       {showTemplateGallery && (

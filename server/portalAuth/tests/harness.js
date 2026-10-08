@@ -106,7 +106,17 @@ export async function startApp({ env = {}, store = memoryStore(), provider = fak
   const cfg = loadPortalConfig({ ...baseEnv(), ...env });
   const audit = [];
   const quiet = log || { error() {}, warn() {}, log() {} };
-  const portal = createPortalAuth({ cfg, store, jwtSecret: JWT_SECRET, fetch: provider.fetch, log: quiet, ...(now ? { now } : {}),
+  // stands in for authenticateToken: bearer or cookie, same JWT secret, same token_version rule
+  const authenticate = (req, res, next) => {
+    try {
+      const claims = jwt.verify(String(req.headers.authorization || '').split(' ')[1] || req.cookies.token || '', JWT_SECRET);
+      const u = store.users.find((x) => x.id === claims.userId && !x.deleted_at);
+      if (!u || (claims.tokenVersion !== undefined && claims.tokenVersion !== (u.token_version ?? 1))) return res.status(401).json({ ok: false });
+      req.user = { ...u, userId: u.id };
+      next();
+    } catch { res.status(401).json({ ok: false }); }
+  };
+  const portal = createPortalAuth({ cfg, store, jwtSecret: JWT_SECRET, fetch: provider.fetch, log: quiet, ...(now ? { now } : {}), authenticate,
     probe: { autoStart: false }, ...(allowSignup ? { allowSignup } : {}), ...(handoff ? { handoff } : {}),
     audit: async (email, userId, ok, reason) => { audit.push({ email, userId, ok, reason }); } });
   const app = express();
@@ -173,8 +183,8 @@ export function browser(base) {
       return res;
     },
     /** start -> (portal signs the person in) -> callback. Returns the callback response. */
-    async signIn(provider, claims, { returnTo, extraQuery = '', extra = {} } = {}) {
-      const start = await b.go('/auth/portal/login' + (returnTo ? '?returnTo=' + encodeURIComponent(returnTo) : ''));
+    async signIn(provider, claims, { returnTo, extraQuery = '', extra = {}, start: startPath } = {}) {
+      const start = await b.go(startPath || ('/auth/portal/login' + (returnTo ? '?returnTo=' + encodeURIComponent(returnTo) : '')));
       if (start.status !== 302) return start;
       const { code, state } = provider.authorize(start.headers.get('location'), claims, extra);
       return b.go(`/auth/portal/callback?code=${code}&state=${state}&iss=${encodeURIComponent(ISSUER)}${extraQuery}`);

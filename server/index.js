@@ -855,6 +855,8 @@ const portalAuth = createPortalAuth({
   allowSignup: async (req) => (await registrationStore.increment(`register:${req.ip}`)).totalHits <= REGISTRATION_MAX,
   // the SPA token hand-off is one-shot; Redis (when connected) makes that true across replicas and restarts
   handoff: createOnceStore({ redis: () => { try { return getRedisClient(); } catch { return null; } } }),
+  // Settings > "Connect SAI Cloud" is for the signed-in user
+  authenticate: authenticateToken,
 });
 app.use(portalAuth.router);
 
@@ -1092,8 +1094,9 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
       status: req.user.status || 'active',
       emailVerified: !!(req.user.email_verified ?? req.user.emailVerified),
       portalLinked: !!req.user.portal_sub,
+      portalLinkedAt: req.user.portal_linked_at || null,
       books: req.user.books,
-      createdAt: req.user.createdAt
+      createdAt: req.user.createdAt || req.user.created_at || null
     }
   });
 });
@@ -1206,6 +1209,34 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // Change password (authenticated user)
+// Bump token_version: every OTHER session dies. Then hand THIS session a fresh token carrying the new version
+// (bumping without reissuing signs out the very user who asked). Used by change-password and "sign out other devices".
+async function endOtherSessions(req, res, user) {
+  const userId = req.user.userId || req.user.id;
+  const bump = await getPool().query(
+    'UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1 RETURNING token_version',
+    [userId]
+  );
+  const newVersion = bump.rows[0]?.token_version ?? 1;
+  // A portal-linked user's session is 24 h: the replacement token gets what is left of the current one (at most 24 h), not a
+  // fresh 7 days. Password-only users keep the 7 days they always had.
+  let current = {};
+  try { current = jwt.verify(req.cookies.token || req.headers.authorization?.split(' ')[1] || '', JWT_SECRET) || {}; } catch { /* authenticateToken accepted it a moment ago */ }
+  const ttlS = reissueLifetimeS({ exp: current.exp, nowS: Math.floor(Date.now() / 1000), portalLinked: !!user.portal_sub });
+  const freshToken = jwt.sign(
+    { userId, email: req.user.email, tokenVersion: newVersion, ...(current.via === 'portal' ? { via: 'portal' } : {}) },
+    JWT_SECRET,
+    { expiresIn: ttlS }
+  );
+  res.cookie('token', freshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: ttlS * 1000
+  });
+  return freshToken;
+}
+
 app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -1238,30 +1269,8 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     // Update user password (only the password: no stale copy of the rest of the user is written back)
     await updateUser(userId, { password: hashedPassword });
 
-    // Bump token_version: every OTHER session dies. Then hand THIS session a
-    // fresh token carrying the new version — the old code bumped without
-    // reissuing, signing out the very user who just changed their password.
-    const bump = await getPool().query(
-      'UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1 RETURNING token_version',
-      [userId]
-    );
-    const newVersion = bump.rows[0]?.token_version ?? 1;
-    // A portal-linked user's session is 24 h: the replacement token gets what is left of the current one (at most 24 h), not a
-    // fresh 7 days. Password-only users keep the 7 days they always had.
-    let current = {};
-    try { current = jwt.verify(req.cookies.token || req.headers.authorization?.split(' ')[1] || '', JWT_SECRET) || {}; } catch { /* authenticateToken accepted it a moment ago */ }
-    const ttlS = reissueLifetimeS({ exp: current.exp, nowS: Math.floor(Date.now() / 1000), portalLinked: !!user.portal_sub });
-    const freshToken = jwt.sign(
-      { userId: req.user.userId || req.user.id, email: req.user.email, tokenVersion: newVersion, ...(current.via === 'portal' ? { via: 'portal' } : {}) },
-      JWT_SECRET,
-      { expiresIn: ttlS }
-    );
-    res.cookie('token', freshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: ttlS * 1000
-    });
+    // every OTHER session dies; this one gets a fresh token
+    const freshToken = await endOtherSessions(req, res, user);
 
     console.log(`Password changed for user ${userId}`);
     sendPasswordChangedEmail(user.email, user.name).catch((err) => console.error('Password-changed notice failed:', err.message));
@@ -1270,6 +1279,17 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// Settings > "Sign out other devices": every other session ends, this one carries on with a fresh token.
+app.post('/api/auth/sign-out-others', authenticateToken, async (req, res) => {
+  try {
+    const token = await endOtherSessions(req, res, req.user);
+    res.json({ ok: true, token });
+  } catch (error) {
+    console.error('Sign out others error:', error.message);
+    res.status(500).json({ error: 'Could not sign out other devices' });
   }
 });
 
@@ -1445,8 +1465,8 @@ app.post('/api/subscriptions/checkout',
       const priceId = stripeService.getPriceIdForTier(tier);
 
       // Create checkout session
-      const successUrl = `${req.headers.origin || 'https://story-writing.com'}/profile?tab=quotas&checkout=success`;
-      const cancelUrl = `${req.headers.origin || 'https://story-writing.com'}/profile?tab=quotas&checkout=canceled`;
+      const successUrl = `${req.headers.origin || 'https://story-writing.com'}/?settings=plan&checkout=success`;
+      const cancelUrl = `${req.headers.origin || 'https://story-writing.com'}/?settings=plan&checkout=canceled`;
 
       const session = await stripeService.createCheckoutSession(
         customerId,
@@ -8509,6 +8529,32 @@ app.get('/api/external/books', authenticateApiKey, async (req, res) => {
     console.error('External books list API error:', error);
     res.status(500).json({ error: 'Failed to fetch books' });
   }
+});
+
+// ==================== PROFILE ====================
+
+// The display name, shown on books and to collaborators. The email is the sign-in and is not changed here.
+app.put('/api/users/profile', authenticateToken, async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim() : '';
+  if (!name) return res.status(400).json({ error: 'Your name cannot be empty' });
+  if (name.length > 100) return res.status(400).json({ error: 'Keep your name under 100 characters' });
+  try {
+    await updateUser(req.user.userId, { name });
+    res.json({ user: { name } });
+  } catch (error) {
+    console.error('Profile update error:', error.message);
+    res.status(500).json({ error: 'Could not save your name' });
+  }
+});
+
+// What each plan includes, from the same table the quotas are enforced from (so Settings never advertises other limits).
+app.get('/api/plans', authenticateToken, (req, res) => {
+  const plans = ['free', 'basic', 'premium'].map((tier) => ({
+    tier,
+    limits: getTierLimitsDisplay(tier),
+    features: getTierQuotas(tier).features,
+  }));
+  res.json({ plans, checkout: !!process.env.STRIPE_SECRET_KEY && !!process.env.STRIPE_PRICE_ID_BASIC && !!process.env.STRIPE_PRICE_ID_PREMIUM });
 });
 
 // ==================== USER SETTINGS FOR AI API KEYS ====================

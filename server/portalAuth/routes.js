@@ -10,6 +10,8 @@
 //   POST /api/auth/portal/session        hands the freshly issued JWT to the SPA ONCE (see below): the second call is 410
 //   GET  /api/auth/portal/link/status    is there an account-linking step pending in this browser?
 //   POST /api/auth/portal/link           the old Stories password, once, to link an UNVERIFIED Stories account
+//   POST /api/auth/portal/attach         Settings > "Connect SAI Cloud": the SIGNED-IN user, with their password, links
+//                                        whichever SAI Cloud account they sign in with next (the email need not match)
 //
 // SPA pages (served by the existing fallback): /auth/portal/done, /auth/portal/link, /auth/portal/error.
 import crypto from 'crypto';
@@ -29,12 +31,15 @@ const { createClient, OidcError } = require('../vendor/sai-auth-client/index.cjs
 const TOKEN_COOKIE = 'token';                         // the cookie authenticateToken already reads
 const IDT_COOKIE = 'portal_idt';                      // the ID token, only to hint the portal's end_session; sent to /auth/portal/* only
 const LINK_COOKIE = '__Host-stories_portal_link';     // the pending account-linking step, signed, 10 minutes
+const ATTACH_COOKIE = '__Host-stories_portal_attach'; // a Settings "Connect SAI Cloud" in progress, signed, 10 minutes
 const LINK_TTL_S = 600;
 const HANDOFF_WINDOW_S = 120;                         // /api/auth/portal/session works for 2 minutes after the callback
 export const RETURN_TO_RE = /^\/(?![/\\])[\x21-\x7e]{0,512}$/;
 
 // shown, uniform, for every way the password step can fail
 const BAD_PASSWORD = { error: 'That did not work. Check your Stories password and try again.', code: 'bad_password' };
+
+const isBlockedUser = (u) => u && (u.status === 'suspended' || u.status === 'banned');
 
 const errorCodeFor = (e) => {
   if (!(e instanceof OidcError)) return 'failed';
@@ -47,14 +52,22 @@ const errorCodeFor = (e) => {
   }
 };
 
+// The connect id rides in returnTo, which the library seals into its own sign-in cookie: a connect cookie only ever
+// applies to the ONE sign-in flow it was started with, never to a later, ordinary sign-in in the same browser.
+const ATTACH_PARAM = 'connect';
+const attachIdOf = (returnTo) => {
+  try { return new URL(returnTo || '/', 'https://x.invalid').searchParams.get(ATTACH_PARAM) || ''; } catch { return ''; }
+};
+
 /**
  * @param {object} o
  * @param {(req) => Promise<boolean>} [o.allowSignup]   asked right before a NEW account is created (index.js: the registration limiter's counter)
  * @param {{consume: (id: string) => Promise<boolean>}} [o.handoff]   one-time-use memory for the SPA hand-off (default: this process)
  * @param {{autoStart?: boolean, intervalMs?: number}} [o.probe]   the provider health probe (tests switch the timer off)
+ * @param {Function} [o.authenticate]   the app's authenticateToken (sets req.user); without it there is no "Connect SAI Cloud"
  */
 export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}, log = console, fetch: fetchImpl, now = Date.now,
-  allowSignup = async () => true, handoff = createOnceStore({ now, log }), probe: probeOpts = {} }) {
+  allowSignup = async () => true, handoff = createOnceStore({ now, log }), probe: probeOpts = {}, authenticate = null }) {
   const router = express.Router();
   const noStore = (res) => res.set('Cache-Control', 'no-store');
   const dummyHash = bcrypt.hashSync('not-a-password-' + crypto.randomBytes(8).toString('hex'), 10);
@@ -83,7 +96,7 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
 
   if (!client) {
     // OFF: answer 404 ourselves, or the SPA fallback would hand these paths index.html with a 200
-    router.all(['/auth/portal/login', '/auth/portal/callback'], (req, res) => res.status(404).json({ error: 'Not found' }));
+    router.all(['/auth/portal/login', '/auth/portal/callback', '/api/auth/portal/attach'], (req, res) => res.status(404).json({ error: 'Not found' }));
     // ...except sign-out: a browser that signed in while the feature was on must still be able to drop its cookies after it is turned off
     router.post('/auth/portal/logout', (req, res) => {
       noStore(res);
@@ -108,6 +121,16 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
       return p && typeof p.uid === 'string' && typeof p.sub === 'string' ? p : null;
     } catch { return null; }
   };
+  const attachKey = crypto.createHmac('sha256', cfg.cookieSecret).update('stories-portal-attach').digest();
+  const sealAttach = (p) => jwt.sign(p, attachKey, { algorithm: 'HS256', expiresIn: LINK_TTL_S, issuer: 'stories-portal-attach' });
+  const readAttach = (req) => {
+    const raw = req.cookies?.[ATTACH_COOKIE];
+    if (!raw) return null;
+    try {
+      const p = jwt.verify(raw, attachKey, { algorithms: ['HS256'], issuer: 'stories-portal-attach' });
+      return p && typeof p.uid === 'string' && typeof p.aid === 'string' && p.aid ? p : null;
+    } catch { return null; }
+  };
   const linkCookieOpts = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' };
   const idtCookieOpts = { httpOnly: true, secure: true, sameSite: 'lax', path: '/auth/portal' };
 
@@ -125,6 +148,7 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
     res.cookie(TOKEN_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: cfg.sessionTtlS * 1000 });
     if (idToken) res.cookie(IDT_COOKIE, idToken, { ...idtCookieOpts, maxAge: cfg.sessionTtlS * 1000 });
     res.clearCookie(LINK_COOKIE, linkCookieOpts);
+    res.clearCookie(ATTACH_COOKIE, linkCookieOpts);
     return token;
   }
 
@@ -169,6 +193,10 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
       return toError(res, errorCodeFor(e));
     }
     res.append('Set-Cookie', who.clearCookie);
+
+    const attach = readAttach(req);
+    if (attach) res.clearCookie(ATTACH_COOKIE, linkCookieOpts);
+    if (attach && attachIdOf(who.returnTo) === attach.aid) return attachAccount(req, res, attach, who);
 
     let outcome;
     try {
@@ -259,12 +287,78 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
     }
   });
 
+  // Settings > "Connect SAI Cloud". The person is signed in to Stories AND types their Stories password (a stolen session
+  // alone cannot hand the account to someone else's SAI Cloud). The answer is where to send the browser: the ordinary
+  // sign-in, asking the portal to show its sign-in page so the person picks the SAI Cloud account knowingly.
+  const attachLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, skipSuccessfulRequests: true, standardHeaders: true, legacyHeaders: false,
+    message: { error: 'Too many attempts. Please wait a few minutes and try again.', code: 'rate_limited' },
+    keyGenerator: (req) => `portal-attach:${req.user?.id || req.user?.userId || req.ip}` });
+  const noAuth = (req, res) => res.status(404).json({ error: 'Not found' });
+  router.post('/api/auth/portal/attach', authenticate || noAuth, attachLimiter, async (req, res) => {
+    noStore(res);
+    try {
+      const user = await store.findById(req.user.id || req.user.userId);
+      if (!user || isBlockedUser(user)) return res.status(403).json({ error: 'This account is not available.', code: 'suspended' });
+      if (user.portal_sub) return res.status(409).json({ error: 'This account is already connected to SAI Cloud.', code: 'already_connected' });
+      const password = typeof req.body?.password === 'string' ? req.body.password.slice(0, 200) : '';
+      const hash = typeof user.password_hash === 'string' && user.password_hash ? user.password_hash : dummyHash;
+      if (!(await bcrypt.compare(password, hash))) {
+        await audit(user.email, user.id, false, 'portal_attach_bad_password', req);
+        return res.status(401).json({ error: 'That password is not right.', code: 'bad_password' });
+      }
+      const aid = crypto.randomBytes(16).toString('hex');
+      res.cookie(ATTACH_COOKIE, sealAttach({ uid: user.id, tv: user.token_version ?? 1, aid }), { ...linkCookieOpts, maxAge: LINK_TTL_S * 1000 });
+      const want = typeof req.body?.returnTo === 'string' && RETURN_TO_RE.test(req.body.returnTo) ? req.body.returnTo : '/';
+      const rt = new URL(want, 'https://x.invalid');
+      rt.searchParams.set(ATTACH_PARAM, aid);
+      const returnTo = rt.pathname + rt.search;
+      if (!RETURN_TO_RE.test(returnTo)) return res.status(400).json({ error: 'Bad return address.', code: 'bad_request' });
+      return res.json({ url: '/auth/portal/login?different=1&returnTo=' + encodeURIComponent(returnTo) });
+    } catch (e) {
+      log.error('[portal-auth] connect could not start:', e.message);
+      return res.status(500).json({ error: 'Could not start. Please try again.', code: 'unavailable' });
+    }
+  });
+
+  // The callback half of "Connect SAI Cloud": link THIS Stories user to the SAI Cloud account that just signed in.
+  // The email is not consulted for the decision (the person proved both sides); it only marks the Stories address
+  // verified when the portal vouches for the very same one. The password stays, as after the password step.
+  async function attachAccount(req, res, attach, who) {
+    try {
+      const user = await store.findById(attach.uid);
+      if (!user || (user.token_version ?? 1) !== attach.tv) return toError(res, 'expired');   // signed out / password changed meanwhile
+      if (isBlockedUser(user)) return toError(res, 'suspended');
+      if (user.portal_sub && user.portal_sub !== who.sub) return toError(res, 'already_connected');
+      let linked = user;
+      if (!user.portal_sub) {
+        const owner = await store.findByPortalSub(who.sub);
+        if (owner && owner.id !== user.id) {
+          await audit(user.email, user.id, false, 'portal_attach_sub_in_use', req);
+          return toError(res, 'sub_in_use');
+        }
+        const same = who.emailVerified === true && typeof who.verifiedEmail === 'string'
+          && who.verifiedEmail.trim().toLowerCase() === String(user.email || '').trim().toLowerCase();
+        const r = await store.linkPortal(user.id, who.sub, { markEmailVerified: same });
+        if (r.ok) linked = r.user;
+        else if (r.reason === 'already_linked') linked = (await store.findById(user.id)) || user;   // a second tab got there first
+        else return toError(res, 'sub_in_use');
+      }
+      startSession(res, linked, who.idToken);
+      await audit(linked.email, linked.id, true, 'portal_attach', req);
+      return done(res, who.returnTo);
+    } catch (e) {
+      log.error('[portal-auth] connect failed:', e.message);
+      return toError(res, 'unavailable');
+    }
+  }
+
   router.post('/auth/portal/logout', async (req, res) => {
     noStore(res);
     const hint = req.cookies?.[IDT_COOKIE];
     res.clearCookie(TOKEN_COOKIE);
     res.clearCookie(IDT_COOKIE, idtCookieOpts);
     res.clearCookie(LINK_COOKIE, linkCookieOpts);
+    res.clearCookie(ATTACH_COOKIE, linkCookieOpts);
     let redirect = null;
     if (req.body && req.body.everywhere === true) {
       try { redirect = await client.logoutUrl({ idTokenHint: hint || undefined }); }

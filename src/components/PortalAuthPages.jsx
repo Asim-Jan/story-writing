@@ -141,6 +141,12 @@ export const PortalErrorPage = () => {
   return (
     <Shell icon={code === 'email_unverified' ? Cloud : AlertCircle} tone={code === 'email_unverified' ? 'blue' : 'red'} title={e.title}>
       <p className="text-sm text-[var(--dim)] mb-5" role="alert">{e.body}</p>
+      {e.settings ? (
+        // a refused "Connect SAI Cloud" from Settings: the Stories session is untouched, so go back to it
+        <div className="flex flex-col gap-3">
+          <a href="/?settings=security" className="btn pri w-full py-2.5 justify-center">Back to Settings</a>
+        </div>
+      ) : (
       <div className="flex flex-col gap-3">
         {e.portalLink && <a href="https://solutionsai.co.uk/" className="btn pri w-full py-2.5 justify-center">Open SAI Cloud</a>}
         <a href={portalLoginHref({ different: !!e.different })} className={`btn ${e.portalLink ? '' : 'pri'} w-full py-2.5 justify-center`}>
@@ -148,6 +154,7 @@ export const PortalErrorPage = () => {
         </a>
         <a href="/" className="text-center text-sm text-[var(--dim)] hover:text-[var(--ink)]">Back to sign in</a>
       </div>
+      )}
     </Shell>
   );
 };
