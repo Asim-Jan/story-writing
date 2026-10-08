@@ -17,7 +17,7 @@ import { enhanceEvents } from './enhance/events.js';
 import { findMissing } from './enhance/missing.js';
 import { checkPlaceDuplicates } from './enhance/placeDuplicates.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
-import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
+import { MODEL_ROLES, MODEL_INFO, WRITER_CHOICES, getModelSettings, resolveChatModel, saveModelSettings, withModelChoice, writerChoiceFor, forgetModelChoice } from './services/aiModels.js';
 import { directFilm, drawStoryboard, FILM_STYLES } from './services/filmDirector.js';
 import { writeNarration, makeMusic, MAX_VOICEOVER_CHARS, MAX_MUSIC_SECONDS } from './services/filmSound.js';
 import { adviseShot, reviewFilm } from './services/filmAdvice.js';
@@ -75,7 +75,7 @@ import {
   incrementAICounter,
   updateQuotaUsage
 } from './middleware/quotaEnforcement.js';
-import { getTierQuotas, getTierLimitsDisplay, unlockedFeatures } from './config/tierQuotas.js';
+import { getTierQuotas, getTierLimitsDisplay, unlockedFeatures, hasFeature } from './config/tierQuotas.js';
 import { validatePassword } from './utils/passwordValidation.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail, sendPasswordChangedEmail, verifyEmailTransport, isEmailConfigured } from './services/emailService.js';
 import TemplateRepository from './db/repositories/TemplateRepository.js';
@@ -775,11 +775,18 @@ const authenticateToken = async (req, res, next) => {
       role: user.role || 'user', // Default to 'user' if not set
       status: user.status || 'active' // Default to 'active' if not set
     };
-    next();
   } catch (error) {
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
+  // the rest of the request runs with this user's Writer model (Premium's model choice; null = the plan default)
+  const writer = await writerChoiceFor(req.user, canChooseModel).catch(() => null);
+  return withModelChoice(writer, next);
 };
+
+// Settings > AI models: who may pick the Writer model. A plan feature (Premium), and admins, who set the default anyway.
+function canChooseModel(user) {
+  return !!user && (user.role === 'admin' || hasFeature(user.tier, 'model_choice'));
+}
 
 // API Key authentication middleware for external apps
 const authenticateApiKey = async (req, res, next) => {
@@ -8531,6 +8538,61 @@ app.get('/api/external/books', authenticateApiKey, async (req, res) => {
   }
 });
 
+// ==================== AI MODELS (Settings) ====================
+
+// What powers each part of Stories, for this user: the Writer (their own choice on Premium), the Assistant, and the
+// media models. Read-only except the Writer choice below.
+const MEDIA_MODELS = [
+  { job: 'New pictures', detail: 'Portraits, locations, covers and comic panels drawn from text', models: ['FLUX.2 klein 9B'] },
+  { job: 'Pictures from a picture', detail: 'Character sheets, keyframes, comic panels from a portrait, and edits', models: ['Qwen Image 2.1'] },
+  { job: 'Film clips', detail: 'Each scene animated from its keyframe', models: ['MiniMax H3'] },
+  { job: 'Narration and voices', detail: 'Audiobooks, voice-overs, and voices made from your own samples', models: ['VibeVoice', 'Qwen3 TTS'] },
+  { job: 'Music', detail: 'Film soundtracks', models: ['ACE-Step 1.5'] },
+];
+const modelEntry = (id) => ({ id, label: MODEL_INFO[id]?.label || id, note: MODEL_INFO[id]?.note || '' });
+
+app.get('/api/ai-models', authenticateToken, async (req, res) => {
+  const settings = await getModelSettings();
+  const available = await gatewayChatModels();
+  const choices = WRITER_CHOICES.filter((m) => !available.length || available.includes(m));
+  const canChoose = canChooseModel(req.user);
+  const chosen = canChoose ? await writerChoiceFor(req.user, canChooseModel) : null;
+  res.json({
+    writer: {
+      label: MODEL_ROLES.writer.label, description: MODEL_ROLES.writer.description,
+      model: modelEntry(chosen || settings.writer), planDefault: modelEntry(settings.writer),
+      chosen: chosen || null, canChoose, choices: choices.map(modelEntry),
+    },
+    assistant: { label: MODEL_ROLES.assistant.label, description: MODEL_ROLES.assistant.description, model: modelEntry(settings.assistant) },
+    media: MEDIA_MODELS,
+    choiceTier: 'premium',
+  });
+});
+
+// Premium: choose the Writer model. { writer: "<model>" } or { writer: null } for the plan default.
+app.put('/api/users/ai-model', authenticateToken, async (req, res) => {
+  if (!canChooseModel(req.user)) return res.status(403).json({ error: 'Choosing the Writer model is part of the Premium plan.', code: 'PLAN' });
+  const writer = req.body?.writer ?? null;
+  if (writer !== null) {
+    const available = await gatewayChatModels();
+    if (typeof writer !== 'string' || !WRITER_CHOICES.includes(writer) || (available.length && !available.includes(writer))) {
+      return res.status(400).json({ error: 'That model is not one you can choose.' });
+    }
+  }
+  try {
+    await query(
+      `INSERT INTO user_settings (user_id, preferences) VALUES ($1, jsonb_build_object('writerModel', $2::text))
+       ON CONFLICT (user_id) DO UPDATE SET preferences = COALESCE(user_settings.preferences, '{}'::jsonb) || jsonb_build_object('writerModel', $2::text), updated_at = NOW()`,
+      [req.user.userId, writer]
+    );
+    forgetModelChoice(req.user.userId);
+    res.json({ writer });
+  } catch (error) {
+    console.error('AI model choice save failed:', error.message);
+    res.status(500).json({ error: 'Could not save your choice' });
+  }
+});
+
 // ==================== PROFILE ====================
 
 // The display name, shown on books and to collaborators. The email is the sign-in and is not changed here.
@@ -8601,8 +8663,11 @@ app.put('/api/users/settings', authenticateToken, async (req, res) => {
     };
     // upsert: older accounts may have no user_settings row
     await query(
+      // writerModel is NOT one of these keys (PUT /api/users/ai-model owns it): carried over, never dropped
       `INSERT INTO user_settings (user_id, preferences) VALUES ($1, $2)
-       ON CONFLICT (user_id) DO UPDATE SET preferences = EXCLUDED.preferences, updated_at = NOW()`,
+       ON CONFLICT (user_id) DO UPDATE SET preferences = EXCLUDED.preferences
+         || CASE WHEN user_settings.preferences ? 'writerModel' THEN jsonb_build_object('writerModel', user_settings.preferences->'writerModel') ELSE '{}'::jsonb END,
+         updated_at = NOW()`,
       [req.user.userId, JSON.stringify(preferences)]
     );
     res.json({ message: 'Settings updated successfully', settings: { openaiApiKey: null, geminiApiKey: null, preferences } });

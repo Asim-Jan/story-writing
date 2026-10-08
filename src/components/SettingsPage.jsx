@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, User, ShieldCheck, Gauge, SlidersHorizontal, Cloud, Check, AlertCircle, Loader, Mail, LogOut, Lock, ExternalLink, Play, Square, Trash2, Sun, Moon, MonitorSmartphone } from 'lucide-react';
+import { ArrowLeft, User, ShieldCheck, Gauge, SlidersHorizontal, Cloud, Check, AlertCircle, Loader, Mail, LogOut, Lock, ExternalLink, Play, Square, Trash2, Sun, Moon, MonitorSmartphone, Cpu } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { fetchPortalConfig } from '../utils/portalAuth';
@@ -14,6 +14,7 @@ export const SECTIONS = [
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Sign-in & security', icon: ShieldCheck },
   { id: 'plan', label: 'Plan & usage', icon: Gauge },
+  { id: 'models', label: 'AI models', icon: Cpu },
   { id: 'preferences', label: 'Preferences', icon: SlidersHorizontal },
 ];
 
@@ -195,6 +196,7 @@ const SettingsPage = ({ onBack, backLabel = 'Back to books', section: initialSec
             {section === 'security' && <SecuritySection me={me} portal={portal} say={say} logout={logout}
               onNewToken={(t) => { if (authUser) login(authUser, t); else localStorage.setItem('token', t); }} />}
             {section === 'plan' && <PlanSection tier={tier} quotas={quotas} subscription={subscription} plans={plans} refresh={refreshPlan} say={say} />}
+            {section === 'models' && <ModelsSection say={say} onSeePlans={() => setSection('plan')} />}
             {section === 'preferences' && <PreferencesSection say={say} />}
           </main>
         </div>
@@ -527,6 +529,78 @@ function PlanSection({ tier, quotas, subscription, plans, refresh, say }) {
             )}
           </>
         )}
+      </Panel>
+    </>
+  );
+}
+
+/* ── AI models ────────────────────────────────────────────────────────────────────────────────── */
+function ModelsSection({ say, onSeePlans }) {
+  const [info, setInfo] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const load = useCallback(() => api('/api/ai-models').then(setInfo).catch((err) => { setInfo({ error: true }); say('error', err.message); }), [say]);
+  useEffect(() => { load(); }, [load]);
+
+  const choose = async (writer) => {
+    setSaving(true); setSaved(false);
+    try { await api('/api/users/ai-model', { method: 'PUT', body: { writer } }); await load(); setSaved(true); setTimeout(() => setSaved(false), 2500); }
+    catch (err) { say('error', err.message); } finally { setSaving(false); }
+  };
+
+  if (!info) return <div className="hatch h-40 rounded-[3px]" aria-label="Loading models" />;
+  if (info.error) return null;
+  const w = info.writer;
+  const ModelName = ({ m }) => <span className="pill" style={{ color: 'var(--ink)' }}>{m.label}</span>;
+
+  return (
+    <>
+      <Panel title="Writer" testid="settings-writer"
+        aside={saved ? <span className="text-xs text-[var(--ok)] flex items-center gap-1" role="status"><Check size={12} /> Saved</span> : <ModelName m={w.model} />}>
+        <p className="text-sm text-[var(--dim)] mb-3">Chapters, whole books, the AI writing tools, film transcripts, narration scripts and the director's review of a film.</p>
+        {w.canChoose ? (
+          <fieldset disabled={saving} className="space-y-2" data-testid="writer-choices">
+            <legend className="lbl mb-2">The model that writes for you</legend>
+            {[{ id: null, label: `Plan default (${w.planDefault.label})`, note: 'Follows the model Stories recommends; it may change as better ones arrive.' }, ...w.choices].map((m) => {
+              const on = (w.chosen || null) === m.id;
+              return (
+                <label key={m.id || 'default'} className="flex items-start gap-3 border rounded-[3px] px-3 py-2.5 cursor-pointer"
+                  style={{ borderColor: on ? 'var(--blue)' : 'var(--line)' }} data-testid={`writer-choice-${m.id || 'default'}`}>
+                  <input type="radio" name="writer-model" className="!p-0 mt-1" checked={on} onChange={() => choose(m.id)} />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-[var(--ink)]">{m.label}</span>
+                    {m.note && <span className="block text-xs text-[var(--dim)]">{m.note}</span>}
+                  </span>
+                </label>
+              );
+            })}
+            <p className="text-xs text-[var(--dim)] pt-1">Your choice applies to new requests straight away. It counts against your daily AI requests the same way.</p>
+          </fieldset>
+        ) : (
+          <div className="border border-dashed border-[var(--line2)] rounded-[3px] px-4 py-3 flex flex-wrap items-center justify-between gap-3" data-testid="writer-locked">
+            <p className="text-sm text-[var(--dim)] flex items-center gap-2"><Lock size={14} /> On Premium you can choose the model that writes for you.</p>
+            <button type="button" className="btn sm" onClick={onSeePlans}>See plans</button>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Assistant" aside={<ModelName m={info.assistant.model} />} testid="settings-assistant">
+        <p className="text-sm text-[var(--dim)]">{info.assistant.description}. It also looks at your pictures for the shot doctor and the keyframe checks. Set by Stories for everyone.</p>
+      </Panel>
+
+      <Panel title="Pictures, film and sound" testid="settings-media-models">
+        <ul className="divide-y divide-[var(--line)]">
+          {info.media.map((m) => (
+            <li key={m.job} className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-1 sm:gap-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm text-[var(--ink)]">{m.job}</p>
+                <p className="text-xs text-[var(--dim)]">{m.detail}</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5 sm:justify-end items-start">{m.models.map((x) => <span key={x} className="pill">{x}</span>)}</div>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-[var(--dim)] mt-3">Every model runs on Solutions AI's own platform, included in your plan.</p>
       </Panel>
     </>
   );

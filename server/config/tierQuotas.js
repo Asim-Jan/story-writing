@@ -19,7 +19,8 @@ export const TIER_QUOTAS = {
       continuity_check: false,
       collaboration: false,
       version_history: false,
-      priority_processing: false
+      priority_processing: false,
+      model_choice: false // choose the Writer model (Settings > AI models)
     }
   },
 
@@ -40,7 +41,8 @@ export const TIER_QUOTAS = {
       continuity_check: true,
       collaboration: false, // Not yet in basic
       version_history: true,
-      priority_processing: false
+      priority_processing: false,
+      model_choice: false // choose the Writer model (Settings > AI models)
     }
   },
 
@@ -61,7 +63,8 @@ export const TIER_QUOTAS = {
       continuity_check: true,
       collaboration: true, // Future feature
       version_history: true,
-      priority_processing: true
+      priority_processing: true,
+      model_choice: true // choose the Writer model (Settings > AI models)
     }
   }
 };
