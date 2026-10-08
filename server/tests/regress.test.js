@@ -1177,6 +1177,14 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       exports.gif?.status === 'done' && /^\/api\/media\/images\/film-gif-.*\.gif$/.test(gif?.url || '') && gifRes?.status === 200 &&
       /image\/gif/.test(gifRes.headers.get('content-type') || '') && (await editorQuota()) === eq4,
       `${exports.whatsapp?.status} ${exports.whatsapp?.error || ''} ${JSON.stringify(wa)} | ${exports.gif?.status} ${exports.gif?.error || ''} ${gifRes?.status} ${gifRes?.headers.get('content-type')}`);
+    // a film cut a moment ago (not saved in the book yet) exports by its file
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: 'anim-unsaved', filename: trimmed?.result?.project?.finalVideo?.filename, format: 'gif' } });
+    const unsaved = await waitJob(editor.token, r.json?.job?.jobId);
+    check('export: a film not yet saved in the book exports by its file; the result names its project',
+      unsaved?.status === 'done' && unsaved.result.projectId === 'anim-unsaved' && /film-gif-/.test(unsaved.result.filename || ''), `${r.status} ${unsaved?.status} ${unsaved?.error || ''}`);
+    await call('POST', `${jobsUrl}/${unsaved?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: 'x', filename: 'film-999.mp4', format: 'gif' } });
+    check('export: a film file that is not the book\'s = 404', r.status === 404, `status ${r.status}`);
     r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: 'anim-nope', format: 'gif' } });
     const r3x = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: cp?.id, format: 'avi' } });
     check('export: an unknown film = 404, an unknown format = 400', r.status === 404 && r3x.status === 400, `${r.status} ${r3x.status}`);
