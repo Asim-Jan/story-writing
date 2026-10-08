@@ -65,7 +65,7 @@ export const applyStoryboard = (book, job) => {
     const scenes = draft.scenes.map(sc => {
       const row = rows.find(r => sameNumber(r.sceneNumber, sc.sceneNumber));
       if (!row) return sc;
-      const still = { url: row.url, jobId: job.jobId, createdAt: at, source: 'drawn', ...(row.check ? { check: row.check } : {}) };
+      const still = { url: row.url, jobId: job.jobId, createdAt: at, source: row.source || 'drawn', ...(row.edit ? { edit: row.edit } : {}), ...(row.check ? { check: row.check } : {}) };
       return { ...sc, stills: capList([...(sc.stills || []), still], MAX_STILLS, row.url, s => s.url), still: row.url };
     });
     return markApplied({ ...draft, scenes }, job.jobId);
@@ -119,10 +119,98 @@ export const addStill = (book, transcriptId, sceneNumber, url, source = 'uploade
   return { ...sc, stills: capList([...(sc.stills || []).filter(s => s.url !== url), still], MAX_STILLS, url, s => s.url), still: url };
 });
 
-// what the server needs of a scene (never the stills/takes lists)
+// what the server needs of a scene (never the stills/takes lists, advice)
 export const sceneForServer = (scene) => {
-  const { stills, still, takes, take, status, ...rest } = scene;
+  const { stills, still, takes, take, status, advice, ...rest } = scene;
   return rest;
+};
+
+// the part of a take the film uses (seconds into the clip)
+const trimOf = (take) => ({
+  ...(Number(take?.trimIn) > 0 ? { trimIn: Number(take.trimIn) } : {}),
+  ...(Number(take?.trimOut) > 0 ? { trimOut: Number(take.trimOut) } : {}),
+});
+
+/** Set (or clear, with null) where the film starts and ends inside a take. */
+export const setTrim = (book, transcriptId, sceneNumber, takeId, patch) => editScene(book, transcriptId, sceneNumber, (sc) => ({
+  ...sc,
+  takes: (sc.takes || []).map(t => {
+    if (t.id !== takeId) return t;
+    const next = { ...t };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || !(Number(v) >= 0)) delete next[k];
+      else next[k] = Math.round(Number(v) * 100) / 100;
+    }
+    if (next.trimIn !== undefined && next.trimOut !== undefined && next.trimOut <= next.trimIn + 0.5) delete next.trimOut;
+    return next;
+  }),
+}));
+
+/** Move a scene up (-1) or down (+1) in the film. */
+export const moveScene = (book, transcriptId, sceneNumber, by) => withDraft(book, transcriptId, (draft) => {
+  const i = draft.scenes.findIndex(sc => sameNumber(sc.sceneNumber, sceneNumber));
+  const j = i + by;
+  if (i < 0 || j < 0 || j >= draft.scenes.length) return draft;
+  const scenes = [...draft.scenes];
+  [scenes[i], scenes[j]] = [scenes[j], scenes[i]];
+  return { ...draft, scenes };
+});
+
+/** The shot doctor's notes on a scene's still. */
+export const applyAdvice = (book, job) => {
+  const r = job.result;
+  if (!r || r.sceneNumber === undefined) return book;
+  return withDraft(book, job.target?.id, (draft) => {
+    if (applied(draft, job.jobId)) return draft;
+    const scenes = draft.scenes.map(sc => (sameNumber(sc.sceneNumber, r.sceneNumber)
+      ? { ...sc, advice: { jobId: job.jobId, verdict: r.verdict, notes: r.notes || [], prompt: r.prompt || '', still: r.still || null } }
+      : sc));
+    return markApplied({ ...draft, scenes }, job.jobId);
+  });
+};
+
+export const dismissAdvice = (book, transcriptId, sceneNumber) => editScene(book, transcriptId, sceneNumber, (sc) => {
+  const { advice, ...rest } = sc;
+  return rest;
+});
+
+/** The director's review of the whole film. */
+export const applyReview = (book, job) => {
+  const r = job.result;
+  if (!r) return book;
+  return withDraft(book, job.target?.id, (draft) => {
+    if (applied(draft, job.jobId)) return draft;
+    return markApplied({ ...draft, review: { jobId: job.jobId, at: job.finishedAt || new Date().toISOString(), overall: r.overall || '', scenes: r.scenes || [] } }, job.jobId);
+  });
+};
+
+/** Use one of the review's suggestions (or all: sceneNumber null); used ones leave the list. */
+export const takeReviewSuggestion = (book, transcriptId, sceneNumber) => withDraft(book, transcriptId, (draft) => {
+  const rows = draft.review?.scenes || [];
+  const picked = rows.filter(r => sceneNumber === null || sameNumber(r.sceneNumber, sceneNumber));
+  if (!picked.length) return draft;
+  const scenes = draft.scenes.map(sc => {
+    const r = picked.find(x => sameNumber(x.sceneNumber, sc.sceneNumber));
+    if (!r) return sc;
+    return { ...sc, ...(r.duration ? { duration: r.duration } : {}), ...(r.transition ? { transition: r.transition } : {}) };
+  });
+  return { ...draft, scenes, review: { ...draft.review, scenes: rows.filter(r => !picked.includes(r)) } };
+});
+
+export const dismissReview = (book, transcriptId) => withDraft(book, transcriptId, (draft) => {
+  const { review, ...rest } = draft;
+  return rest;
+});
+
+/** A film's WhatsApp / GIF version onto its project. */
+export const applyExport = (book, job) => {
+  const r = job.result;
+  if (!r?.filename || !r.projectId) return book;
+  const projects = book.animationProjects || [];
+  const project = projects.find(p => p.id === r.projectId);
+  if (!project?.finalVideo || project.finalVideo.files?.[r.format]?.filename === r.filename) return book;
+  const finalVideo = { ...project.finalVideo, files: { ...(project.finalVideo.files || {}), [r.format]: { url: r.url, filename: r.filename, size: r.size } } };
+  return { ...book, animationProjects: projects.map(p => (p === project ? { ...p, finalVideo } : p)) };
 };
 
 /**
@@ -162,7 +250,7 @@ export const renderScenes = (scenes, render, { wholeFilm = false } = {}) => {
     }
     const needed = wholeFilm || (scenes[i + 1] && rendering(scenes[i + 1]));
     const take = needed ? chosenTake(sc) : null;
-    return take ? { ...row, reuseTake: { filename: take.filename, videoUrl: take.videoUrl, keyframeUrl: take.keyframeUrl, duration: take.duration } } : null;
+    return take ? { ...row, ...trimOf(take), reuseTake: { filename: take.filename, videoUrl: take.videoUrl, keyframeUrl: take.keyframeUrl, duration: take.duration } } : null;
   }).filter(Boolean);
 };
 
@@ -177,7 +265,7 @@ export const cutScenes = (scenes) => scenes.map((sc, i) => {
   let transition = i > 0 ? sceneTransition(scenes, i) : null;
   if (transition === 'continue' && !chosenTake(scenes[i - 1])) transition = 'dissolve';
   return { sceneNumber: sc.sceneNumber, title: sc.title, filename: take.filename, keyframeUrl: take.keyframeUrl, location: sc.location,
-    ...(transition ? { transition } : {}), ...(Number.isFinite(sc.clipVolume) ? { clipVolume: sc.clipVolume } : {}) };
+    ...(transition ? { transition } : {}), ...(Number.isFinite(sc.clipVolume) ? { clipVolume: sc.clipVolume } : {}), ...trimOf(take) };
 }).filter(Boolean);
 
 // A job's label names its scenes ("Storyboard: scenes 1–4, 7"), so the scene

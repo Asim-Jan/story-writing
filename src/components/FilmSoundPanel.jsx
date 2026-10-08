@@ -206,7 +206,7 @@ const FilmSoundPanel = ({ data, setData, transcriptId, scenes, bookId }) => {
             <label className={`px-2 py-1 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-xs rounded flex items-center gap-1 cursor-pointer ${uploading ? 'opacity-50' : ''}`}>
               {uploading ? <Loader className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
               Upload music
-              <input type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg" className="hidden" disabled={uploading}
+              <input type="file" accept=".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg" className="hidden" disabled={uploading}
                 onChange={(e) => { uploadMusic(e.target.files?.[0]); e.target.value = ''; }} data-testid="music-upload" />
             </label>
           </div>

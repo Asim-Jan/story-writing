@@ -20,6 +20,8 @@ import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices
 import { MODEL_ROLES, getModelSettings, resolveChatModel, saveModelSettings } from './services/aiModels.js';
 import { directFilm, drawStoryboard, FILM_STYLES } from './services/filmDirector.js';
 import { writeNarration, makeMusic, MAX_VOICEOVER_CHARS, MAX_MUSIC_SECONDS } from './services/filmSound.js';
+import { adviseShot, reviewFilm } from './services/filmAdvice.js';
+import { exportFilm, EXPORT_FORMATS } from './services/filmExport.js';
 import { artStyleOf } from './services/artStyles.js';
 import { REFERENCE_KINDS, buildReferencePrompt, describeCharacter, generateReference, mediaUrlToDataUrl } from './services/characterReferences.js';
 import { getSAIClient, saiChat, saiImage, saiSpeech, saiVideoStart, saiVideoStatus, VOICE_MAP, voiceLabel, SAI_CHAT, SAI_CHAT_FAST, saiConfigured } from './saiClient.js';
@@ -4689,6 +4691,9 @@ const MEDIA_JOB_TARGETS = {
   'film-narration': ['animation'],
   'film-voice': ['animation'],
   'film-music': ['animation'],
+  'film-advice': ['animation'],
+  'film-review': ['animation'],
+  'film-export': ['animation'],
   transcript: ['chapter'],
   analysis: ['book'],
   audiobook: ['audiobook'],
@@ -4705,10 +4710,10 @@ const ENHANCE_NOUN = { characters: 'characters', locations: 'locations', plotlin
 const enhanceBatchMax = (type) => (type === 'timelines' ? 400 : 40);
 
 // Text-only jobs (AI quota only): no media storage, not behind the media plan feature.
-const TEXT_JOBS = new Set(['enhance', 'transcript', 'film-narration']);
+const TEXT_JOBS = new Set(['enhance', 'transcript', 'film-narration', 'film-advice', 'film-review']);
 const mediaFeatureUnlessText = (req, res, next) => (TEXT_JOBS.has(req.body?.type) ? next() : requireFeature('media_generation')(req, res, next));
 // Jobs that call no AI model (rejoining a film's existing clips) cost no AI request.
-const FREE_JOBS = new Set(['film-join']);
+const FREE_JOBS = new Set(['film-join', 'film-export']);
 const quotaUnlessFree = (req, res, next) => (FREE_JOBS.has(req.body?.type) ? next() : consumeAIQuota(req, res, next));
 const filmProject = (book, projectId) => (book?.animationProjects || []).find(p => String(p.id) === String(projectId)) || null;
 const joinableScenes = (project) => (project?.scenes || []).filter(sc => sc?.filename && sc.status === 'completed');
@@ -4764,6 +4769,10 @@ async function validateMediaJob(req, res, next) {
       if (params.scenes.length > 30) return res.status(400).json({ error: 'At most 30 stills per storyboard' });
       if (params.scenes.some(sc => !Number.isFinite(Number(sc?.sceneNumber)))) return res.status(400).json({ error: 'Each scene needs a sceneNumber' });
       if (params.scenes[0]?.previousStill !== undefined && !STILL_URL.test(String(params.scenes[0].previousStill))) return res.status(400).json({ error: 'previousStill must be one of this app\'s images' });
+      const edits = params.scenes.filter(sc => sc?.edit !== undefined);
+      if (edits.some(sc => !STILL_URL.test(String(sc.edit?.from || '')) || typeof sc.edit?.instruction !== 'string' || !sc.edit.instruction.trim() || sc.edit.instruction.length > 300)) {
+        return res.status(400).json({ error: 'An edit needs the still (one of this app\'s images) and an instruction of up to 300 characters' });
+      }
     }
     if (type === 'animation') {
       const stills = params.scenes.filter(sc => sc?.still !== undefined && sc?.still !== null && sc?.still !== '');
@@ -4771,6 +4780,18 @@ async function validateMediaJob(req, res, next) {
       const reused = params.scenes.filter(sc => sc?.reuseTake).map(sc => sc.reuseTake.filename);
       if (reused.length && !(await clipsAllowed(req.user, reused))) return res.status(404).json({ error: 'A kept clip is not one of this book\'s clips' });
       if (reused.length === params.scenes.length) return res.status(400).json({ error: 'Every scene already has a clip; cut the film instead' });
+    }
+    if (type === 'film-advice') {
+      if (!params.scene || typeof params.scene !== 'object' || !String(params.scene.visualPrompt || '').trim()) return res.status(400).json({ error: 'The scene (with what it shows) is required' });
+      if (!STILL_URL.test(String(params.still || ''))) return res.status(400).json({ error: 'still must be one of this app\'s images' });
+      if (params.previousStill !== undefined && params.previousStill !== null && !STILL_URL.test(String(params.previousStill))) return res.status(400).json({ error: 'previousStill must be one of this app\'s images' });
+    }
+    if (type === 'film-review' && (!Array.isArray(params.scenes) || params.scenes.length === 0 || params.scenes.length > 60)) {
+      return res.status(400).json({ error: 'Between 1 and 60 scenes are required' });
+    }
+    if (type === 'film-export') {
+      if (!EXPORT_FORMATS[params.format]) return res.status(400).json({ error: `format must be one of: ${Object.keys(EXPORT_FORMATS).join(', ')}` });
+      if (!String(params.projectId || '').trim()) return res.status(400).json({ error: 'projectId is required' });
     }
     if (type === 'film-narration') {
       if (!Array.isArray(params.scenes) || params.scenes.length === 0 || params.scenes.length > 60) return res.status(400).json({ error: 'Between 1 and 60 scenes are required' });
@@ -4839,6 +4860,10 @@ async function validateMediaJob(req, res, next) {
       const chapter = (book.chapters || []).find(c => String(c.id) === String(target.id));
       if (!chapter) return res.status(404).json({ error: 'That chapter is not in the saved book yet; save and try again' });
       if (!String(chapter.content || '').replace(/<[^>]+>/g, '').trim()) return res.status(400).json({ error: 'This chapter has no saved text to adapt yet' });
+    }
+    if (type === 'film-export') {
+      const film = filmProject(book, params.projectId)?.finalVideo?.filename;
+      if (!film || !(await clipsAllowed(req.user, [film]))) return res.status(404).json({ error: 'That film is not in the saved book' });
     }
     if (type === 'film-join' && params.cut === undefined) {
       const clips = joinableScenes(filmProject(book, params.projectId)).map(sc => sc.filename);
@@ -5000,6 +5025,8 @@ function mediaJobRunner(req) {
         location: String(sc.location || '').slice(0, 200),
         ...(sc.transition ? { transition: sc.transition } : {}),
         ...(Number.isFinite(Number(sc.clipVolume)) ? { clipVolume: Math.max(0, Math.min(1.5, Number(sc.clipVolume))) } : {}),
+        ...(Number(sc.trimIn) > 0 ? { trimIn: Math.min(60, Number(sc.trimIn)) } : {}),
+        ...(Number(sc.trimOut) > 0 ? { trimOut: Math.min(60, Number(sc.trimOut)) } : {}),
         status: 'completed',
       }));
       const title = String(cut.title || '').trim().slice(0, 200)
@@ -5009,6 +5036,34 @@ function mediaJobRunner(req) {
       const finalVideo = await new VideoAssembler(bookId).assembleFilm(scenes, { title, ...(sound ? { sound } : {}) });
       return { project: { id: `anim-${uuidv4()}`, transcriptId: target.id, title, style: FILM_STYLES[cut.style] ? cut.style : undefined, scenes, finalVideo,
         ...(sound ? { sound } : {}), status: 'completed', cutFromTakes: true, createdAt: new Date().toISOString() } };
+    };
+  }
+  if (type === 'film-advice') {
+    // the shot doctor: a scene's still (and the shot before it) looked at (filmAdvice.js)
+    return async (report) => {
+      await report({ message: `Looking at scene ${params.scene.sceneNumber ?? ''}'s still...`.replace('  ', ' ') });
+      const toBuffer = (dataUrl) => Buffer.from(String(dataUrl).split(',')[1] || '', 'base64');
+      const still = toBuffer(await mediaUrlToDataUrl(user, params.still));
+      const previous = params.previousStill ? toBuffer(await mediaUrlToDataUrl(user, params.previousStill).catch(() => '')) : null;
+      const advice = await adviseShot({ scene: params.scene, still, previous: previous?.length ? previous : null });
+      return { sceneNumber: params.scene.sceneNumber, still: params.still, ...advice };
+    };
+  }
+  if (type === 'film-review') {
+    // the director: pacing, lengths and transitions for the whole scene list
+    return async (report) => {
+      await report({ message: 'Reviewing the film scene by scene...' });
+      const transcript = (req.mediaJobBook.transcripts || []).find(t => String(t.id) === String(target.id));
+      return reviewFilm({ title: transcript?.title || req.mediaJobBook.title, scenes: params.scenes });
+    };
+  }
+  if (type === 'film-export') {
+    // a finished film as a WhatsApp-ready MP4 or a GIF (filmExport.js); free
+    return async (report) => {
+      const project = filmProject(req.mediaJobBook, params.projectId);
+      await report({ message: `Making the ${EXPORT_FORMATS[params.format].label} version...` });
+      const file = await exportFilm({ user, bookId, filename: project.finalVideo.filename, format: params.format });
+      return { projectId: project.id, ...file };
     };
   }
   if (type === 'film-narration') {
@@ -5141,6 +5196,9 @@ function mediaJobLabel({ type, target, params }) {
   if (type === 'reference') return `${params.kind.replace('-', ' ')}: ${params.character.name}`;
   if (type === 'animation') return `Animation: ${params.scenes.length} scenes`;
   if (type === 'film-join') return params.cut ? 'Cutting the film' : 'Rejoining the film';
+  if (type === 'film-advice') return `Notes on scene ${params.scene.sceneNumber ?? ''}'s still`;
+  if (type === 'film-review') return 'Director\'s review';
+  if (type === 'film-export') return `${EXPORT_FORMATS[params.format].label} version of the film`;
   if (type === 'film-narration') return 'Writing the voice-over';
   if (type === 'film-voice') return 'Speaking the voice-over';
   if (type === 'film-music') return 'Composing the music';

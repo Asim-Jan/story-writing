@@ -218,6 +218,15 @@ async function fakeGateway() {
           ...(/her brother Tomas/.test(usr) ? [{ about: 'relationship', fact: 'Tomas is her brother', with: 'Tomas Reed', chapter: heads.at(-1) }] : []),
           { about: 'personality', fact: 'stubborn', chapter: heads.at(-1) },
         ] });
+      } else if (/checking the opening frame of one scene before it is animated/.test(sys)) {
+        const parts = Array.isArray(parsed?.messages?.[1]?.content) ? parsed.messages[1].content : [];
+        const pics = parts.filter(x => x.type === 'image_url' && /^data:image\/jpeg;base64,/.test(x.image_url?.url || '')).length;
+        content = JSON.stringify({ verdict: 'fix', notes: [`saw ${pics} pictures`, 'Mara is too small in the frame'], prompt: 'Medium shot at dusk: Mara Quinn climbs the last steps to the lighthouse.' });
+      } else if (/reviewing the cut of a short film/.test(sys)) {
+        content = JSON.stringify({ overall: 'Slow the ending down.', scenes: [
+          { sceneNumber: 2, note: 'Hold the lamp moment longer.', duration: 8, transition: 'fade' },
+          { sceneNumber: 1, note: 'Fine opening.', duration: 30, transition: 'fade' },
+          { sceneNumber: 99, note: 'no such scene' }, { sceneNumber: 2, note: 'a second entry' }] });
       } else if (/You write the voice-over for a short film/.test(sys)) {
         // far too long, so the server trims it at a sentence
         content = JSON.stringify({ narration: 'The keeper climbed alone. '.repeat(40).trim() });
@@ -1111,6 +1120,84 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     check('sound graph: narration ducks the clips and the music; every bus padded to the film\'s length before the sidechain',
       (g.match(/sidechaincompress/g) || []).length === 2 && /\[vo\]asplit=3/.test(g) && /adelay=500\|500/.test(g) && /amix=inputs=3/.test(g) &&
       ['[clips]', '[vo]', '[mu]'].every(l => new RegExp(`apad,atrim=0:3\\.5[^;]*${l.replace(/[[\]]/g, '\\$&')}`).test(g)), g);
+
+    // ── editing: trims, still edits, the shot doctor, the director, exports (2.23.63) ──
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { scenes: [
+      { sceneNumber: 1, filename: take1.filename, trimIn: 0.2, trimOut: 0.9 }, { sceneNumber: 2, filename: take2.filename, transition: 'dissolve', trimIn: 0.2, trimOut: 0.9 }] } } });
+    const trimmed = await waitJob(editor.token, r.json?.job?.jobId);
+    check('trim: each take cut to the part the author chose (a shorter film), the trims kept on its scenes',
+      trimmed?.status === 'done' && trimmed.result.project.finalVideo.duration < 1.3 && cp?.finalVideo?.duration > trimmed.result.project.finalVideo.duration &&
+      trimmed.result.project.scenes.every(x => x.trimIn === 0.2 && x.trimOut === 0.9),
+      `${trimmed?.status} ${trimmed?.error || ''} trimmed ${trimmed?.result?.project?.finalVideo?.duration} vs ${cp?.finalVideo?.duration}`);
+    await call('POST', `${jobsUrl}/${trimmed?.jobId}/ack`, editor.token);
+
+    mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'storyboard', target: { type: 'animation', id: 't3' }, params: { scenes: [{ ...sbScenes[0], edit: { from: still1, instruction: 'make it night with rain' } }] } });
+    const ed = await waitJob(editor.token, r.json?.job?.jobId);
+    const edCall = gateway.requests.slice(mark).find(q => q.path.endsWith('/images/generations'));
+    check('edit a still: the chosen still edited from an instruction (its picture as the input), everything else kept',
+      ed?.status === 'done' && ed.result.stills[0]?.source === 'edited' && ed.result.stills[0].edit === 'make it night with rain' &&
+      /^make it night with rain\. Keep everything else exactly the same/.test(edCall?.body?.prompt || '') && /^data:image\//.test(edCall?.body?.image || '') &&
+      gateway.requests.slice(mark).filter(q => q.path.endsWith('/images/generations')).length === 1,
+      `${ed?.status} ${ed?.error || ''} ${JSON.stringify(ed?.result)} ${(edCall?.body?.prompt || '').slice(0, 120)}`);
+    await call('POST', `${jobsUrl}/${ed?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'storyboard', target: { type: 'animation', id: 't3' }, params: { scenes: [{ ...sbScenes[0], edit: { from: 'https://x.example/a.png', instruction: 'x' } }] } });
+    check('edit a still: a still from outside the app = 400', r.status === 400, `status ${r.status}`);
+
+    const eq3 = await editorQuota();
+    mark = gateway.requests.length;
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-advice', target: { type: 'animation', id: 't3' }, params: { scene: sbScenes[1], still: sb?.result?.stills?.[1]?.url, previousStill: still1 } });
+    const adv = await waitJob(editor.token, r.json?.job?.jobId);
+    check('shot doctor: the still and the one before it looked at (small JPEGs); notes and a better description; one quota slot',
+      adv?.status === 'done' && adv.result.sceneNumber === 2 && adv.result.verdict === 'fix' && adv.result.notes[0] === 'saw 2 pictures' &&
+      /^Medium shot at dusk/.test(adv.result.prompt) && adv.result.still === sb?.result?.stills?.[1]?.url && (await editorQuota()) === eq3 + 1,
+      `${adv?.status} ${adv?.error || ''} ${JSON.stringify(adv?.result)}`);
+    await call('POST', `${jobsUrl}/${adv?.jobId}/ack`, editor.token);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-review', target: { type: 'animation', id: 't3' }, params: { scenes: sbScenes.map(x => ({ ...x, clipSeconds: 5 })) } });
+    const rev = await waitJob(editor.token, r.json?.job?.jobId);
+    check('director\'s review: one row per real scene; lengths outside 2-10 s and a transition for the first scene dropped',
+      rev?.status === 'done' && rev.label === "Director's review" && rev.result.overall === 'Slow the ending down.' &&
+      JSON.stringify(rev.result.scenes) === JSON.stringify([{ sceneNumber: 2, note: 'Hold the lamp moment longer.', duration: 8, transition: 'fade' }, { sceneNumber: 1, note: 'Fine opening.' }]),
+      `${rev?.status} ${rev?.error || ''} ${JSON.stringify(rev?.result)}`);
+    await call('POST', `${jobsUrl}/${rev?.jobId}/ack`, editor.token);
+
+    await db.query('UPDATE books SET animation_projects = $2 WHERE id = $1', [book.id, JSON.stringify([cp])]);
+    const eq4 = await editorQuota();
+    const exports = {};
+    for (const format of ['whatsapp', 'gif']) {
+      r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: cp?.id, format } });
+      exports[format] = await waitJob(editor.token, r.json?.job?.jobId);
+      await call('POST', `${jobsUrl}/${exports[format]?.jobId}/ack`, editor.token);
+    }
+    const wa = exports.whatsapp?.result;
+    const gif = exports.gif?.result;
+    const gifRes = gif?.url ? await fetch(`${call.base}${gif.url}`, { headers: { Authorization: `Bearer ${editor.token}` } }) : null;
+    check('export: WhatsApp MP4 and GIF versions of a saved film, free, stored as the user\'s',
+      exports.whatsapp?.status === 'done' && /^\/api\/media\/videos\/film-whatsapp-.*\.mp4$/.test(wa?.url || '') && wa.projectId === cp?.id &&
+      exports.gif?.status === 'done' && /^\/api\/media\/images\/film-gif-.*\.gif$/.test(gif?.url || '') && gifRes?.status === 200 &&
+      /image\/gif/.test(gifRes.headers.get('content-type') || '') && (await editorQuota()) === eq4,
+      `${exports.whatsapp?.status} ${exports.whatsapp?.error || ''} ${JSON.stringify(wa)} | ${exports.gif?.status} ${exports.gif?.error || ''} ${gifRes?.status} ${gifRes?.headers.get('content-type')}`);
+    r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: 'anim-nope', format: 'gif' } });
+    const r3x = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: cp?.id, format: 'avi' } });
+    check('export: an unknown film = 404, an unknown format = 400', r.status === 404 && r3x.status === 400, `${r.status} ${r3x.status}`);
+
+    // the scene list (client): trims into the cut, order, advice, review, exports
+    let eb = { animationProjects: [cp], metadata: { animationDrafts: { t3: { scenes: [
+      { ...sbScenes[0], takes: [{ id: 'a', filename: take1.filename }], take: 'a' }, { ...sbScenes[1], takes: [{ id: 'b', filename: take2.filename }], take: 'b' }] } } } };
+    eb = ft.setTrim(eb, 't3', 1, 'a', { trimIn: 0.5, trimOut: 0.7 }); // too close: the end is dropped
+    eb = ft.setTrim(eb, 't3', 2, 'b', { trimOut: 3.25 });
+    eb = ft.moveScene(eb, 't3', 2, -1);
+    eb = ft.applyAdvice(eb, { ...adv, target: { type: 'animation', id: 't3' } });
+    eb = ft.applyReview(eb, { ...rev, target: { type: 'animation', id: 't3' } });
+    eb = ft.takeReviewSuggestion(eb, 't3', 2);
+    eb = ft.applyExport(eb, exports.gif);
+    const ed3 = eb.metadata.animationDrafts.t3;
+    check('scene list: trims go into the cut, scenes reorder, advice and review land, a used suggestion is applied and leaves the list, exports land on the film',
+      JSON.stringify(ft.cutScenes(ed3.scenes).map(x => [x.sceneNumber, x.trimIn ?? null, x.trimOut ?? null])) === JSON.stringify([[2, null, 3.25], [1, 0.5, null]]) &&
+      ed3.scenes[0].sceneNumber === 2 && ed3.scenes[0].advice?.prompt?.startsWith('Medium shot') && ed3.scenes[0].duration === 8 && ed3.scenes[0].transition === 'fade' &&
+      ed3.review.scenes.length === 1 && ed3.review.scenes[0].sceneNumber === 1 && eb.animationProjects[0].finalVideo.files.gif.filename === gif?.filename &&
+      ft.applyExport(eb, exports.gif) === eb && ft.renderScenes(ed3.scenes, [1]).every(x => !x.advice),
+      JSON.stringify({ cut: ft.cutScenes(ed3.scenes), review: ed3.review, advice: ed3.scenes[0].advice }));
 
     const fs2 = ft.applyMusic(ft.applyVoiceover(ft.applyNarration(fb, { ...nar, target: { type: 'animation', id: 't3' } }), { ...vo, target: { type: 'animation', id: 't3' } }), { ...mu, target: { type: 'animation', id: 't3' } });
     const snd = fs2.metadata.animationDrafts.t3.sound;

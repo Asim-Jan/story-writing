@@ -167,14 +167,20 @@ export class VideoAssembler {
       for (let i = 0; i < clips.length; i++) {
         const c = clips[i];
         const continues = i > 0 && roughPlan[i - 1].transition === 'continue';
-        if (!continues) {
+        // the author's trim (seconds into the take), else trim a still opening
+        const trimIn = Number(c.scene.trimIn);
+        const trimOut = Number(c.scene.trimOut);
+        if (Number.isFinite(trimIn) && trimIn > 0 && trimIn < c.length - 0.5) c.head = trimIn;
+        else if (!continues) {
           const still = await stillHead(c.file);
           const head = Math.min(MAX_HEAD_TRIM, Math.max(0, still - 0.08));
           if (head > 0.1 && c.length - head >= Math.max(1.5, c.length * 0.6)) c.head = head;
         }
+        c.end = Number.isFinite(trimOut) && trimOut > c.head + 0.5 && trimOut < c.length ? trimOut : null;
+        const span = `start=${r3(c.head)}${c.end ? `:end=${r3(c.end)}` : ''}`;
         c.norm = at(`norm-${i}.mp4`);
         await ffmpegOk(['-threads', '2', '-i', c.file, '-map', '0:v:0',
-          '-vf', `trim=start=${r3(c.head)},setpts=PTS-STARTPTS,fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`,
+          '-vf', `trim=${span},setpts=PTS-STARTPTS,fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`,
           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-threads', '2', '-an', c.norm], `prepare scene ${i + 1}`);
         c.frames = await frameCount(c.norm);
         // the author's level for this clip's own sound (0 = muted)
@@ -184,7 +190,7 @@ export class VideoAssembler {
           // silence stays silence; otherwise towards one level, within reason
           c.gainDb = (mean === null || mean < -60 ? 0 : Math.max(-15, Math.min(18, TARGET_DB - mean))) + (clipVolume === 1 ? 0 : dbOf(clipVolume));
           c.wav = at(`aud-${i}.wav`);
-          await ffmpegOk(['-i', c.file, '-map', '0:a:0', '-af', `atrim=start=${r3(c.head)},asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo,volume=${c.gainDb.toFixed(1)}dB`,
+          await ffmpegOk(['-i', c.file, '-map', '0:a:0', '-af', `atrim=${span},asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo,volume=${c.gainDb.toFixed(1)}dB`,
             '-c:a', 'pcm_s16le', c.wav], `take scene ${i + 1}'s sound`);
         }
         fs.rmSync(c.file, { force: true });

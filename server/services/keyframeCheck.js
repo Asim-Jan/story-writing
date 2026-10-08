@@ -16,7 +16,7 @@ JSON only: {"figures": number of separate people visible, "duplicated": true or 
 "duplicated" is true when two or more figures are clearly the SAME person drawn twice (same face, hair and build, even in different clothes or poses), like a clone or twin that the scene does not call for. Different people who merely look alike in the art style are not duplicated.`;
 
 // a small JPEG for the model: a 1280x720 PNG is ~1-2 MB of tokens for nothing
-function smallJpeg(pngBuffer) {
+export function smallJpeg(pngBuffer) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kfc-'));
   const src = path.join(dir, 'in.png');
   const out = path.join(dir, 'out.jpg');

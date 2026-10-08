@@ -316,6 +316,26 @@ export async function drawStoryboard({ user, bookId, book, scenes, styleKey, onP
     const base = { sceneNumber: scene.sceneNumber, current: i + 1, total: scenes.length };
     try {
       await onProgress({ stage: 'still', ...base });
+      if (scene.edit?.from) {
+        // the author's change to a still ("make it night"): the picture edited,
+        // everything else kept (Qwen Image 2.1 with the still as its input)
+        const from = await mediaUrlToDataUrl(user, scene.edit.from);
+        const image = await saiImage({
+          model: 'qwen-image-2.1',
+          size: '1280x720',
+          canvas: 'size',
+          prompt: `${String(scene.edit.instruction).trim()}. Keep everything else exactly the same: the same people and how they look, the same place, framing, lighting and ${style.prompt} style.`,
+          negative: style.negative,
+          image: from,
+        });
+        const url = await storeImage(user, bookId, image.buffer);
+        previousFrame = dataUrlOf(image.buffer);
+        previousScene = scene;
+        const row = { sceneNumber: scene.sceneNumber, status: 'completed', url, source: 'edited', edit: String(scene.edit.instruction).trim().slice(0, 300) };
+        results.push(row);
+        await onProgress({ stage: 'still-done', ...base, result: row });
+        continue;
+      }
       const cast = await prepareCast(user, book, scene);
       const transition = transitionOf(scene, previousScene);
       const continuing = transition === 'continue' && Boolean(previousFrame);
