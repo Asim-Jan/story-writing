@@ -10,6 +10,7 @@
 //   POST /api/auth/portal/session        hands the freshly issued JWT to the SPA ONCE (see below): the second call is 410
 //   GET  /api/auth/portal/link/status    is there an account-linking step pending in this browser?
 //   POST /api/auth/portal/link           the old Stories password, once, to link an UNVERIFIED Stories account
+//   GET  /admin/local-login              the hidden administrator password page (break-glass; see adminLogin.js). 404 unless enabled
 //   POST /api/auth/portal/attach         Settings > "Connect SAI Cloud": the SIGNED-IN user, with their password, links
 //                                        whichever SAI Cloud account they sign in with next (the email need not match)
 //
@@ -24,6 +25,7 @@ import { OUTCOME, resolveAccount, linkWithPassword } from './accounts.js';
 import { publicPortalConfig } from './config.js';
 import { createProviderHealth } from './health.js';
 import { createOnceStore } from './session.js';
+import { createAdminLogin } from './adminLogin.js';
 
 const require = createRequire(import.meta.url);
 const { createClient, OidcError } = require('../vendor/sai-auth-client/index.cjs');
@@ -65,9 +67,11 @@ const attachIdOf = (returnTo) => {
  * @param {{consume: (id: string) => Promise<boolean>}} [o.handoff]   one-time-use memory for the SPA hand-off (default: this process)
  * @param {{autoStart?: boolean, intervalMs?: number}} [o.probe]   the provider health probe (tests switch the timer off)
  * @param {Function} [o.authenticate]   the app's authenticateToken (sets req.user); without it there is no "Connect SAI Cloud"
+ * @param {() => object|null} [o.redis]  a connected Redis client (or null): the admin sign-in page's failure budget lives there when it is
  */
 export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}, log = console, fetch: fetchImpl, now = Date.now,
-  allowSignup = async () => true, handoff = createOnceStore({ now, log }), probe: probeOpts = {}, authenticate = null }) {
+  allowSignup = async () => true, handoff = createOnceStore({ now, log }), probe: probeOpts = {}, authenticate = null, redis = () => null,
+  adminLoginCounter = null }) {
   const router = express.Router();
   const noStore = (res) => res.set('Cache-Control', 'no-store');
   const dummyHash = bcrypt.hashSync('not-a-password-' + crypto.randomBytes(8).toString('hex'), 10);
@@ -76,7 +80,12 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
   // or a portal that is gone, never locks everyone out of Stories. Admins are never locked out by it at all.
   let providerHealth = null;
   const onlyActive = () => !!(cfg.only && providerHealth && providerHealth.check());
-  const ctx = { cfg, store, onlyActive, providerHealth: () => providerHealth };
+  const ctx = { cfg, store, onlyActive, providerHealth: () => providerHealth, adminLogin: null };
+
+  // The hidden administrator password page (break-glass). It answers 404 itself while SAI Cloud sign-in is off.
+  const adminLogin = createAdminLogin({ cfg, log, now, redis, counter: adminLoginCounter });
+  router.use(adminLogin.router);
+  ctx.adminLogin = adminLogin;
 
   router.get('/api/auth/portal/config', (req, res) => { noStore(res); res.json({ ...publicPortalConfig(cfg), only: onlyActive() }); });
 
@@ -371,11 +380,13 @@ export function createPortalAuth({ cfg, store, jwtSecret, audit = async () => {}
 }
 
 // What index.js needs besides the router.
-function finish(router, { cfg, store, onlyActive, providerHealth }) {
+function finish(router, { cfg, store, onlyActive, providerHealth, adminLogin }) {
   const onlyBody = { error: 'Email and password sign-in is turned off. Sign in with SAI Cloud.', code: 'PORTAL_ONLY' };
   return {
     router,
     config: cfg,
+    /** The hidden administrator sign-in page: `guard` (mount ahead of the body parser on /api/auth/login) and `dummyCompare`. */
+    adminLogin,
     /** PORTAL_ONLY is requested AND the portal is healthy: the password routes are really off. */
     onlyActive,
     /** PORTAL_ONLY, local sign-UP: refused for everyone while it is enforced (existing sessions keep working until they expire). */

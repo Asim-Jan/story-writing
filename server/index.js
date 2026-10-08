@@ -543,6 +543,9 @@ async function processStripeWebhook(event) {
   }
 }
 
+// The hidden administrator sign-in page marks its login POST; that surface is hardened (same-origin, 2 KB body, its own
+// failure budget, one uniform failure, an audit line) AHEAD of the 10 MB parser. Unmarked requests pass straight through.
+app.use('/api/auth/login', (req, res, next) => portalAuth.adminLogin.guard(req, res, next));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
@@ -857,6 +860,8 @@ const portalAuth = createPortalAuth({
   handoff: createOnceStore({ redis: () => { try { return getRedisClient(); } catch { return null; } } }),
   // Settings > "Connect SAI Cloud" is for the signed-in user
   authenticate: authenticateToken,
+  // the admin sign-in page's failure budget is shared across replicas through Redis when it is connected
+  redis: () => { try { return getRedisClient(); } catch { return null; } },
 });
 app.use(portalAuth.router);
 
@@ -1008,7 +1013,9 @@ const portalOnlyRefusalLimiter = rateLimit({
 // both limiters run BEFORE blockPasswordLogin, so a blocked request is throttled before it costs a query
 app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.blockPasswordLogin, async (req, res) => {
   try {
-    console.log('Login attempt for:', req.body?.email);
+    // the admin sign-in page's requests keep the address out of the log (its own audit line says what happened)
+    const loginLog = (...a) => { if (!req.adminLocalLogin) console.log(...a); };
+    loginLog('Login attempt for:', req.body?.email);
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -1022,12 +1029,15 @@ app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.bl
     console.log('User found:', !!user);
 
     if (!user) {
-      console.log('User not found for email:', email);
+      loginLog('User not found for email:', email);
+      // from the admin page an unknown address costs what a wrong password costs (no timing oracle)
+      if (req.adminLocalLogin) await portalAuth.adminLogin.dummyCompare(password);
       await logLoginAttempt(email, null, false, 'user_not_found', req);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Verify password
+    req.loginAccountId = user.id;   // for the admin page's audit line only
     const validPassword = await bcrypt.compare(password, user.password);
     console.log('Password valid:', validPassword);
 
@@ -1056,7 +1066,7 @@ app.post('/api/auth/login', authLimiter, portalOnlyRefusalLimiter, portalAuth.bl
     // Log successful login
     await logLoginAttempt(email, user.id, true, null, req);
 
-    console.log('Login successful for:', email);
+    loginLog('Login successful for:', email);
     res.json({
       user: {
         id: user.id,
