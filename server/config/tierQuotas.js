@@ -20,7 +20,8 @@ export const TIER_QUOTAS = {
       collaboration: false,
       version_history: false,
       priority_processing: false,
-      model_choice: false // choose the Writer model (Settings > AI models)
+      model_choice: false, // choose the Writer model (Settings > AI models)
+      premium_images: false // Qwen Image 2.1 for new pictures and edits (services/imagePlan.js)
     }
   },
 
@@ -42,7 +43,8 @@ export const TIER_QUOTAS = {
       collaboration: false, // Not yet in basic
       version_history: true,
       priority_processing: false,
-      model_choice: false // choose the Writer model (Settings > AI models)
+      model_choice: false, // choose the Writer model (Settings > AI models)
+      premium_images: false // Qwen Image 2.1 for new pictures and edits (services/imagePlan.js)
     }
   },
 
@@ -64,7 +66,8 @@ export const TIER_QUOTAS = {
       collaboration: true, // Future feature
       version_history: true,
       priority_processing: true,
-      model_choice: true // choose the Writer model (Settings > AI models)
+      model_choice: true, // choose the Writer model (Settings > AI models)
+      premium_images: true // Qwen Image 2.1 for new pictures and edits (services/imagePlan.js)
     }
   }
 };

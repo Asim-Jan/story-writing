@@ -4,6 +4,7 @@ import { saiImage } from '../saiClient.js';
 import { mediaStorage } from './mediaStorage.js';
 import { canAccessMedia, recordMediaOwner } from '../utils/mediaMapping.js';
 import { joinNegatives } from './artStyles.js';
+import { imageModelFor, FLUX_DRAW, QWEN_IMAGE } from './imagePlan.js';
 
 // Character reference images on the SAI media bridge.
 //
@@ -105,8 +106,11 @@ export async function mediaUrlToDataUrl(user, url) {
 }
 
 async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUrl, characterId, styleNegative }) {
+  // the general picture models follow the plan (Qwen Image 2.1 on Premium, FLUX.2 klein otherwise); the
+  // character-sheet LoRA recipes are the same for everyone
+  const model = spec.model === FLUX_DRAW || spec.model === QWEN_IMAGE ? imageModelFor(user, { fromPicture: Boolean(image) }) : spec.model;
   const result = await saiImage({
-    model: spec.model,
+    model,
     prompt,
     size: spec.size,
     image,
@@ -123,7 +127,7 @@ async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUr
     id: `ref-${uuidv4()}`,
     kind: spec.kind,
     imageUrl: `/api/media/images/${filename}`,
-    model: result.model || spec.model,
+    model: result.model || model,
     prompt,
     sourceImageUrl: sourceImageUrl || null,
     createdAt: new Date().toISOString(),

@@ -14,7 +14,7 @@ export const REFERENCE_KINDS = [
   { id: 'turnaround', label: 'Turnaround', needsPortrait: true },
   { id: 'turnaround-quad', label: 'Turnaround (4-view)', needsPortrait: true },
   { id: 'expressions', label: 'Expressions', needsPortrait: true },
-  { id: 'qwen-sheet', label: 'Qwen sheet', needsPortrait: false },
+  { id: 'qwen-sheet', label: 'Reference sheet', needsPortrait: false },
 ];
 
 export const kindLabel = (kind) => REFERENCE_KINDS.find(k => k.id === kind)?.label || kind;

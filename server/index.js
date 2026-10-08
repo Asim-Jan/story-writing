@@ -17,6 +17,7 @@ import { enhanceEvents } from './enhance/events.js';
 import { findMissing } from './enhance/missing.js';
 import { checkPlaceDuplicates } from './enhance/placeDuplicates.js';
 import { availableVoices, createCustomVoice, deleteCustomVoice, listCustomVoices, normaliseSpec, speak, storeAudio } from './services/voices.js';
+import { imagePlan, imageModelFor } from './services/imagePlan.js';
 import { MODEL_ROLES, MODEL_INFO, WRITER_CHOICES, getModelSettings, resolveChatModel, saveModelSettings, withModelChoice, writerChoiceFor, forgetModelChoice } from './services/aiModels.js';
 import { directFilm, drawStoryboard, FILM_STYLES } from './services/filmDirector.js';
 import { writeNarration, makeMusic, MAX_VOICEOVER_CHARS, MAX_MUSIC_SECONDS } from './services/filmSound.js';
@@ -4322,14 +4323,15 @@ async function generateBookImage({ user, bookId, prompt, context, size, model, s
   const imageSize = sizeMatch && [sizeMatch[1], sizeMatch[2]].every(n => n >= 256 && n <= 1536 && n % 16 === 0)
     ? `${sizeMatch[1]}x${sizeMatch[2]}`
     : '1024x1024';
-  // flux2-klein-9b (fast, the default) or qwen-image-2.1 (best at text in
-  // the image and at faithful edits)
-  const imageModel = model === 'qwen-image-2.1' ? 'qwen-image-2.1' : 'flux2-klein-9b';
   // Optional: edit one of the app's own images instead of drawing from scratch
   let sourceImage;
   if (sourceImageUrl) {
     sourceImage = await mediaUrlToDataUrl(user, sourceImageUrl);
   }
+  // the plan decides the model (services/imagePlan.js): Qwen Image 2.1 on Premium, FLUX.2 klein otherwise. A
+  // `model` the request names is ignored: it used to let any plan ask for Qwen.
+  void model;
+  const imageModel = imageModelFor(user, { fromPicture: Boolean(sourceImage) });
 
   // Get the pooled SAI client (validates the gateway key exists)
   const userOpenai = await getUserOpenAI(user.userId);
@@ -5470,7 +5472,7 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
     }
     const imageResult = reference
       ? await saiImage({
-          model: 'qwen-image-2.1',
+          model: imageModelFor(req.user, { fromPicture: true }),
           image: reference,
           size: '1024x1024',
           prompt: `Draw the character from the image in a new comic panel. Keep their face, hairstyle, skin tone and outfit exactly as in the image. ${fullPrompt}`.slice(0, 2000),
@@ -5478,7 +5480,7 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
         })
       : await saiImage({
           prompt: fullPrompt,
-          model: 'flux2-klein-9b',
+          model: imageModelFor(req.user),
           size: '1024x1024',
           negative: bookStyle?.negative || undefined,
         });
@@ -8554,9 +8556,21 @@ app.get('/api/external/books', authenticateApiKey, async (req, res) => {
 
 // What powers each part of Stories, for this user: the Writer (their own choice on Premium), the Assistant, and the
 // media models. Read-only except the Writer choice below.
+// the picture rows follow the plan (services/imagePlan.js); `premium` is what Premium would use instead
+const mediaModelsFor = (user) => {
+  const plan = imagePlan(user);
+  return [
+    { job: 'New pictures', detail: 'Portraits, locations, covers, chapter art and comic panels drawn from text',
+      models: [plan.premium ? 'Qwen Image 2.1' : 'FLUX.2 klein 9B'], ...(plan.premium ? {} : { premium: 'Qwen Image 2.1' }) },
+    { job: 'Edits and pictures from a picture', detail: plan.premium
+      ? 'Film keyframes and storyboard edits (your cast, the place and the previous shot together), expression sheets, comic panels from a portrait'
+      : 'Film keyframes and storyboard edits (one reference picture each), expression sheets, comic panels from a portrait',
+      models: [plan.premium ? 'Qwen Image 2.1' : 'FLUX.2 klein edit'], ...(plan.premium ? {} : { premium: 'Qwen Image 2.1, with several reference pictures at once' }) },
+    { job: 'Turnaround sheets', detail: 'Front, side and back views of a character', models: ['FLUX.2 klein character sheet'] },
+    ...MEDIA_MODELS,
+  ];
+};
 const MEDIA_MODELS = [
-  { job: 'New pictures', detail: 'Portraits, locations, covers and comic panels drawn from text', models: ['FLUX.2 klein 9B'] },
-  { job: 'Pictures from a picture', detail: 'Character sheets, keyframes, comic panels from a portrait, and edits', models: ['Qwen Image 2.1'] },
   { job: 'Film clips', detail: 'Each scene animated from its keyframe', models: ['MiniMax H3'] },
   { job: 'Narration and voices', detail: 'Audiobooks, voice-overs, and voices made from your own samples', models: ['VibeVoice', 'Qwen3 TTS'] },
   { job: 'Music', detail: 'Film soundtracks', models: ['ACE-Step 1.5'] },
@@ -8576,7 +8590,7 @@ app.get('/api/ai-models', authenticateToken, async (req, res) => {
       chosen: chosen || null, canChoose, choices: choices.map(modelEntry),
     },
     assistant: { label: MODEL_ROLES.assistant.label, description: MODEL_ROLES.assistant.description, model: modelEntry(settings.assistant) },
-    media: MEDIA_MODELS,
+    media: mediaModelsFor(req.user),
     choiceTier: 'premium',
   });
 });

@@ -803,9 +803,9 @@ async function mainSuite(gateway) {
       const chooser = await makeUser(db, 'chooser');
       const other = await makeUser(db, 'not-choosing');
       r = await call('GET', '/api/ai-models', chooser.token);
-      check('models: a free user sees the Writer (plan default), the Assistant and 5 media jobs, and cannot choose',
+      check('models: a free user sees the Writer (plan default), the Assistant and 6 media jobs (FLUX pictures, Qwen offered as Premium), and cannot choose',
         r.status === 200 && r.json?.writer?.model?.id === 'sai-chat-fast' && r.json?.writer?.canChoose === false && r.json?.assistant?.model?.id === 'sai-chat-fast'
-        && r.json?.media?.length === 5 && r.json?.writer?.choices?.map(c => c.id).join() === 'sai-chat,sai-chat-fast', JSON.stringify(r.json?.writer));
+        && r.json?.media?.length === 6 && r.json?.media?.[0]?.models?.[0] === 'FLUX.2 klein 9B' && r.json?.media?.[0]?.premium === 'Qwen Image 2.1' && r.json?.writer?.choices?.map(c => c.id).join() === 'sai-chat,sai-chat-fast', JSON.stringify(r.json?.writer));
       r = await call('PUT', '/api/users/ai-model', chooser.token, { writer: 'sai-chat' });
       check('models: choosing is refused below Premium (403 PLAN)', r.status === 403 && r.json?.code === 'PLAN', `got ${r.status}`);
       await db.query(`UPDATE users SET tier = 'premium' WHERE id = $1`, [chooser.id]);
@@ -848,7 +848,11 @@ async function mainSuite(gateway) {
       .filter(route => !src.split('\n').some(l => l.includes(`app.post('${route}'`) && l.includes('consumeAIQuota')));
     check('the AI routes that used to be free now use AI quota', unmetered.length === 0, unmetered.join(', '));
 
+    // Qwen Image 2.1 is the Premium plan's picture model (services/imagePlan.js): the media checks below assert the
+    // Qwen paths, so their two users are Premium, and the FLUX paths of the other plans are checked on their own
+    await db.query(`UPDATE users SET tier = 'premium' WHERE id = ANY($1)`, [[owner.id, editor.id]]);
     await mediaChecks({ call, db, gateway, owner, editor, stranger, book });
+    await db.query(`UPDATE users SET tier = 'free' WHERE id = ANY($1)`, [[owner.id, editor.id]]);
 
     console.log('\n== chapter numbers and headings');
     const ui = await import('../../src/utils/chapters.js');
@@ -1046,7 +1050,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   const made = imageCalls().slice(before);
   check('turnaround without a portrait: job done with reference + portrait', r.status === 200 && r.json?.status === 'done' && r.json?.reference?.kind === 'turnaround' && r.json?.portrait?.kind === 'portrait',
     `status ${r.status} ${JSON.stringify(r.json).slice(0, 200)}`);
-  check('...the portrait is text-to-image (flux2-klein-9b, no input image)', made[0]?.body?.model === 'flux2-klein-9b' && !made[0]?.body?.image);
+  check('...the portrait is text-to-image (qwen-image-2.1 on Premium, no input image)', made[0]?.body?.model === 'qwen-image-2.1' && !made[0]?.body?.image);
   check('...the sheet is character-sheet WITH the portrait as a data URL, at 1536x1024',
     made[1]?.body?.model === 'character-sheet' && /^data:image\/png;base64,/.test(made[1]?.body?.image || '') && made[1]?.body?.size === '1536x1024');
   await new Promise(res => setTimeout(res, 300));
@@ -1087,6 +1091,27 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   const panel = imageCalls()[b2];
   check('comic panel with a lone portrait = qwen-image-2.1 edit of it', r.status === 200 && panel?.body?.model === 'qwen-image-2.1' && /^data:image/.test(panel?.body?.image || ''),
     `status ${r.status} model ${panel?.body?.model}`);
+
+  // the plan decides the picture model: Premium draws AND edits with Qwen Image 2.1, other plans with FLUX.2 klein
+  {
+    let m = imageCalls().length;
+    const pg = await call('POST', '/api/generate-image', editor.token, { prompt: 'a lighthouse', bookId: book.id });
+    const premiumNew = imageCalls()[m];
+    await db.query(`UPDATE users SET tier = 'basic' WHERE id = $1`, [editor.id]);
+    m = imageCalls().length;
+    const bp = await call('POST', '/api/generate-comic-panel', editor.token, { bookId: book.id, sceneDescription: 'she opens the door', characters: [{ ...character, imageUrl: portraitUrl }] });
+    const basicEdit = imageCalls()[m];
+    m = imageCalls().length;
+    const bg = await call('POST', '/api/generate-image', editor.token, { prompt: 'a lighthouse', bookId: book.id, model: 'qwen-image-2.1' });
+    const basicNew = imageCalls()[m];
+    await db.query(`UPDATE users SET tier = 'premium' WHERE id = $1`, [editor.id]);
+    check('premium pictures: a new picture on Premium is Qwen Image 2.1 (text to image)', pg.status === 200 && premiumNew?.body?.model === 'qwen-image-2.1' && !premiumNew?.body?.image,
+      `status ${pg.status} model ${premiumNew?.body?.model}`);
+    check('premium pictures: on Basic a comic panel edits the portrait with FLUX.2 klein edit, and a new picture is FLUX.2 klein even when the request names Qwen',
+      bp.status === 200 && basicEdit?.body?.model === 'flux2-klein-9b-edit' && /^data:image/.test(basicEdit?.body?.image || '') && !basicEdit?.body?.canvas
+      && bg.status === 200 && basicNew?.body?.model === 'flux2-klein-9b' && !basicNew?.body?.image,
+      `edit ${bp.status} ${basicEdit?.body?.model} new ${bg.status} ${basicNew?.body?.model}`);
+  }
 
   // old DALL-E sizes map to sizes the bridge renders
   const b3 = imageCalls().length;
@@ -1316,6 +1341,21 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     check('storyboard: scene 2 is drawn from scene 1\'s still, as the same shot a moment later (it continues)',
       sbKeys[1]?.body?.images?.length >= 2 && /SAME shot a moment later/.test(sbKeys[1]?.body?.prompt || ''), (sbKeys[1]?.body?.prompt || '').slice(-400));
     await call('POST', `${jobsUrl}/${sb?.jobId}/ack`, editor.token);
+    {
+      // below Premium: FLUX.2 klein edit, ONE reference per still (the portrait; then the previous still it carries on)
+      await db.query(`UPDATE users SET tier = 'basic' WHERE id = $1`, [editor.id]);
+      const m0 = gateway.requests.length;
+      r = await call('POST', jobsUrl, editor.token, { type: 'storyboard', target: { type: 'animation', id: 't3' }, params: { scenes: sbScenes, style: 'animated' }, label: 'Storyboard: scenes 1–2 (basic)' });
+      const bsb = await waitJob(editor.token, r.json?.job?.jobId);
+      const draws = gateway.requests.slice(m0).filter(q => q.path.endsWith('/images/generations'));
+      await db.query(`UPDATE users SET tier = 'premium' WHERE id = $1`, [editor.id]);
+      check('premium pictures: a Basic storyboard draws with FLUX.2 klein edit, one reference each, no Qwen',
+        bsb?.status === 'done' && bsb.result?.stills?.every(x => x.status === 'completed') && draws.length === 2
+        && draws.every(q => q.body?.model === 'flux2-klein-9b-edit' && /^data:image/.test(q.body?.image || '') && !q.body?.images && !q.body?.canvas)
+        && /image 1 is Mira Vale/i.test(draws[0]?.body?.prompt || '') && /SAME shot a moment later/.test(draws[1]?.body?.prompt || ''),
+        `${bsb?.status} ${bsb?.error || ''} ${draws.map(q => `${q.body?.model}:${q.body?.images ? 'multi' : q.body?.image ? 'one' : 'none'}`).join(',')} | ${(draws[0]?.body?.prompt || '').slice(0, 300)}`);
+      await call('POST', `${jobsUrl}/${bsb?.jobId}/ack`, editor.token);
+    }
     r = await call('POST', jobsUrl, editor.token, { type: 'storyboard', target: { type: 'animation', id: 't3' }, params: { scenes: [{ ...sbScenes[1], previousStill: 'https://evil.example/x.png' }] } });
     check('storyboard: a previous still from outside the app = 400', r.status === 400, `status ${r.status}`);
 

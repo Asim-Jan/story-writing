@@ -12,11 +12,12 @@ import { VideoGenerator } from './videoGenerator.js';
 import { transitionOf } from './filmShots.js';
 import { matchLocation, describeLocation } from './filmLocations.js';
 import { checkKeyframe } from './keyframeCheck.js';
+import { imagePlan, QWEN_IMAGE } from './imagePlan.js';
 
 // Consistent films. Clips made from text alone each invent their own look:
 // one scene lifelike, the next animated, the characters different every time.
 // Each scene now goes through a KEYFRAME:
-//   1. Qwen Image 2.1 draws the opening frame from the scene, with every
+//   1. The plan's picture model (Qwen Image 2.1 on Premium, FLUX.2 klein otherwise; services/imagePlan.js) draws the opening frame from the scene, with every
 //      character's portrait as a reference image (the bridge takes several)
 //      plus the previous clip's last frame, in ONE locked style for the film;
 //   2. the video model animates from that keyframe (it is the clip's first
@@ -253,17 +254,22 @@ const storeImage = async (user, bookId, buffer) => {
 };
 
 /**
- * Draw one scene's opening frame (Qwen Image 2.1) from its cast, place and the
+ * Draw one scene's opening frame (the plan's picture model) from its cast, place and the
  * previous shot, look at it, and redraw once if someone appears twice.
  * Returns { buffer, url, check }.
  */
 async function drawKeyframe({ user, bookId, style, scene, cast, place, previousFrame, previousScene, transition, continuing = false, onRedraw = async () => {} }) {
-  const refs = [...cast.filter(c => c.ref).map(c => c.ref), ...(place?.ref ? [place.ref] : []), ...(previousFrame ? [previousFrame] : [])];
-  const prompt = keyframePrompt({ scene, style, cast, hasPrevious: Boolean(previousFrame), previous: previousScene, transition, place, continuing });
+  // Premium draws with every reference at once (Qwen Image 2.1); other plans edit ONE reference with FLUX.2 klein
+  // and the rest are described in words
+  const plan = imagePlan(user);
+  const use = plan.multiRef ? { cast, place, previousFrame } : oneReference({ cast, place, previousFrame, continuing });
+  const refs = [...use.cast.filter(c => c.ref).map(c => c.ref), ...(use.place?.ref ? [use.place.ref] : []), ...(use.previousFrame ? [use.previousFrame] : [])];
+  const prompt = keyframePrompt({ scene, style, cast: use.cast, hasPrevious: Boolean(use.previousFrame), previous: previousScene, transition, place: use.place, continuing });
+  const model = refs.length ? plan.edit : plan.draw;
   const draw = (extra = '') => saiImage({
-    model: 'qwen-image-2.1',
+    model,
     size: '1280x720',
-    canvas: 'size', // 16:9 whatever the portraits' shape
+    ...(model === QWEN_IMAGE ? { canvas: 'size' } : {}), // 16:9 whatever the portraits' shape
     prompt: `${extra}${prompt}`,
     negative: `${style.negative}, the same person twice, duplicated person, clone, twins`,
     ...(refs.length === 1 ? { image: refs[0] } : {}),
@@ -288,6 +294,22 @@ async function drawKeyframe({ user, bookId, style, scene, cast, place, previousF
 }
 
 const dataUrlOf = (buffer) => `data:image/png;base64,${buffer.toString('base64')}`;
+
+/**
+ * The single reference a one-picture edit model gets: the previous shot when this one carries it on, else the main
+ * character's portrait, else the place, else the previous shot. Everything else is dropped (and so described in
+ * words by keyframePrompt). Pure: copies, never changes the inputs.
+ */
+export function oneReference({ cast, place, previousFrame, continuing = false }) {
+  const noRefs = cast.map(c => ({ ...c, ref: null }));
+  const bare = { cast: noRefs, place: place ? { ...place, ref: null } : place, previousFrame: null };
+  if (continuing && previousFrame) return { ...bare, previousFrame };
+  const lead = cast.findIndex(c => c.ref);
+  if (lead >= 0) return { ...bare, cast: cast.map((c, i) => (i === lead ? c : { ...c, ref: null })) };
+  if (place?.ref) return { ...bare, place };
+  if (previousFrame) return { ...bare, previousFrame };
+  return bare;
+}
 
 /**
  * The storyboard: every scene's opening frame as a still, in order, each drawn
@@ -318,12 +340,13 @@ export async function drawStoryboard({ user, bookId, book, scenes, styleKey, onP
       await onProgress({ stage: 'still', ...base });
       if (scene.edit?.from) {
         // the author's change to a still ("make it night"): the picture edited,
-        // everything else kept (Qwen Image 2.1 with the still as its input)
+        // everything else kept (the plan's edit model, with the still as its input)
         const from = await mediaUrlToDataUrl(user, scene.edit.from);
+        const editModel = imagePlan(user).edit;
         const image = await saiImage({
-          model: 'qwen-image-2.1',
+          model: editModel,
           size: '1280x720',
-          canvas: 'size',
+          ...(editModel === QWEN_IMAGE ? { canvas: 'size' } : {}),
           prompt: `${String(scene.edit.instruction).trim()}. Keep everything else exactly the same: the same people and how they look, the same place, framing, lighting and ${style.prompt} style.`,
           negative: style.negative,
           image: from,

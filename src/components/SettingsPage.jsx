@@ -595,6 +595,7 @@ function ModelsSection({ say, onSeePlans }) {
               <div className="min-w-0">
                 <p className="text-sm text-[var(--ink)]">{m.job}</p>
                 <p className="text-xs text-[var(--dim)]">{m.detail}</p>
+                {m.premium && <p className="text-xs text-[var(--blue)] mt-0.5 flex items-center gap-1"><Lock size={11} /> Premium: {m.premium}</p>}
               </div>
               <div className="flex flex-wrap gap-1.5 sm:justify-end items-start">{m.models.map((x) => <span key={x} className="pill">{x}</span>)}</div>
             </li>
