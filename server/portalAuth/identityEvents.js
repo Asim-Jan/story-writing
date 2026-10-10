@@ -162,7 +162,7 @@ export function createIdentityEvents({ pool, storage, redisClient, client, appSe
       if (r.retry) return { status: 503, body: { error: 'cannot finish yet; retry' } };
       return { status: 202, body: { ok: true, ...(r.duplicate ? { duplicate: true } : {}) } };
     } catch (e) {
-      log.error('[identity-events] could not apply:', e && e.message);
+      log.error('[identity-events] could not apply:', e && e.message, (e && e.stack || '').split('\n').slice(1, 4).join(' | '));
       return { status: 500, body: { error: 'could not apply' } };                       // the portal retries
     }
   }
