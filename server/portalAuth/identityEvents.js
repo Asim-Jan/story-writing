@@ -141,33 +141,40 @@ export function createIdentityEvents({ pool, storage, redisClient, client, appSe
   }
 
   /* ── the route ─────────────────────────────────────────────────────────────────────────────────── */
-  return async function handle(req, res) {
+  /* handleToken: verify + apply one token string → { status, body } — the SAME core the POST route serves, so the
+   * catch-up sweep (a pulled token) runs exactly what a delivered event runs. */
+  async function handleToken(token) {
+    let ev;
+    try { ev = await client.verifyEvent(token); }
+    catch (e) {
+      if (e && e.code === 'bad_event') { log.error('[identity-events] token refused:', e.reason); return { status: 400, body: { error: 'event refused' } }; }
+      log.error('[identity-events] cannot verify right now:', e && e.code);
+      return { status: 503, body: { error: 'cannot verify right now' } };               // the portal retries
+    }
+    const names = Object.keys(ev.events);
+    if (names.length !== 1) return { status: 400, body: { error: 'exactly one event per token' } };
+    const type = names[0], body = ev.events[type];
+    // replay guard: a jti we have COMPLETED before short-circuits; one that failed mid-way falls through and re-applies
+    if (jtiSet.seen(ev.jti) && (await evtRecorded(ev.evt))) return { status: 202, body: { ok: true, duplicate: true } };
+    try {
+      const r = await apply(type, { evt: body.evt, jti: ev.jti, sub: ev.sub }, body.at);
+      jtiSet.seen(ev.jti);                                                              // mark only on success
+      if (r.retry) return { status: 503, body: { error: 'cannot finish yet; retry' } };
+      return { status: 202, body: { ok: true, ...(r.duplicate ? { duplicate: true } : {}) } };
+    } catch (e) {
+      log.error('[identity-events] could not apply:', e && e.message);
+      return { status: 500, body: { error: 'could not apply' } };                       // the portal retries
+    }
+  }
+
+  return { handle: async (req, res) => {
     if (req.headers['x-forwarded-for'] || req.headers['x-real-ip']) return reply(res, 404, { error: 'not found' });
     if (req.method !== 'POST') return reply(res, 405, { error: 'method not allowed' });
     if (!/^application\/secevent\+jwt\s*(;|$)/i.test(String(req.headers['content-type'] || ''))) { req.resume(); return reply(res, 415, { error: 'send application/secevent+jwt' }); }
     let token;
     try { token = await readBody(req); } catch (e) { return reply(res, e.status || 400, { error: 'bad body' }); }
     await jtiLoad();
-    let ev;
-    try { ev = await client.verifyEvent(token); }
-    catch (e) {
-      if (e && e.code === 'bad_event') { log.error('[identity-events] token refused:', e.reason); return reply(res, 400, { error: 'event refused' }); }
-      log.error('[identity-events] cannot verify right now:', e && e.code);
-      return reply(res, 503, { error: 'cannot verify right now' });                     // the portal retries
-    }
-    const names = Object.keys(ev.events);
-    if (names.length !== 1) return reply(res, 400, { error: 'exactly one event per token' });
-    const type = names[0], body = ev.events[type];
-    // replay guard: a jti we have COMPLETED before short-circuits; one that failed mid-way falls through and re-applies
-    if (jtiSet.seen(ev.jti) && (await evtRecorded(ev.evt))) return reply(res, 202, { ok: true, duplicate: true });
-    try {
-      const r = await apply(type, { evt: body.evt, jti: ev.jti, sub: ev.sub }, body.at);
-      jtiSet.seen(ev.jti);                                                              // mark only on success
-      if (r.retry) return reply(res, 503, { error: 'cannot finish yet; retry' });
-      return reply(res, 202, { ok: true, ...(r.duplicate ? { duplicate: true } : {}) });
-    } catch (e) {
-      log.error('[identity-events] could not apply:', e && e.message);
-      return reply(res, 500, { error: 'could not apply' });                             // the portal retries
-    }
-  };
+    const out = await handleToken(token);
+    return reply(res, out.status, out.body);
+  }, handleToken };
 }
