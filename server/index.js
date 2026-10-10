@@ -896,7 +896,20 @@ if (process.env.APPS_SECRET_STORIES) {
     redisClient: (() => { try { return getRedisClient(); } catch { return null; } })(),
     client: eventsClient, appSecret: process.env.APPS_SECRET_STORIES,
   });
-  app.post('/auth/events', (req, res) => identityEventsHandler(req, res));
+  app.post('/auth/events', (req, res) => identityEventsHandler.handle(req, res));
+  // The catch-up sweep (STORIES-DELETION.md section 12): pull the portal's event queue since our cursor and feed each
+  // token through the receiver's OWN handleToken (identical verification + dedupe); nightly at 04:00 UTC, sweep every
+  // linked sub through subjects/check and erase the gone ones (the backstop for a deletion whose queue row aged out).
+  const { startCatchUp } = await import('./portalAuth/catchup.js');
+  const { createEraser } = await import('./portalAuth/erasure.js');
+  startCatchUp({
+    pool: getPool(), appSecret: process.env.APPS_SECRET_STORIES,
+    onToken: async (token) => await identityEventsHandler.handleToken(token),
+    onSubGone: async (sub) => {
+      await createEraser({ pool: getPool(), storage: mediaStorage, redis: (() => { try { return getRedisClient(); } catch { return null; } })(), log: console }).eraseBySub(sub);
+    },
+  });
+  console.log('[identity-catchup] armed (queue pull + the nightly subjects/check sweep at 04:00 UTC)');
   console.log('[identity-events] receiver armed (POST /auth/events, in-cluster only)');
 } else {
   console.log('[identity-events] APPS_SECRET_STORIES not set: the receiver is off (the portal sends nothing anyway until its registry entry carries events_uri)');

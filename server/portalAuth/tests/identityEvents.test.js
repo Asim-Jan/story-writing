@@ -117,7 +117,7 @@ before(async () => {
     },
   });
   app = express();
-  app.post('/auth/events', (req, res) => handler(req, res));
+  app.post('/auth/events', (req, res) => handler.handle(req, res));
   srv = http.createServer(app);
   await new Promise(r => { srv.listen(0, r); });
   port = srv.address().port;
