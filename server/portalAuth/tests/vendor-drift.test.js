@@ -24,7 +24,7 @@ test('the vendored client carries its provenance header and the marker', () => {
   assert.match(headerCommit || '', /^[0-9a-f]{40}$/, 'the header must record the exact source commit');
   assert.ok(vendored.includes(MARKER));
   assert.match(body, /^'use strict';/);
-  assert.match(body, /module\.exports = \{ createClient, createSession, OidcError, parseCookies \};/);
+  assert.match(body, /module\.exports = \{ createClient, createSession, createJtiSet, OidcError, parseCookies, EVENT_URIS \};/);
 });
 
 test('the sync script exists and is executable', () => {

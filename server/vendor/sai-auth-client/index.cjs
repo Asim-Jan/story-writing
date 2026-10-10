@@ -3,7 +3,7 @@
  *
  * What:     SAI Cloud sign-in client (OpenID Connect code flow + PKCE), zero dependencies.
  * Source:   Solutions-AI-LTD/sai-cluster  manifests/_auth-client/index.js
- * Commit:   59fa1eae791c7b76ec0b67deeaa877314897cfcb
+ * Commit:   d444325b301ae8aa8dac0f9381c1532a0bf77ff4
  * Licence:  proprietary, (c) Solutions AI Ltd - first-party code, vendored into another first-party repo under the same
  *           ownership. The source repo carries no separate licence file; this notice is the record.
  * Why:      the Stories image is built from its own repo and cannot import sai-cluster's manifests.
@@ -94,6 +94,29 @@ const httpsUrl = (u, what) => {
   return x;
 };
 
+/* the event URIs the portal sends, by the short name this library returns */
+const EVENT_URIS = {
+  'https://schemas.solutionsai.co.uk/event/account-deleted': 'account-deleted',
+  'https://schemas.solutionsai.co.uk/event/account-disabled': 'account-disabled',
+  'https://schemas.solutionsai.co.uk/event/account-enabled': 'account-enabled',
+  'http://schemas.openid.net/event/backchannel-logout': 'backchannel-logout',
+};
+const EVT_RE = /^evt_[a-f0-9]{24}$/;
+
+/* Replay guard for event tokens: remembers each jti for ttlS (default 24 h, longer than a token can live), bounded in size.
+ * seen(jti) returns true if it was already used, otherwise records it and returns false. In memory; export() / load() let an
+ * app persist it with its event log so a restart does not forget. */
+function createJtiSet({ ttlS = 86400, max = 50000, now = Date.now } = {}) {
+  const m = new Map();
+  const prune = () => { const t = now(); for (const [k, e] of m) if (e <= t) m.delete(k); while (m.size > max) m.delete(m.keys().next().value); };
+  return {
+    seen(jti) { prune(); if (m.has(jti)) return true; m.set(jti, now() + ttlS * 1000); prune(); return false; },
+    export() { prune(); return [...m.entries()]; },
+    load(entries) { for (const [k, e] of Array.isArray(entries) ? entries : []) if (typeof k === 'string' && Number.isFinite(e)) m.set(k, e); prune(); },
+    size: () => m.size,
+  };
+}
+
 /* ═══ a tiny signed session cookie for the app's OWN session ═══════════════════════════════════════════ */
 function createSession({ secret, cookieName = '__Host-sai_sess', ttlS = 12 * 3600, now = Date.now } = {}) {
   const key = needSecret(secret);
@@ -110,10 +133,12 @@ function createSession({ secret, cookieName = '__Host-sai_sess', ttlS = 12 * 360
       return setCookie(cookieName, v, t);
     },
     /* → the data, or null (no cookie, bad signature, expired, wrong purpose). `req` = anything with headers.cookie. */
-    read(req) {
+    read(req, { meta = false } = {}) {
       const o = unseal(key, 'sess', parseCookies(req && req.headers && req.headers.cookie)[cookieName]);
       if (!o || typeof o.exp !== 'number' || o.exp * 1000 <= now() || !o.d || typeof o.d !== 'object') return null;
-      return o.d;
+      // meta: { data, iat, exp } (seconds). `iat` lets an app reject "sessions older than X", e.g. an account the portal
+      // later disabled or signed out everywhere: the session cookie itself carries no revocation, this is how you check it.
+      return meta ? { data: o.d, iat: typeof o.iat === 'number' ? o.iat : null, exp: o.exp } : o.d;
     },
     clear() { return setCookie(cookieName, '', 0); },
   };
@@ -124,7 +149,9 @@ function createClient(opts = {}) {
   const issuer = String(opts.issuer || '');
   const iu = httpsUrl(issuer, 'issuer');
   if (iu.origin !== issuer) throw new OidcError('config', 'issuer must be an origin with no path and no trailing slash (e.g. https://solutionsai.co.uk)');
-  const clientId = String(opts.clientId || ''), clientSecret = String(opts.clientSecret || '');
+  // a secret read from a file or a mounted Secret usually ends in a newline (oidc-tool.js writes one); the portal hashed the bare secret, so a trailing newline would be
+  // invalid_client on every sign-in. Only trailing line breaks are removed.
+  const clientId = String(opts.clientId || ''), clientSecret = String(opts.clientSecret || '').replace(/[\r\n]+$/, '');
   if (!clientId || !clientSecret) throw new OidcError('config', 'clientId and clientSecret are required');
   const redirectUri = String(opts.redirectUri || '');
   httpsUrl(redirectUri, 'redirectUri');
@@ -236,6 +263,52 @@ function createClient(opts = {}) {
     return claims;
   }
 
+  /* ── identity events from the portal (account-deleted / disabled / enabled / backchannel-logout) ─────────────────────────
+   * The portal POSTs a Security Event Token to your /auth/events (and lists the same tokens at GET /api/apps/events for an
+   * app that was down). verifyEvent() is the whole check: ES256 pinned, typ must be secevent+jwt, the signature against the
+   * portal's JWKS, iss, aud = THIS client (a string, exactly), iat within maxAgeS (default 300) and exp in the future, a jti,
+   * a sub, and at least one event URI this library knows. It does not trust anything else in the body.
+   * → { jti, sub, iat, events: { 'account-deleted': { evt, at, erase }, ... } }  or throws OidcError('bad_event', ..., { reason }).
+   * What YOU must do (CUSTOMER-APPS-PLAN.md section 2): answer 202 only after the event is on disk (append + fsync), dedupe on
+   * `evt` (forever for deletions), refuse a replayed `jti` (createJtiSet below), and before ERASING anything re-check the sub with
+   * POST /api/apps/subjects/check. Reject a request that carries X-Forwarded-For: this endpoint is in-cluster only. */
+  const badEvent = reason => new OidcError('bad_event', 'the event was not accepted (' + reason + ')', { reason });
+  async function verifyEvent(token, { maxAgeS = 300 } = {}) {
+    if (typeof token !== 'string' || token.length > 8192) throw badEvent('shape');
+    const parts = token.split('.');
+    if (parts.length !== 3 || !parts.every(p => p && B64U.test(p))) throw badEvent('shape');
+    let header, claims;
+    try { header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')); } catch { throw badEvent('header'); }
+    if (!header || typeof header !== 'object' || Array.isArray(header)) throw badEvent('header');
+    if (header.alg !== 'ES256') throw badEvent('alg');
+    if (header.typ !== 'secevent+jwt') throw badEvent('typ');          // an ID token (typ JWT) must never be accepted as an event
+    if ('crit' in header) throw badEvent('crit');
+    if (typeof header.kid !== 'string' || !header.kid) throw badEvent('kid');
+    let pub; try { pub = await keyFor(header.kid); } catch { throw new OidcError('jwks', 'the portal key set could not be fetched, try again later'); }
+    if (!pub) throw badEvent('kid');
+    const sig = Buffer.from(parts[2], 'base64url');
+    if (sig.length !== 64 || !crypto.verify('sha256', Buffer.from(parts[0] + '.' + parts[1]), { key: pub, dsaEncoding: 'ieee-p1363' }, sig)) throw badEvent('sig');
+    try { claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')); } catch { throw badEvent('claims'); }
+    if (!claims || typeof claims !== 'object' || Array.isArray(claims)) throw badEvent('claims');
+    const t = Math.floor(now() / 1000);
+    if (claims.iss !== issuer) throw badEvent('iss');
+    if (claims.aud !== clientId) throw badEvent('aud');                 // a string, exactly this client: an event for another app is not ours
+    if (typeof claims.exp !== 'number' || claims.exp + skew <= t) throw badEvent('exp');
+    if (typeof claims.iat !== 'number' || claims.iat > t + skew || t - claims.iat > maxAgeS + skew) throw badEvent('iat');
+    if (typeof claims.jti !== 'string' || !claims.jti || claims.jti.length > 128) throw badEvent('jti');
+    if (typeof claims.sub !== 'string' || !claims.sub || claims.sub.length > 255) throw badEvent('sub');
+    if (!claims.events || typeof claims.events !== 'object' || Array.isArray(claims.events)) throw badEvent('events');
+    const events = {};
+    for (const [uri, body] of Object.entries(claims.events)) {
+      const name = EVENT_URIS[uri];
+      if (!name) continue;                                              // an event we do not know is ignored, not obeyed
+      if (!body || typeof body !== 'object' || Array.isArray(body) || !EVT_RE.test(String(body.evt || ''))) throw badEvent('event body');
+      events[name] = body;
+    }
+    if (!Object.keys(events).length) throw badEvent('no known event');
+    return { jti: claims.jti, sub: claims.sub, iat: claims.iat, events };
+  }
+
   /* ── the redirect out ─────────────────────────────────────────────────────────────────────────── */
   async function authorizationUrl({ returnTo, prompt, maxAge, loginHint } = {}) {
     const d = await discover();
@@ -315,7 +388,7 @@ function createClient(opts = {}) {
     return d.end_session_endpoint + '?' + p.toString();
   }
 
-  return { issuer, clientId, discover, authorizationUrl, handleCallback, verifyIdToken, logoutUrl, txCookieName: txName };
+  return { issuer, clientId, discover, authorizationUrl, handleCallback, verifyIdToken, verifyEvent, logoutUrl, txCookieName: txName };
 }
 
-module.exports = { createClient, createSession, OidcError, parseCookies };
+module.exports = { createClient, createSession, createJtiSet, OidcError, parseCookies, EVENT_URIS };
