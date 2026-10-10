@@ -26,7 +26,7 @@ import { createEraser } from './erasure.js';
 
 const MAX = 8192;
 
-export function createIdentityEvents({ pool, storage, redisClient, client, appSecret, portalBase = 'http://sai-portal.sai-portal.svc.cluster.local:8100', fetch: fetchImpl = globalThis.fetch, log = console, now = Date.now }) {
+export function createIdentityEvents({ pool, storage, redisClient, client, appSecret, portalBase = 'http://sai-portal.sai-portal.svc.cluster.local', fetch: fetchImpl = globalThis.fetch, log = console, now = Date.now }) {
   if (!pool || !client || !appSecret) throw new Error('identity-events: pool, client and appSecret are required');
 
   const jtiSet = createJtiSet({ ttlS: 86400, max: 50000, now });                    // replay guard (24 h > token life)
