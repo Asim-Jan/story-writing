@@ -14,7 +14,7 @@ const SWEEP_HOUR_UTC = 4;                                            // quiet ho
 const DAY_MS = 24 * 3600 * 1000;
 const CHECK_BATCH = 500;                                             // the portal's cap per subjects/check call
 
-export function startCatchUp({ pool, appSecret, portalBase = 'http://sai-portal.sai-portal.svc.cluster.local:8100', onToken, onSubGone, log = console, now = Date.now, fetch: fetchImpl = globalThis.fetch }) {
+export function startCatchUp({ pool, appSecret, portalBase = 'http://sai-portal.sai-portal.svc.cluster.local', onToken, onSubGone, log = console, now = Date.now, fetch: fetchImpl = globalThis.fetch }) {
   if (!pool || !appSecret || !onToken || !onSubGone) throw new Error('catch-up: pool, appSecret, onToken and onSubGone are required');
   const headers = { 'X-App-Id': 'stories', 'X-App-Secret': appSecret };
   let running = false;
