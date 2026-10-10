@@ -1,4 +1,4 @@
-// VENDORED from sai-cluster manifests/_auth-client/tests/lib.test.js @ 59fa1eae791c7b76ec0b67deeaa877314897cfcb (require path rewritten). Re-copy with scripts/sync-auth-client.sh.
+// VENDORED from sai-cluster manifests/_auth-client/tests/lib.test.js @ d444325b301ae8aa8dac0f9381c1532a0bf77ff4 (require path rewritten). Re-copy with scripts/sync-auth-client.sh.
 'use strict';
 /* The client library on its own (no provider): option validation, the signed app-session cookie, the signed sign-in cookie,
  * and cookie parsing. The provider round trip is e2e.test.js. */
@@ -142,4 +142,24 @@ test('handleCallback refuses what it should before touching the network', async 
   const a = await wrongSecret.authorizationUrl();
   const forged = await c.handleCallback({ url: '/cb?code=x&state=' + a.state + '&iss=' + encodeURIComponent(base.issuer), headers: { cookie: a.cookie.split(';')[0] } }).catch(e => e);
   assert.equal(forged.code, 'tx_invalid', 'a sign-in cookie made with another secret');
+});
+
+test('a client secret with a trailing newline (as oidc-tool.js writes it, as a mounted Secret keeps it) is sent without it', async () => {
+  const seen = [];
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith('/.well-known/openid-configuration')) return { status: 200, text: async () => JSON.stringify({ issuer: 'https://portal.test', authorization_endpoint: 'https://portal.test/oidc/authorize', token_endpoint: 'https://portal.test/oidc/token', jwks_uri: 'https://portal.test/oidc/jwks' }) };
+    if (u.endsWith('/oidc/token')) { seen.push(init.headers.authorization); return { status: 400, text: async () => '{"error":"invalid_grant"}' }; }
+    return { status: 404, text: async () => '{}' };
+  };
+  for (const secret of ['s3cr3t', 's3cr3t\n', 's3cr3t\r\n', 's3cr3t\n\n']) {
+    const c = createClient({ ...base, clientSecret: secret, fetch });
+    const { url, cookie, state } = await c.authorizationUrl({});
+    const cb = { url: base.redirectUri + '?code=abc&state=' + encodeURIComponent(state) + '&iss=' + encodeURIComponent(base.issuer), headers: { cookie: cookie.split(';')[0] } };
+    await assert.rejects(c.handleCallback(cb), e => e instanceof OidcError);
+  }
+  assert.equal(seen.length, 4);
+  assert.ok(seen.every(h => h === seen[0]), 'every variant sends the SAME credential');
+  assert.equal(Buffer.from(seen[0].slice(6), 'base64').toString(), 'app:s3cr3t');
+  throwsCode(() => createClient({ ...base, clientSecret: '\n', fetch }), 'config');                       // a newline alone is still "no secret"
 });

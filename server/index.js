@@ -61,6 +61,7 @@ import { loadPortalConfig } from './portalAuth/config.js';
 import { createPortalAuth } from './portalAuth/routes.js';
 import { pgStore as portalStore } from './portalAuth/store.js';
 import { createOnceStore, reissueLifetimeS } from './portalAuth/session.js';
+import { createRequire as _createRequire } from 'module';
 import { ApiResponse } from './utils/responses.js';
 import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
@@ -857,6 +858,33 @@ const portalAuth = createPortalAuth({
   handoff: createOnceStore({ redis: () => { try { return getRedisClient(); } catch { return null; } } }),
 });
 app.use(portalAuth.router);
+
+// Identity events from the portal (account-deleted / disabled / enabled / backchannel-logout).
+// STORIES-DELETION.md is the contract. The route reads the RAW body (a signed JWT, not JSON), so it mounts
+// BEFORE express.json(); it is in-cluster only (X-Forwarded-For = a stranger's 404) and is never on the
+// public Ingress. OFF unless APPS_SECRET_STORIES is set: a missing secret leaves the feature dark and the
+// portal queues nothing (it only sends to clients whose registry entry has an events_uri).
+let identityEventsHandler = null;
+if (process.env.APPS_SECRET_STORIES) {
+  const { createIdentityEvents } = await import('./portalAuth/identityEvents.js');
+  const { createClient } = _createRequire(import.meta.url)('./vendor/sai-auth-client/index.cjs');
+  const eventsClient = createClient({
+    issuer: portalCfg.issuer,
+    clientId: portalCfg.clientId,
+    clientSecret: process.env.PORTAL_CLIENT_SECRET || 'unused-events-verify-only',
+    redirectUri: portalCfg.redirectUri || (String(process.env.APP_URL || 'https://story-writing.solutionsai.co.uk') + '/auth/portal/callback'),
+    cookieSecret: (process.env.PORTAL_SESSION_SECRET || 'unused-cookie-secret-0123456789abcdef0123').slice(0, 32),
+  });
+  identityEventsHandler = createIdentityEvents({
+    pool: getPool(), storage: mediaStorage,
+    redisClient: (() => { try { return getRedisClient(); } catch { return null; } })(),
+    client: eventsClient, appSecret: process.env.APPS_SECRET_STORIES,
+  });
+  app.post('/auth/events', (req, res) => identityEventsHandler(req, res));
+  console.log('[identity-events] receiver armed (POST /auth/events, in-cluster only)');
+} else {
+  console.log('[identity-events] APPS_SECRET_STORIES not set: the receiver is off (the portal sends nothing anyway until its registry entry carries events_uri)');
+}
 
 // Register new user
 app.post('/api/auth/register', portalAuth.blockPasswordAuth, portalAuth.blockSignups, registrationLimiter, async (req, res) => {
@@ -5652,6 +5680,9 @@ app.get('/api/health', async (req, res) => {
 
   health.services.email = { configured: isEmailConfigured() };
   health.services.portalAuth = portalAuth.health();
+  health.services.identityEvents = {
+    armed: !!identityEventsHandler,          // the receiver exists (APPS_SECRET_STORIES is set)
+  };
 
   // Overall status
   health.status = isHealthy ? 'healthy' : 'degraded';
