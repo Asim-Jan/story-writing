@@ -107,8 +107,12 @@ export function createEraser({ pool, storage, redis, log = console }) {
     const scanAll = async (pattern) => {
       const out = []; let cursor = '0';
       do {
-        const [next, batch] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 500);
-        cursor = next; out.push(...batch);
+        // node-redis v4 answers {cursor, keys}; some wrappers answer [cursor, keys] — accept both
+        const r = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 500);
+        const next = r && typeof r === 'object' && !Array.isArray(r) ? r.cursor : r[0];
+        const batch = r && typeof r === 'object' && !Array.isArray(r) ? r.keys : r[1];
+        if (next == null || !Array.isArray(batch)) throw new Error('the redis client answered an unreadable scan');
+        cursor = String(next); out.push(...batch);
       } while (cursor !== '0');
       return out;
     };
