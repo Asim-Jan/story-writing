@@ -227,7 +227,18 @@ export class MediaStorage {
   async _driveAfter(bucketType, buffer, filename, opts, result) {
     if (!opts.driveUser) return result;
     try {
-      const drive = await driveStorage.put(bucketType, buffer, filename, opts.driveUser);
+      /* The book folder: resolve {id, title} from the bookId the caller passed (metadata.bookId
+         rides through opts for the job sites; index.js sites pass it explicitly). A failed lookup
+         is not an error — the file just skips the book segment. */
+      let book = opts.driveBook || null;
+      if (!book && opts.bookId) {
+        try {
+          const { getPool } = await import('../db/postgres.js');
+          const r = await getPool().query('SELECT id, title FROM books WHERE id = $1', [opts.bookId]);
+          book = r.rows[0] || null;
+        } catch (e) { console.warn('[drive-storage] book lookup failed:', e.message); }
+      }
+      const drive = await driveStorage.put(bucketType, buffer, filename, opts.driveUser, book);
       if (drive.ok) console.log(`✓ Stored in SAI Drive: ${drive.path}`);
       else if (drive.reason !== 'disabled') console.warn(`[drive-storage] kept in MinIO only (${drive.reason})`);
       return { ...result, drive };

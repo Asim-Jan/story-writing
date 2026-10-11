@@ -116,12 +116,24 @@ class DriveStorage {
     return `story:${bucketType}:${filename}`;
   }
 
-  pathOf(sub, bucketType, filename) {
+  /* A book's folder: "<safe title> (<first 8 of id>)" — readable AND unique; a rename is just a
+     move (the ref, not the path, is the address). Junk titles fall back to the short id alone. */
+  bookFolder(bookId, title) {
+    const id8 = String(bookId || '').replace(/-/g, '').slice(0, 8);
+    const safe = String(title || '').replace(/[^\p{L}\p{N} ()-]+/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    return safe ? `${safe} (${id8})` : id8 || 'untitled';
+  }
+
+  pathOf(sub, bucketType, filename, book = null) {
     /* The CARETAKER's own content sits at the top of the project (his Drive shows the template
        folders directly); every OTHER owner's content lands under that owner's sub segment, so
-       re-homing it later is a folder move. Unlinked owners get the literal _unowned segment. */
-    if (sub === this.caretaker) return `${FOLDER[bucketType] || bucketType}/${filename}`;
-    return `${sub || UNOWNED}/${FOLDER[bucketType] || bucketType}/${filename}`;
+       re-homing it later is a folder move. Unlinked owners get the literal _unowned segment.
+       A book-bound asset lives in the BOOK's folder ("<title> (<id8>)/<Folder>/<file>") so a
+       whole book is one grab; bookless assets sit directly in the type folder. */
+    const type = FOLDER[bucketType] || bucketType;
+    const seg = sub === this.caretaker ? '' : `${sub || UNOWNED}/`;
+    const bookSeg = book && book.id ? `${this.bookFolder(book.id, book.title)}/` : '';
+    return `${seg}${bookSeg}${type}/${filename}`;
   }
 
   mimeOf(filename) {
@@ -135,12 +147,12 @@ class DriveStorage {
    *   { ok: false, reason, retry, userMessage? }            — not stored; the caller keeps the MinIO copy.
    * Never throws.
    */
-  async put(bucketType, buffer, filename, user) {
+  async put(bucketType, buffer, filename, user, book = null) {
     if (!this.initialize()) return { ok: false, reason: 'disabled', retry: false };
     const ref = this.refOf(bucketType, filename);
     const sub = this.subOf(user);
     if (!sub) return { ok: false, reason: 'no_owner', retry: false };
-    const path = this.pathOf(sub, bucketType, filename);
+    const path = this.pathOf(sub, bucketType, filename, book);
     try {
       const r = await this.client.forUser(sub).put(buffer, {
         project: PROJECT, path, ref, tag: TAG, sha256: true,

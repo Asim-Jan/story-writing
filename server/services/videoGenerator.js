@@ -96,7 +96,7 @@ export class VideoGenerator {
         'x-amz-meta-title': scene.title,
         'x-amz-meta-duration': String(duration),
         bookId: this.bookId, // For access control
-      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId) });
+      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId), bookId: this.bookId });
 
       // Cleanup temp file
       fs.unlinkSync(tempPath);

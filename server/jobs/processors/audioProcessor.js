@@ -27,7 +27,7 @@ export async function processAudioGeneration(job) {
       userId,
       chapterId,
       'x-amz-meta-voice': selectedVoice,
-    }, setMediaBookMapping, { driveUser: await driveStorage.userFromId(userId) });
+    }, setMediaBookMapping, { driveUser: await driveStorage.userFromId(userId), bookId });
     await recordMediaOwner('audio', filename, { ownerId: userId, bookId, drive: uploadResult.drive });
 
     await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });
