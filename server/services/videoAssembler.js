@@ -262,7 +262,7 @@ export class VideoAssembler {
         'x-amz-meta-title': title,
         'x-amz-meta-scene-count': String(clips.length),
         bookId: this.bookId, // for access control
-      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId) });
+      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId), bookId: this.bookId });
 
       return {
         success: true,

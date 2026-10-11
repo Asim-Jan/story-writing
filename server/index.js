@@ -4449,7 +4449,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
     'x-amz-meta-type': 'generated-visual',
     'x-amz-meta-prompt': (prompt || '').substring(0, 200),
     // Note: No bookId for standalone image generation - backward compatibility only
-  }, setMediaBookMapping, { driveUser: user });
+  }, setMediaBookMapping, { driveUser: user, bookId });
   await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: uploadResult.drive });
 
   console.log('Image saved to MinIO:', uploadResult.storageKey);
@@ -5532,7 +5532,7 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
       const filename = `comic-panel-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
       const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
         'x-amz-meta-type': 'comic-panel',
-      }, null, { driveUser: req.user });
+      }, null, { driveUser: req.user, bookId: req.body?.bookId });
       await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
       console.log('Comic panel saved to MinIO:', uploadResult.storageKey);
@@ -5583,7 +5583,7 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
       'x-amz-meta-type': 'tts-audio',
       'x-amz-meta-voice': selectedVoice,
       'x-amz-meta-chapter-id': String(chapterId || ''),
-    }, null, { driveUser: req.user });
+    }, null, { driveUser: req.user, bookId: req.body?.bookId });
     await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
     console.log('Audio saved to MinIO:', uploadResult.storageKey);
@@ -5670,7 +5670,7 @@ app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature
         'x-amz-meta-type': 'audiobook',
         'x-amz-meta-chapter': String(chapter.number || i + 1),
         'x-amz-meta-voice': usedVoice,
-      }, null, { driveUser: req.user });
+      }, null, { driveUser: req.user, bookId: req.body?.bookId });
       await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
       audioFiles.push({
@@ -6875,7 +6875,7 @@ app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('
 
     // Server-chosen, unguessable name: the client's name never reaches storage.
     const filename = `upload-${uuidv4()}${ext}`;
-    const result = await mediaStorage.upload(bucketType, req.file.buffer, filename, { originalName: req.file.originalname }, null, { driveUser: req.user });
+    const result = await mediaStorage.upload(bucketType, req.file.buffer, filename, { originalName: req.file.originalname }, null, { driveUser: req.user, bookId });
     await recordMediaOwner(bucketType, filename, { ownerId: req.user.id, bookId, drive: result.drive });
 
     res.json({

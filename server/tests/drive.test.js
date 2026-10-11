@@ -369,7 +369,7 @@ async function main() {
   check('put goes to the uploader\'s own Drive', put1.ok && put1.path.startsWith('u_1111111111111111/Films/'), JSON.stringify(put1));
   check('the ref scheme is story:<bucket>:<file>', put1.ok && put1.ref === 'story:videos:final-x.mp4');
   const put2 = await ds.put('images', PNG, 'noone.png', { });
-  check('an uploader with no portal_sub lands with the caretaker', put2.ok && put2.path.startsWith(`${caretaker}/Covers/`), JSON.stringify(put2));
+  check('an uploader with no portal_sub lands with the caretaker (at the top: no sub segment)', put2.ok && put2.path.startsWith('Covers/') && put2.ownerSub === caretaker, JSON.stringify(put2));
   const put3 = await ds.put('images', PNG, 'same-ref.png', { portal_sub: 'u_1111111111111111' });
   const nodeA = put3.node;
   const put4 = await ds.put('images', PNG, 'same-ref.png', { portal_sub: 'u_1111111111111111' });
