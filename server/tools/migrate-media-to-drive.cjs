@@ -111,7 +111,7 @@ async function main() {
       continue;
     }
     if (!APPLY) continue;   // dry run: counts only
-    if (r.drive_ref) continue;   // migrated already (resumable)
+    if (r.drive_ref && !DELETE_LOCAL) continue;   // migrated already (resumable) — but --delete-local exists FOR these rows
     if (DELETE_LOCAL) {
       // the SECOND pass: delete the MinIO copy after a fresh check
       const sub = await MAPPING.driveSubOf(r.bucket_type, r.filename);
