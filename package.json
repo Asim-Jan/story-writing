@@ -12,7 +12,9 @@
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "test:regress": "node server/tests/regress.test.js",
+    "test:drive": "node server/tests/drive.test.js",
     "test:portal": "node --test server/portalAuth/tests/*.test.js server/vendor/sai-auth-client/*.test.cjs",
+    "test:drive-client": "node --test server/vendor/drive-client/tests/*.cjs",
     "sync:auth-client": "scripts/sync-auth-client.sh"
   },
   "dependencies": {

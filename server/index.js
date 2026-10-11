@@ -65,7 +65,8 @@ import { pgStore as portalStore } from './portalAuth/store.js';
 import { createOnceStore, reissueLifetimeS } from './portalAuth/session.js';
 import { createRequire as _createRequire } from 'module';
 import { ApiResponse } from './utils/responses.js';
-import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
+import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable, driveSubOf } from './utils/mediaMapping.js';
+import { driveStorage } from './services/driveStorage.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
 import {
   getUserQuotas,
@@ -4442,14 +4443,14 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
   });
   const buffer = imageResult.buffer;
 
-  // Upload to MinIO
+  // Upload to MinIO (and into the owner's SAI Drive — STORIES-ON-DRIVE)
   const filename = `visual-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
   const uploadResult = await mediaStorage.upload('images', buffer, filename, {
     'x-amz-meta-type': 'generated-visual',
     'x-amz-meta-prompt': (prompt || '').substring(0, 200),
     // Note: No bookId for standalone image generation - backward compatibility only
-  }, setMediaBookMapping);
-  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
+  }, setMediaBookMapping, { driveUser: user });
+  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: uploadResult.drive });
 
   console.log('Image saved to MinIO:', uploadResult.storageKey);
 
@@ -5531,8 +5532,8 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
       const filename = `comic-panel-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
       const uploadResult = await mediaStorage.upload('comics', buffer, filename, {
         'x-amz-meta-type': 'comic-panel',
-      });
-      await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
+      }, null, { driveUser: req.user });
+      await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
       console.log('Comic panel saved to MinIO:', uploadResult.storageKey);
 
@@ -5582,8 +5583,8 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
       'x-amz-meta-type': 'tts-audio',
       'x-amz-meta-voice': selectedVoice,
       'x-amz-meta-chapter-id': String(chapterId || ''),
-    });
-    await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
+    }, null, { driveUser: req.user });
+    await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
     console.log('Audio saved to MinIO:', uploadResult.storageKey);
 
@@ -5669,8 +5670,8 @@ app.post('/api/generate-audiobook', authenticateToken, aiLimiter, requireFeature
         'x-amz-meta-type': 'audiobook',
         'x-amz-meta-chapter': String(chapter.number || i + 1),
         'x-amz-meta-voice': usedVoice,
-      });
-      await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId });
+      }, null, { driveUser: req.user });
+      await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
       audioFiles.push({
         chapterNumber: chapter.number || i + 1,
@@ -6740,6 +6741,45 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
       return res.status(404).json({ error: 'Media not found' });
     }
 
+    // STORIES-ON-DRIVE: the bytes' system of record is the person's SAI Drive — the owner row's
+    // drive_ref decides (NULL = not migrated yet: MinIO serves it, as before). The person the app
+    // API call NAMES is the asset's Drive OWNER (resolved from media_owners), not the requester.
+    // A Drive transport error is a 503 (the browser retries); a missing Drive copy falls back to
+    // MinIO (the ref can only be stale or written ahead of the bytes during the migration).
+    if (mediaStorage.driveEnabled) {
+      const ownerSub = await driveSubOf(bucketType, filename);
+      if (ownerSub) {
+        try {
+          const g = await driveStorage.streamFor(ownerSub, bucketType, filename, req.headers.range);
+          if (g) {
+            /* Touch g.stream ONCE: each access of the client's `stream` getter wraps the SAME web
+               ReadableStream again and the second fromWeb throws ERR_INVALID_STATE (locked). */
+            const st = g.stream;
+            const h = {
+              'Content-Type': g.contentType || 'application/octet-stream',
+              'Cache-Control': 'private, max-age=86400',
+              'X-Content-Type-Options': 'nosniff',
+              'Accept-Ranges': 'bytes',
+            };
+            if (g.contentRange) h['Content-Range'] = g.contentRange;
+            res.writeHead(g.status || (g.contentRange ? 206 : 200), h);
+            let closed = false;
+            res.on('close', () => { closed = true; try { st.destroy(); } catch {} });
+            st.on('error', (err) => {
+              console.error('Drive media stream error:', err.message);
+              if (!closed && !res.headersSent) res.status(502).json({ error: 'Failed to fetch media' });
+              else if (!closed) res.destroy(err);
+            });
+            st.pipe(res);
+            return;
+          }
+        } catch (error) {
+          console.error('Drive media fetch error:', error && (error.stack || error.message));
+          return res.status(503).json({ error: 'Storage temporarily unavailable' });
+        }
+      }
+    }
+
     // Audio and video answer Range requests: Safari and iOS will not play or
     // seek a media file without them. These files are small (an MP3 chapter is
     // a few MB), so the range is cut from the whole object.
@@ -6804,7 +6844,7 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
     stream.pipe(res);
   } catch (error) {
     console.error('Media fetch error:', error);
-    if (error.code === 'NotFound') {
+    if (error.code === 'NotFound' || error.code === 'NoSuchKey' || error.name === 'NoSuchKey') {
       res.status(404).json({ error: 'Media not found' });
     } else {
       res.status(500).json({ error: 'Failed to fetch media' });
@@ -6831,8 +6871,8 @@ app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('
 
     // Server-chosen, unguessable name: the client's name never reaches storage.
     const filename = `upload-${uuidv4()}${ext}`;
-    const result = await mediaStorage.upload(bucketType, req.file.buffer, filename, { originalName: req.file.originalname });
-    await recordMediaOwner(bucketType, filename, { ownerId: req.user.id, bookId });
+    const result = await mediaStorage.upload(bucketType, req.file.buffer, filename, { originalName: req.file.originalname }, null, { driveUser: req.user });
+    await recordMediaOwner(bucketType, filename, { ownerId: req.user.id, bookId, drive: result.drive });
 
     res.json({
       ...result,

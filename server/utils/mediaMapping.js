@@ -35,19 +35,51 @@ export function ensureMediaOwnersTable() {
 
 /**
  * Record who owns an object. First writer wins: re-recording an existing name never moves it to
- * another owner.
+ * another owner. `drive` (from mediaStorage.upload's result, STORIES-ON-DRIVE) carries the asset's
+ * SAI Drive reference — written on the FIRST insert and also on an existing row whose drive_ref
+ * is still NULL (the owner row may predate the Drive copy; the ref is a fact about the file, not
+ * a choice, so a later re-record with a ref fills it in).
  */
-export async function recordMediaOwner(bucketType, filename, { ownerId, bookId = null }) {
+export async function recordMediaOwner(bucketType, filename, { ownerId, bookId = null, drive = null }) {
   if (!ownerId || !bucketType || !filename) return;
   try {
     await ensureMediaOwnersTable();
-    await getPool().query(
-      `INSERT INTO media_owners (bucket_type, filename, owner_id, book_id)
-       VALUES ($1, $2, $3, $4) ON CONFLICT (bucket_type, filename) DO NOTHING`,
-      [bucketType, filename, ownerId, isUuid(bookId) ? bookId : null]
-    );
+    if (drive && drive.ok) {
+      await getPool().query(
+        `INSERT INTO media_owners (bucket_type, filename, owner_id, book_id, drive_ref, drive_node, drive_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (bucket_type, filename) DO UPDATE
+           SET drive_ref = COALESCE(media_owners.drive_ref, EXCLUDED.drive_ref),
+               drive_node = COALESCE(media_owners.drive_node, EXCLUDED.drive_node),
+               drive_size = COALESCE(media_owners.drive_size, EXCLUDED.drive_size)`,
+        [bucketType, filename, ownerId, isUuid(bookId) ? bookId : null, drive.ref, drive.node, drive.size]
+      );
+    } else {
+      await getPool().query(
+        `INSERT INTO media_owners (bucket_type, filename, owner_id, book_id)
+         VALUES ($1, $2, $3, $4) ON CONFLICT (bucket_type, filename) DO NOTHING`,
+        [bucketType, filename, ownerId, isUuid(bookId) ? bookId : null]
+      );
+    }
   } catch (error) {
     console.error('Failed to record media owner:', error.message);
+  }
+}
+
+/** The Drive owner sub recorded for an asset (null = no row or no Drive copy). */
+export async function driveSubOf(bucketType, filename) {
+  try {
+    await ensureMediaOwnersTable();
+    const r = await getPool().query(
+      `SELECT u.portal_sub FROM media_owners m JOIN users u ON u.id = m.owner_id
+       WHERE m.bucket_type = $1 AND m.filename = $2 AND m.drive_ref IS NOT NULL`,
+      [bucketType, filename]
+    );
+    const sub = r.rows[0] && r.rows[0].portal_sub;
+    return /^u_[a-f0-9]{16}$/.test(sub || '') ? sub : null;
+  } catch (error) {
+    console.error('Failed to resolve the Drive owner:', error.message);
+    return null;
   }
 }
 
