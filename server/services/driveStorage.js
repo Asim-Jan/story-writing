@@ -15,7 +15,7 @@
  * ref = story:<bucketType>:<filename>       globally unique (media_owners' PK is that pair).
  * tag = source                              every file here is one a feature needs to keep working.
  *
- * Folder per bucket type: images→Covers, comics→Books, audio→Audio, videos→Films.
+ * Folder per bucket type: images→Covers, comics→Comics, audio→Audio, videos→Films.
  *
  * Reads stream from Drive with Range pass-through; the browser never sees a Drive id, ref or path.
  * An asset without a recorded drive_ref is MinIO's — the ref decides, never a flag.
@@ -36,7 +36,7 @@ const UNOWNED = '_unowned';
 
 const FOLDER = {
   images: 'Covers',
-  comics: 'Books',
+  comics: 'Comics',
   audio: 'Audio',
   videos: 'Films',
 };
