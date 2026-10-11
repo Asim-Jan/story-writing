@@ -2,7 +2,8 @@ import { speakLongText } from '../../utils/speech.js';
 import { BookDataService } from '../../db/dataService.js';
 import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
-import { setMediaBookMapping } from '../../utils/mediaMapping.js';
+import { setMediaBookMapping, recordMediaOwner } from '../../utils/mediaMapping.js';
+import { driveStorage } from '../../services/driveStorage.js';
 
 export async function processAudioGeneration(job) {
   const { userId, bookId, chapterId, text, voice = 'alloy' } = job.data;
@@ -26,7 +27,8 @@ export async function processAudioGeneration(job) {
       userId,
       chapterId,
       'x-amz-meta-voice': selectedVoice,
-    }, setMediaBookMapping);
+    }, setMediaBookMapping, { driveUser: await driveStorage.userFromId(userId) });
+    await recordMediaOwner('audio', filename, { ownerId: userId, bookId, drive: uploadResult.drive });
 
     await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });
 

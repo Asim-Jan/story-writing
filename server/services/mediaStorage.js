@@ -4,6 +4,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { driveStorage } from './driveStorage.js';
 
 dotenv.config();
 
@@ -129,9 +130,12 @@ export class MediaStorage {
    * @param {string} filename - File name
    * @param {Object} metadata - Optional metadata (should include bookId for access control)
    * @param {Function} setMapping - Optional callback to store media-to-book mapping for access control
+   * @param {Object} opts - Optional extras. opts.driveUser: the uploader's user row (needs
+   *   portal_sub) — when set and Drive storage is on, the bytes ALSO go into that person's
+   *   SAI Drive (STORIES-ON-DRIVE) and the result carries `drive` for recordMediaOwner.
    * @returns {Promise<Object>} Upload result with storageKey and url
    */
-  async upload(bucketType, buffer, filename, metadata = {}, setMapping = null) {
+  async upload(bucketType, buffer, filename, metadata = {}, setMapping = null, opts = {}) {
     await this.initialize();
 
     const bucket = this.buckets[bucketType];
@@ -177,13 +181,14 @@ export class MediaStorage {
           await setMapping(bucketType, filename, metadata.bookId);
         }
 
-        return {
+        const result = {
           storageKey,
           bucket: this.s3Bucket,
           filename,
           size: buffer.length,
           contentType,
         };
+        return await this._driveAfter(bucketType, buffer, filename, opts, result);
       } else {
         // MinIO Upload
         await this.client.putObject(bucket, filename, buffer, buffer.length, {
@@ -200,17 +205,35 @@ export class MediaStorage {
           await setMapping(bucketType, filename, metadata.bookId);
         }
 
-        return {
+        const result = {
           storageKey,
           bucket,
           filename,
           size: buffer.length,
           contentType,
         };
+        return await this._driveAfter(bucketType, buffer, filename, opts, result);
       }
     } catch (error) {
       console.error('Storage upload error:', error);
       throw new Error(`Failed to upload to storage: ${error.message}`);
+    }
+  }
+
+  /* After a successful MinIO/S3 upload: also put the bytes in the owner's Drive when asked
+     (STORIES-ON-DRIVE). The MinIO copy stays during the migration window (the read path falls
+     back to it while a file's drive_ref is not recorded). A Drive outage never fails the upload:
+     the file is in MinIO and its drive_ref stays NULL. */
+  async _driveAfter(bucketType, buffer, filename, opts, result) {
+    if (!opts.driveUser) return result;
+    try {
+      const drive = await driveStorage.put(bucketType, buffer, filename, opts.driveUser);
+      if (drive.ok) console.log(`✓ Stored in SAI Drive: ${drive.path}`);
+      else if (drive.reason !== 'disabled') console.warn(`[drive-storage] kept in MinIO only (${drive.reason})`);
+      return { ...result, drive };
+    } catch (error) {
+      console.error('[drive-storage] unexpected put error:', error.message);
+      return { ...result, drive: { ok: false, reason: 'error', retry: false } };
     }
   }
 
@@ -435,3 +458,5 @@ export class MediaStorage {
 
 // Singleton instance
 export const mediaStorage = new MediaStorage();
+/* The read path asks this (not the singleton's private field) so a read never touches a half-built client. */
+Object.defineProperty(mediaStorage, 'driveEnabled', { get: () => driveStorage.initialize() !== null && driveStorage.enabled });

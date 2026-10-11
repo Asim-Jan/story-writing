@@ -3,6 +3,7 @@ import { saiVideoStart, saiVideoStatus } from '../saiClient.js';
 import dotenv from 'dotenv';
 import { mediaStorage } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
+import { driveStorage } from './driveStorage.js';
 
 dotenv.config();
 
@@ -95,7 +96,7 @@ export class VideoGenerator {
         'x-amz-meta-title': scene.title,
         'x-amz-meta-duration': String(duration),
         bookId: this.bookId, // For access control
-      }, setMediaBookMapping);
+      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId) });
 
       // Cleanup temp file
       fs.unlinkSync(tempPath);

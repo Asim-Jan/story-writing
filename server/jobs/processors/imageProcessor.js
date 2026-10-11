@@ -3,6 +3,7 @@ import { mediaStorage } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
 import { v4 as uuidv4 } from 'uuid';
 import { setMediaBookMapping, recordMediaOwner } from '../../utils/mediaMapping.js';
+import { driveStorage } from '../../services/driveStorage.js';
 import { BookDataService } from '../../db/dataService.js';
 
 // Redis client for book data
@@ -47,8 +48,8 @@ export async function processImageGeneration(job) {
       userId,
       imageType,
       itemId,
-    }, setMediaBookMapping);
-    await recordMediaOwner('images', filename, { ownerId: userId, bookId });
+    }, setMediaBookMapping, { driveUser: await driveStorage.userFromId(userId) });
+    await recordMediaOwner('images', filename, { ownerId: userId, bookId, drive: uploadResult.drive });
 
     await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });
 

@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { mediaStorage } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
+import { driveStorage } from './driveStorage.js';
 import { TRANSITIONS, TRANSITION_IDS, transitionOf } from './filmShots.js';
 import { FPS, FADE_IN, FADE_OUT, VOICE_DB, MUSIC_DB, r3, dbOf, audioGraph } from './filmMix.js';
 
@@ -261,7 +262,7 @@ export class VideoAssembler {
         'x-amz-meta-title': title,
         'x-amz-meta-scene-count': String(clips.length),
         bookId: this.bookId, // for access control
-      }, setMediaBookMapping);
+      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId) });
 
       return {
         success: true,
