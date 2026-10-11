@@ -117,6 +117,10 @@ class DriveStorage {
   }
 
   pathOf(sub, bucketType, filename) {
+    /* The CARETAKER's own content sits at the top of the project (his Drive shows the template
+       folders directly); every OTHER owner's content lands under that owner's sub segment, so
+       re-homing it later is a folder move. Unlinked owners get the literal _unowned segment. */
+    if (sub === this.caretaker) return `${FOLDER[bucketType] || bucketType}/${filename}`;
     return `${sub || UNOWNED}/${FOLDER[bucketType] || bucketType}/${filename}`;
   }
 
