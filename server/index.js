@@ -6775,6 +6775,10 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
           }
         } catch (error) {
           console.error('Drive media fetch error:', error && (error.stack || error.message));
+          if (error && error.code === 'infected') {
+            // the scanner marked the Drive copy: never serve it (the same rule MinIO's read path has)
+            return res.status(451).json({ error: 'This file failed the malware scan' });
+          }
           return res.status(503).json({ error: 'Storage temporarily unavailable' });
         }
       }
@@ -6897,6 +6901,21 @@ app.delete('/api/media/:bucketType/:filename', authenticateToken, async (req, re
     // no check at all: any signed-in user could delete anyone's file by name.
     if (!(await canAccessMedia(req.user, bucketType, filename, 'delete'))) {
       return res.status(404).json({ error: 'Media not found' });
+    }
+
+    /* STORIES-ON-DRIVE: the Drive copy is deleted FIRST (while the owner row still names the
+       Drive owner + node), then the MinIO copy, then the row. The Drive copy goes to the person's
+       Bin (undoable by them); a Drive problem here answers 503 and deletes NOTHING (the next
+       attempt retries the whole delete — idempotent on both stores). */
+    if (mediaStorage.driveEnabled) {
+      const ownerSub = await driveSubOf(bucketType, filename);
+      if (ownerSub) {
+        try { await driveStorage.removeFor(ownerSub, bucketType, filename); }
+        catch (error) {
+          console.error('Drive media delete error:', error && error.message);
+          return res.status(503).json({ error: 'Storage temporarily unavailable — try again' });
+        }
+      }
     }
 
     await mediaStorage.delete(bucketType, filename);

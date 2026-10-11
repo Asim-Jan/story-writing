@@ -13,10 +13,12 @@ CREATE TABLE IF NOT EXISTS media_owners (
   PRIMARY KEY (bucket_type, filename)
 );
 ALTER TABLE media_owners ADD COLUMN IF NOT EXISTS drive_ref   VARCHAR(200);
+ALTER TABLE media_owners ADD COLUMN IF NOT EXISTS drive_owner VARCHAR(40);   -- the sub whose Drive holds the bytes (the caretaker for migrated objects; NOT necessarily the owner_id's portal_sub)
 ALTER TABLE media_owners ADD COLUMN IF NOT EXISTS drive_node  VARCHAR(40);
 ALTER TABLE media_owners ADD COLUMN IF NOT EXISTS drive_size  BIGINT;
 CREATE INDEX IF NOT EXISTS idx_media_owners_drive_ref ON media_owners(drive_ref) WHERE drive_ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_media_owners_owner ON media_owners(owner_id);
 CREATE INDEX IF NOT EXISTS idx_media_owners_book ON media_owners(book_id);
-COMMENT ON COLUMN media_owners.drive_ref  IS 'SAI Drive ref (story:<bucket>:<filename>) when the bytes live in the person''s Drive; NULL = MinIO only';
+COMMENT ON COLUMN media_owners.drive_ref  IS 'SAI Drive ref (story:<bucket>:<filename>) when the bytes live in a person''s Drive; NULL = MinIO only';
+COMMENT ON COLUMN media_owners.drive_owner IS 'The X-Sub the app API call must name for this ref (the caretaker''s sub for migrated objects); NULL = resolve from owner_id''s portal_sub';
 COMMENT ON COLUMN media_owners.drive_node IS 'The Drive node id the ref resolved to (the folder path may change; the node does not)';

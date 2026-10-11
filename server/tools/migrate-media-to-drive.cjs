@@ -137,8 +137,8 @@ async function main() {
     }
     const { getPool } = await import('../db/postgres.js');
     await getPool().query(
-      `UPDATE media_owners SET drive_ref = $1, drive_node = $2, drive_size = $3 WHERE bucket_type = $4 AND filename = $5`,
-      [res.ref, res.node, res.size, r.bucket_type, r.filename]);
+      `UPDATE media_owners SET drive_ref = $1, drive_node = $2, drive_size = $3, drive_owner = $4 WHERE bucket_type = $5 AND filename = $6`,
+      [res.ref, res.node, res.size, res.ownerSub, r.bucket_type, r.filename]);
     counts.uploaded++;
   }
 
@@ -163,8 +163,8 @@ async function main() {
           if (['unavailable', 'busy', 'in_progress', 'quota', 'app_cap', 'frozen', 'bin', 'gone', 'config'].includes(res.reason)) stop(`Drive-wide problem (${res.reason}) — nothing lost, run again to resume`);
           counts.skipped++; problems.push(`${bt}: ownerless put refused (${res.reason})`); continue;
         }
-        await getPool().query(`UPDATE media_owners SET drive_ref = $1, drive_node = $2, drive_size = $3 WHERE bucket_type = $4 AND filename = $5`,
-          [res.ref, res.node, res.size, bt, o.name]);
+        await getPool().query(`UPDATE media_owners SET drive_ref = $1, drive_node = $2, drive_size = $3, drive_owner = $4 WHERE bucket_type = $5 AND filename = $6`,
+          [res.ref, res.node, res.size, res.ownerSub, bt, o.name]);
         counts.uploaded++;
       }
     }

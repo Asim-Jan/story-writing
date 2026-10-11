@@ -46,13 +46,14 @@ export async function recordMediaOwner(bucketType, filename, { ownerId, bookId =
     await ensureMediaOwnersTable();
     if (drive && drive.ok) {
       await getPool().query(
-        `INSERT INTO media_owners (bucket_type, filename, owner_id, book_id, drive_ref, drive_node, drive_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO media_owners (bucket_type, filename, owner_id, book_id, drive_ref, drive_node, drive_size, drive_owner)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (bucket_type, filename) DO UPDATE
            SET drive_ref = COALESCE(media_owners.drive_ref, EXCLUDED.drive_ref),
                drive_node = COALESCE(media_owners.drive_node, EXCLUDED.drive_node),
-               drive_size = COALESCE(media_owners.drive_size, EXCLUDED.drive_size)`,
-        [bucketType, filename, ownerId, isUuid(bookId) ? bookId : null, drive.ref, drive.node, drive.size]
+               drive_size = COALESCE(media_owners.drive_size, EXCLUDED.drive_size),
+               drive_owner = COALESCE(media_owners.drive_owner, EXCLUDED.drive_owner)`,
+        [bucketType, filename, ownerId, isUuid(bookId) ? bookId : null, drive.ref, drive.node, drive.size, drive.ownerSub]
       );
     } else {
       await getPool().query(
@@ -66,17 +67,27 @@ export async function recordMediaOwner(bucketType, filename, { ownerId, bookId =
   }
 }
 
-/** The Drive owner sub recorded for an asset (null = no row or no Drive copy). */
+/**
+ * The sub whose Drive holds an asset's bytes. The row's drive_owner is the truth (it is the
+ * account the bytes were ACTUALLY written into — the caretaker for everything migrated before
+ * ownership is sorted); the uploader's portal_sub is only the fallback for rows recorded before
+ * drive_owner existed.
+ */
 export async function driveSubOf(bucketType, filename) {
   try {
     await ensureMediaOwnersTable();
     const r = await getPool().query(
-      `SELECT u.portal_sub FROM media_owners m JOIN users u ON u.id = m.owner_id
+      `SELECT m.drive_owner, u.portal_sub
+       FROM media_owners m LEFT JOIN users u ON u.id = m.owner_id
        WHERE m.bucket_type = $1 AND m.filename = $2 AND m.drive_ref IS NOT NULL`,
       [bucketType, filename]
     );
-    const sub = r.rows[0] && r.rows[0].portal_sub;
-    return /^u_[a-f0-9]{16}$/.test(sub || '') ? sub : null;
+    const row = r.rows[0];
+    if (!row) return null;
+    for (const sub of [row.drive_owner, row.portal_sub]) {
+      if (/^u_[a-f0-9]{16}$/.test(sub || '')) return sub;
+    }
+    return null;
   } catch (error) {
     console.error('Failed to resolve the Drive owner:', error.message);
     return null;

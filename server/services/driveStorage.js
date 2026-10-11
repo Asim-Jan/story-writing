@@ -142,11 +142,41 @@ class DriveStorage {
         project: PROJECT, path, ref, tag: TAG, sha256: true,
         contentType: this.mimeOf(filename),
       });
-      return { ok: true, ref, node: r.id, path, size: buffer.length };
+      return { ok: true, ref, node: r.id, path, size: buffer.length, ownerSub: sub };
     } catch (error) {
       const code = (error && error.code) || 'error';
       console.error(`[drive-storage] put failed (${code}):`, error.message);
       return { ok: false, reason: code, retry: !!(error && error.retryable) };
+    }
+  }
+
+  /**
+   * Delete an asset's Drive copy (the person named by X-Sub is the DRIVE owner — resolve from
+   * media_owners' drive_owner first, the uploader's portal_sub as fallback). The copy goes to the
+   * person's Drive BIN by default (undoable by them); { permanent: true } is only for the erasure
+   * flow. Returns { ok } | null when Stories holds no Drive copy for it. A transport error
+   * THROWS — a delete must not lie about what it deleted.
+   */
+  async removeFor(sub, bucketType, filename, o = {}) {
+    if (!this.initialize()) return null;
+    const ref = this.refOf(bucketType, filename);
+    // resolve the node id: the ref alone cannot DELETE (the API's remove takes an id)
+    const stat = await this.statFor(sub, bucketType, filename);
+    if (!stat) return null;
+    /* Only the CLIENT's retried-404 counts as already-gone; a first-404 throws (the caller
+       retries the whole delete — the row still names the node, so a concurrent delete is the
+       only way to see a first 404 here, and that is a 503-retry, not a silent success). */
+    return await this.client.forUser(sub).remove(PROJECT, stat.id, { bin: !o.permanent });
+  }
+
+  /** A stat by ref: { id, version, size, path } | null (null = no Drive copy). */
+  async statFor(sub, bucketType, filename) {
+    if (!this.initialize()) return null;
+    try {
+      return await this.client.forUser(sub).stat(PROJECT, { ref: this.refOf(bucketType, filename) });
+    } catch (error) {
+      if (error && error.code === 'not_found') return null;
+      throw error;
     }
   }
 

@@ -133,6 +133,12 @@ function fakeDrive({ failUploads = false, failGets = false } = {}) {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ id: node, version: 1, size: body.length, ref, path: rec.path }));
       }
+      m = /^\/app\/v1\/projects\/([^/]+)\/files\/([^/]+)$/.exec(p);
+      if (m && req.method === 'DELETE') {
+        for (const [ref, o] of objects) if (o.node === decodeURIComponent(m[2])) { objects.delete(ref); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, mode: 'bin' })); }
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { code: 'not_found' } }));
+      }
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { code: 'not_found' } }));
       } catch (e) { console.log(`    [fake-drive] HANDLER ERROR: ${e.stack || e.message}`); try { res.destroy(); } catch {} }
@@ -294,9 +300,34 @@ async function main() {
   check('not migrated = the MinIO path (the object is absent there: 404, not a Drive attempt)', r2.status === 404, `status ${r2.status}`);
   check('no Drive call for the legacy asset', !drive.requests.some(q => q.path.includes('legacy')));
 
+  console.log('\n== the caretaker case: a migrated object whose owner has no portal_sub still streams (drive_owner is the truth)');
+  const { rows: u3 } = await db.query(`INSERT INTO users (email, password_hash, name, tier, portal_sub) VALUES ('unlinked-x@drive.local', 'x', 'u3', 'free', NULL) RETURNING id`);
+  const unlinkedOwner = { id: u3[0].id, token: jwt.sign({ userId: u3[0].id, email: 'unlinked-x@drive.local', tokenVersion: 1 }, JWT_SECRET, { expiresIn: '1h' }) };
+  await db.query(
+    `INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref, drive_node, drive_size, drive_owner)
+     VALUES ('images', 'migrated.png', $1, 'story:images:migrated.png', 'n_mig0001', $2, 'u_f37d34dea1d20271')`,
+    [unlinkedOwner.id, PNG.length]);
+  drive.objects.set('story:images:migrated.png', { bytes: PNG, contentType: 'image/png', path: 'u_f37d34dea1d20271/_unowned/Covers/migrated.png', node: 'n_mig0001' });
+  const rMig = await fetch(`${srv.base}/api/media/images/migrated.png`, { headers: { Authorization: `Bearer ${unlinkedOwner.token}` } });
+  const migBuf = Buffer.from(await rMig.arrayBuffer());
+  check('an unlinked owner\'s migrated file streams from the CARETAKER\'s Drive', rMig.status === 200 && migBuf.equals(PNG), `status ${rMig.status}`);
+  check('the Drive call named the CARETAKER sub', drive.requests.some(q => q.sub === caretaker && q.path.includes('migrated')));
+
   console.log('\n== ACL still rules over Drive-held bytes');
   const r3 = await apiH('GET', '/api/media/images/driven.png', legacyOwner.token);
   check('another user\'s Drive-held file is 404', r3.status === 404, `status ${r3.status}`);
+
+
+  console.log('\n== the delete removes the Drive copy first (while the owner row still names the Drive owner)');
+  await db.query(
+    `INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref, drive_node, drive_size, drive_owner)
+     VALUES ('images', 'deleteme.png', $1, 'story:images:deleteme.png', 'n_del0001', $2, 'u_1111111111111111')`,
+    [asim.id, PNG.length]);
+  drive.objects.set('story:images:deleteme.png', { bytes: PNG, contentType: 'image/png', path: 'u_1111111111111111/Covers/deleteme.png', node: 'n_del0001' });
+  const rd = await apiH('DELETE', '/api/media/images/deleteme.png', asim.token);
+  check('the delete answers ok', rd.status === 200, `status ${rd.status}`);
+  check('the Drive copy is gone', !drive.objects.has('story:images:deleteme.png'));
+  check('the owner row is gone', (await db.query(`SELECT 1 FROM media_owners WHERE filename = 'deleteme.png'`)).rowCount === 0);
 
   console.log('\n== Drive down mid-migration = 503, no silent MinIO fallback');
   const { rows: own2 } = await db.query(
@@ -313,6 +344,7 @@ async function main() {
   check('a failing Drive answers 503', r4b.status === 503, `status ${r4b.status}`);
   await srvDown.stop();
   failingDrive.close();
+
 
   console.log('\n== storage off = exactly the old behaviour (no Drive calls at all)');
   const srvOff = await bootServer('rg_drive', { DRIVE_APP_API_SECRET: '' });
