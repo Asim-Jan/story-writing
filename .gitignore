@@ -74,3 +74,4 @@ scripts/create-admin.js
 # Kubernetes secrets (never commit real values)
 k8s/secrets.yaml
 node_modules/
+node_modules/
