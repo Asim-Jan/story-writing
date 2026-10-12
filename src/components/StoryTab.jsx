@@ -8,7 +8,7 @@ import { saveAs } from 'file-saver';
 import epub from 'epub-gen-memory/bundle';
 import { chapterHeading, chapterLabel } from '../utils/chapters';
 
-const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
+const StoryTab = ({ data, setData, onGenerateChapter, generatingAI, bookId }) => {
   const [editingChapterId, setEditingChapterId] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [showAIGenerator, setShowAIGenerator] = useState(false);
@@ -90,6 +90,27 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
 
   const handleRegenerateChapter = () => {
     handleGenerateChapter();
+  };
+
+  /* A copy of the generated export ALSO lands in the person's SAI Drive (<Book>/Exports/). The
+   * download itself already happened — this is best-effort and never blocks or alerts on failure. */
+  const storeExportInDrive = async (blob, filename, format) => {
+    if (!bookId) return;
+    try {
+      const contentBase64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1] || '');
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+      });
+      await fetch('/api/exports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ bookId, filename, contentBase64 }),
+      });
+    } catch (e) {
+      console.log('[exports] Drive copy skipped:', e && e.message);
+    }
   };
 
   const toggleChapter = (chapterId) => {
@@ -477,6 +498,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
     // Save PDF
     const filename = `${(data.bookTitle || 'book').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.pdf`;
     pdf.save(filename);
+    pdf.output('arraybuffer').then((buf) => storeExportInDrive(new Blob([buf], { type: 'application/pdf' }), filename, 'pdf'));
   };
 
   // Export as DOCX
@@ -659,6 +681,7 @@ const StoryTab = ({ data, setData, onGenerateChapter, generatingAI }) => {
 
       const filename = `${(data.bookTitle || 'book').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.epub`;
       saveAs(epubBlob, filename);
+      storeExportInDrive(epubBlob, filename, 'epub');
 
       alert('EPUB exported successfully!');
     } catch (error) {

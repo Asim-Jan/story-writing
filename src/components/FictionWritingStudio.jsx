@@ -1182,6 +1182,7 @@ const FictionWritingStudio = ({ bookId, onBack }) => {
               setData={setData}
               onGenerateChapter={handleAIToolGenerate}
               generatingAI={generatingAI}
+              bookId={bookId}
             />
           )}
 

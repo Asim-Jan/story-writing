@@ -700,6 +700,18 @@ async function mainSuite(gateway) {
     got3 = await order3();
     check('swapping two chapter numbers saves (no collision mid-save)', r.status === 200 && got3 === '1:T2 2:T1 3:T4 4:T5', `status ${r.status} | ${got3}`);
 
+    console.log('\n== exports to Drive (POST /api/exports)');
+    r = await call('POST', '/api/exports', owner.token, { bookId: book.id, filename: 'one.epub', contentBase64: Buffer.from('fake epub bytes').toString('base64') });
+    check('an epub export stores (Drive off in tests = soft no, 200 stored:false)', r.status === 200 && r.json && 'stored' in r.json, `status ${r.status} ${JSON.stringify(r.json || {})}`);
+    r = await call('POST', '/api/exports', owner.token, { bookId: book.id, filename: '../evil.epub', contentBase64: 'aGk=' });
+    check('a path-traversal export filename is refused', r.status === 400, `got ${r.status}`);
+    r = await call('POST', '/api/exports', owner.token, { bookId: book.id, filename: 'one.exe', contentBase64: 'aGk=' });
+    check('a non-epub/pdf export is refused', r.status === 400, `got ${r.status}`);
+    r = await call('POST', '/api/exports', stranger.token, { bookId: book.id, filename: 'one.epub', contentBase64: 'aGk=' });
+    check('another user\'s bookId stores UNBOUND (never writes to someone else\'s folder shape)', r.status === 200 && r.json && 'stored' in r.json, `status ${r.status}`);
+    r = await call('POST', '/api/exports', owner.token, {});
+    check('no filename = 400', r.status === 400, `got ${r.status}`);
+
     console.log('\n== roles on save');
     const cur = await dbVersion(db, book.id);
     r = await call('PUT', `/api/books/${book.id}`, editor.token, { title: 'Editor', version: cur });

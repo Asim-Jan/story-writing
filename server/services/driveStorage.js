@@ -39,12 +39,14 @@ const FOLDER = {
   comics: 'Comics',
   audio: 'Audio',
   videos: 'Films',
+  exports: 'Exports',
 };
 
 const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
   '.webp': 'image/webp', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
   '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+  '.epub': 'application/epub+zip', '.pdf': 'application/pdf',
 };
 
 class DriveStorage {
@@ -137,7 +139,7 @@ class DriveStorage {
   }
 
   mimeOf(filename) {
-    const m = /\.(png|jpe?g|gif|webp|mp3|wav|ogg|mp4|webm|mov)$/i.exec(String(filename));
+    const m = /\.(png|jpe?g|gif|webp|mp3|wav|ogg|mp4|webm|mov|epub|pdf)$/i.exec(String(filename));
     return m ? MIME[m[0].toLowerCase()] : 'application/octet-stream';
   }
 
