@@ -42,7 +42,7 @@ export function createIdentityEvents({ pool, storage, redisClient, client, appSe
   const jtiSave = async () => {
     try {
       await pool.query(
-        "INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('identity_jti_set', $1, NOW(), NULL) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+        "INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('identity_jti_set', $1::jsonb, NOW(), NULL) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
         [JSON.stringify(jtiSet.export())]);
     } catch (e) { log.error && log.error('[identity-events] could not save the jti set:', e.message); }
   };

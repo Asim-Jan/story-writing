@@ -28,8 +28,8 @@ export function startCatchUp({ pool, appSecret, portalBase = 'http://sai-portal.
   const putSetting = async (name, value) => {
     try {
       await pool.query(
-        "INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ($1, $2, NOW(), NULL) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
-        ['identity_catchup_' + name, String(value)]);
+        "INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ($1, $2::jsonb, NOW(), NULL) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+        ['identity_catchup_' + name, JSON.stringify(value)]);
     } catch (e) { log.error && log.error('[identity-catchup] could not save ' + name + ':', e.message); }
   };
 
