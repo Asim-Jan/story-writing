@@ -125,7 +125,7 @@ export async function saveModelSettings(settings, userId) {
     if (typeof settings[role] === 'string' && settings[role].trim()) value[role] = settings[role].trim();
   }
   await query(
-    `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('ai_models', $1, NOW(), $2)
+    `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('ai_models', $1::jsonb, NOW(), $2)
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
     [JSON.stringify(value), userId || null]
   );
