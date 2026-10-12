@@ -159,6 +159,31 @@ export class MediaStorage {
     };
     const contentType = contentTypeMap[ext] || 'application/octet-stream';
 
+    /* STORIES-ON-DRIVE, post-soak: the person's Drive is the SYSTEM OF RECORD. When Drive is on,
+     * the bytes go THERE and no MinIO/S3 copy is made (the ref decides reads; drive_ref is
+     * recorded by the caller via recordMediaOwner). A Drive failure falls back to the MinIO
+     * write below, exactly as before — an upload never fails because of Drive. */
+    if (!this.useS3 && this.driveEnabled && opts.driveUser) {
+      try {
+        let book = opts.driveBook || null;
+        if (!book && opts.bookId) {
+          try {
+            const { getPool } = await import('../db/postgres.js');
+            const r = await getPool().query('SELECT id, title FROM books WHERE id = $1', [opts.bookId]);
+            book = r.rows[0] || null;
+          } catch (e) { console.warn('[drive-storage] book lookup failed:', e.message); }
+        }
+        const drive = await driveStorage.put(bucketType, buffer, filename, opts.driveUser, book);
+        if (drive.ok) {
+          console.log(`✓ Stored in SAI Drive (system of record, no MinIO copy): ${drive.path}`);
+          return { storageKey: `${bucketType}/${filename}`, bucket: this.buckets[bucketType], filename, size: buffer.length, contentType, drive };
+        }
+        console.warn(`[drive-storage] put failed (${drive.reason}) — falling back to MinIO`);
+      } catch (error) {
+        console.warn(`[drive-storage] put threw (${error.message}) — falling back to MinIO`);
+      }
+    }
+
     try {
       if (this.useS3) {
         // AWS S3 Upload

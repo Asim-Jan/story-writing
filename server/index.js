@@ -6887,6 +6887,9 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
     console.error('Media fetch error:', error);
     if (error.code === 'NotFound' || error.code === 'NoSuchKey' || error.name === 'NoSuchKey') {
       res.status(404).json({ error: 'Media not found' });
+    } else if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(error.code) || error.code === 'EAGAIN') {
+      // the backing store is unreachable (post-teardown MinIO, a restart): the browser retries a 503 — never a 500
+      res.status(503).json({ error: 'Storage temporarily unavailable' });
     } else {
       res.status(500).json({ error: 'Failed to fetch media' });
     }
@@ -6921,7 +6924,12 @@ app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('
     });
   } catch (error) {
     console.error('Media upload error:', error);
-    res.status(500).json({ error: 'Failed to upload media' });
+    if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(error.code) || (error.message || '').includes('Failed to upload to storage')) {
+      // both stores unreachable is transient (a restart, post-teardown MinIO with Drive down): retryable
+      res.status(503).json({ error: 'Storage temporarily unavailable — try again' });
+    } else {
+      res.status(500).json({ error: 'Failed to upload media' });
+    }
   }
 });
 
@@ -6955,7 +6963,13 @@ app.delete('/api/media/:bucketType/:filename', authenticateToken, async (req, re
       }
     }
 
-    await mediaStorage.delete(bucketType, filename);
+    try {
+      await mediaStorage.delete(bucketType, filename);
+    } catch (mErr) {
+      // the MinIO copy is the FALLBACK, not the record (post-teardown the store may be gone
+      // entirely): a failed legacy-copy delete never blocks the person's deletion — log and move on
+      console.warn(`[media] MinIO copy delete skipped (${mErr.code || mErr.message})`);
+    }
     await forgetMediaOwner(bucketType, filename);
 
     res.json({ success: true, message: 'Media deleted successfully' });

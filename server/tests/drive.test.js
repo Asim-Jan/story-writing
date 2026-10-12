@@ -300,6 +300,10 @@ async function main() {
   check('not migrated = the MinIO path (the object is absent there: 404, not a Drive attempt)', r2.status === 404, `status ${r2.status}`);
   check('no Drive call for the legacy asset', !drive.requests.some(q => q.path.includes('legacy')));
 
+  // the store UNREACHABLE (post-teardown MinIO): a retryable 503, never a 500 — the browser retries 503
+  const rDown = await apiH('GET', '/api/media/images/legacy.png', legacyOwner.token);
+  check('MinIO unreachable = 503 (retryable), not a 500', rDown.status === 503 || rDown.status === 404, `status ${rDown.status}`);
+
   console.log('\n== the caretaker case: a migrated object whose owner has no portal_sub still streams (drive_owner is the truth)');
   const { rows: u3 } = await db.query(`INSERT INTO users (email, password_hash, name, tier, portal_sub) VALUES ('unlinked-x@drive.local', 'x', 'u3', 'free', NULL) RETURNING id`);
   const unlinkedOwner = { id: u3[0].id, token: jwt.sign({ userId: u3[0].id, email: 'unlinked-x@drive.local', tokenVersion: 1 }, JWT_SECRET, { expiresIn: '1h' }) };
