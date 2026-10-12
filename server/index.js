@@ -5775,6 +5775,43 @@ app.post('/api/generate-epub', authenticateToken, async (req, res) => {
   }
 });
 
+/* The person's EPUB/PDF export ALSO lands in their SAI Drive (<Book>/Exports/), best-effort: the
+ * download they asked for never waits on Drive — a Drive problem costs them the copy, not the file.
+ * Exports are Drive-ONLY (no MinIO bucket): the file already left the building in the response. */
+app.post('/api/exports', authenticateToken, async (req, res) => {
+  try {
+    const { bookId, filename, contentBase64 } = req.body || {};
+    const ext = path.extname(String(filename || '')).toLowerCase();
+    if (!filename || !['.epub', '.pdf'].includes(ext)) {
+      return res.status(400).json({ error: 'An export is an .epub or .pdf' });
+    }
+    if (!/^[A-Za-z0-9._-]{1,80}$/.test(String(filename))) {
+      return res.status(400).json({ error: 'Bad export filename' });
+    }
+    if (!contentBase64 || typeof contentBase64 !== 'string' || contentBase64.length > 100 * 1024 * 1024 * 4 / 3) {
+      return res.status(413).json({ error: 'Export too large to store (50 MB cap)' });
+    }
+    const buffer = Buffer.from(contentBase64, 'base64');
+    // resolve the book (folder) + owner
+    let book = null;
+    if (bookId) {
+      const { rows } = await getPool().query('SELECT id, title, owner_id FROM books WHERE id = $1', [bookId]);
+      book = rows[0] || null;
+      if (book && book.owner_id !== req.user.id) book = null;   // only the owner's own Drive
+    }
+    const drive = await driveStorage.put('exports', buffer, String(filename), req.user, book);
+    if (drive && drive.ok) {
+      await recordMediaOwner('exports', String(filename), { ownerId: req.user.id, bookId: book ? book.id : null, drive });
+      return res.json({ stored: true, path: drive.path, ref: drive.ref });
+    }
+    // not stored: the download already succeeded client-side, so this is a soft no
+    return res.json({ stored: false, reason: (drive && drive.reason) || 'unavailable' });
+  } catch (error) {
+    console.error('Export store error:', error);
+    res.status(500).json({ error: 'Failed to store the export' });
+  }
+});
+
 // Analyze story continuity
 app.post('/api/analyze-continuity', authenticateToken, consumeAIQuota, async (req, res) => {
   try {
