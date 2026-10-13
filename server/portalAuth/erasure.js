@@ -72,42 +72,53 @@ export function createEraser({ pool, storage, redis, log = console }) {
   }
 
   /* Media: every object the user owns (media_owners is the ONLY ownership record — the objects carry no user
-   * prefix), then the rows. The bytes live in SAI Drive (the only media store since 2.23.79; MinIO is retired):
-   *   - a copy held in the person's OWN Drive (drive_owner = their sub, or no drive_owner + a drive_ref: the
-   *     fallback is their portal_sub) is erased by DRIVE's own account lifecycle: Drive receives the same
-   *     account-deleted event, makes the account pending_erase at once (unreachable to everyone, app calls
-   *     answer 403 gone) and deletes the bytes at day 30 (sai-drive/APPS-INTEGRATION.md section 7). It is
-   *     left to that contract and counted (once Drive has the event, a call here would only meet 403 gone);
-   *   - a copy held in ANOTHER account's Drive (the caretaker's, for objects migrated before their owner
-   *     linked) is NOT reached by that erasure: it is removed here (a source file goes to the holder's Bin,
-   *     which Drive empties after 30 days: the same tail as the person's own Drive).
-   * A copy that is already gone counts as removed. A Drive transport problem stops the whole erase: the caller
-   * answers 503 and the portal's next delivery retries it; every step is idempotent. Nothing here can fail
-   * because a retired store (MinIO) no longer resolves: no MinIO call is made at all. */
+   * prefix), then the rows. The bytes live in SAI Drive (the only media store since 2.23.79; MinIO is retired).
+   *
+   * 1. A copy in the person's OWN Drive (drive_owner = their sub, or no drive_owner + a drive_ref: the fallback
+   *    is their portal_sub) is erased by DRIVE's own account lifecycle: Drive receives the same account-deleted
+   *    event, makes the account pending_erase at once (unreachable to everyone; app calls answer 403 gone) and
+   *    deletes the bytes at day 30 (sai-drive/APPS-INTEGRATION.md section 7). Counted as `leftToDrive`.
+   * 2. A copy held in ANOTHER account's Drive (the caretaker's, for objects migrated before their owner linked)
+   *    is NOT reached by that erasure, so it is deleted here, through the app API, with the strongest delete the
+   *    API grants an app. That API never deletes a person's work for good (APP-API.md section 3 and the DELETE
+   *    rules): only an UNTOUCHED `intermediate` file is purged at once; Stories writes every file as `source`
+   *    (driveStorage TAG), and a `source` file cannot be re-tagged intermediate (409 tag_locked) or purged with
+   *    permanent=1 (409 not_intermediate). So these copies go to the holder's Bin (`binned`), which Drive purges
+   *    after 30 days, the same 30-day tail as case 1 (and the same 30-day mirror tail after it: PLAN.md "Versions
+   *    and trash"). That Bin is the contract, not a shortcut: purging another account's file at once needs Drive's
+   *    operator erase, not an app credential. A copy Drive does purge at once is counted `purged`.
+   * 3. Drive answers neither by ref nor by the recorded node id: either already deleted or moved OUT of the
+   *    project folder by its holder (out of any app's reach by design). It is NOT counted as removed: it is
+   *    counted `unreachable` and logged (counts only) for the operator, and the erase still completes (retrying
+   *    cannot reach it either). An object with no drive_ref and no recorded node: nothing to remove (`gone`).
+   * A Drive transport problem stops the whole erase: the caller answers 503 and the portal's next delivery
+   * retries it; every step is idempotent. No MinIO call is made at all. */
   async function eraseMediaObjects(userId, personSub) {
     const { rows } = await pool.query(
-      'SELECT bucket_type, filename, drive_ref, drive_owner FROM media_owners WHERE owner_id = $1 ORDER BY created_at', [userId]);
-    let removed = 0, leftToDrive = 0;
+      'SELECT bucket_type, filename, drive_ref, drive_node, drive_owner FROM media_owners WHERE owner_id = $1 ORDER BY created_at', [userId]);
+    const c = { purged: 0, binned: 0, gone: 0, unreachable: 0, leftToDrive: 0 };
     const SUB = /^u_[a-f0-9]{16}$/;
     for (const r of rows) {
       const holder = SUB.test(r.drive_owner || '') ? r.drive_owner : (r.drive_ref ? personSub : null);
-      if (holder && holder === personSub) { leftToDrive++; continue; }
+      if (holder && holder === personSub) { c.leftToDrive++; continue; }
       if (!storage) throw new Error('eraser: a media object needs the storage to remove it');
+      let out;
       try {
-        await storage.delete(r.bucket_type, r.filename, { sub: holder || undefined, permanent: true });
-        removed++;
+        out = await storage.delete(r.bucket_type, r.filename, { sub: holder || undefined, node: r.drive_node || null, permanent: true });
       } catch (e) {
-        // an object that is already gone is fine; anything else stops the erase (retry later)
         const code = e && e.code;
-        if (!(code === 'NotFound' || code === 'not_found' || code === 'gone' || /NoSuchKey|not exist|404/i.test(String((e && e.message) || e)))) {
-          log.error && log.error('[identity-events] an object could not be removed; the erase will be retried');
-          throw e;
-        }
-        removed++;
+        // the holder's Drive account is closed, or the object is gone: nothing left to delete
+        if (code === 'NotFound' || code === 'not_found' || code === 'gone') { c.gone++; continue; }
+        log.error && log.error('[identity-events] an object could not be removed; the erase will be retried');
+        throw e;
       }
+      if (out && out.missing) c.unreachable++;
+      else if (out && out.removed) { if (out.mode === 'permanent') c.purged++; else c.binned++; }
+      else c.gone++;
     }
+    if (c.unreachable) log.error && log.error(`[identity-events] ${c.unreachable} media object(s) of an erased account are out of the app's reach (deleted, or moved out of the story-writing folder by their holder): check the caretaker's Drive`);
     await pool.query('DELETE FROM media_owners WHERE owner_id = $1', [userId]);
-    return { objects: removed, leftToDrive };
+    return { objects: c.purged + c.binned + c.gone, ...c };
   }
 
   /* Redis. The keys a user owns here (dataAdapter.js, jobs/queue.js, services/mediaJobs.js):
@@ -168,8 +179,8 @@ export function createEraser({ pool, storage, redis, log = console }) {
     const media = await eraseMediaObjects(user.id, sub);
     const rd = await eraseRedis(user.id);
     const pg = await eraseUserRows(user.id);
-    log.info && log.info(`[identity-events] erased an account (${media.objects} objects removed, ${media.leftToDrive} left to Drive's own account erasure, ${rd.keys} redis keys, ${pg.users_tombstoned} tombstoned, ${pg.money_rows_kept} money rows kept)`);
-    return { done: true, counts: { media: media.objects, mediaLeftToDrive: media.leftToDrive, redis: rd.keys, pg } };
+    log.info && log.info(`[identity-events] erased an account (media: ${media.purged} purged, ${media.binned} to the holder's Bin (purged by Drive at 30 days), ${media.gone} already gone, ${media.unreachable} unreachable, ${media.leftToDrive} left to Drive's own account erasure; ${rd.keys} redis keys, ${pg.users_tombstoned} tombstoned, ${pg.money_rows_kept} money rows kept)`);
+    return { done: true, counts: { media: media.objects, mediaPurged: media.purged, mediaBinned: media.binned, mediaUnreachable: media.unreachable, mediaLeftToDrive: media.leftToDrive, redis: rd.keys, pg } };
   }
 
   return { eraseBySub, USER_TABLES, CASCADE_CHILDREN };

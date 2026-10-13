@@ -2,8 +2,7 @@
  * Media ownership
  *
  * Who may read or delete a stored media object (the bytes live in the owner's SAI Drive). Durable, in Postgres (`media_owners`), and checked
- * FAIL-CLOSED: an object with no owner row is readable only by a user whose own book references it
- * (the row is then backfilled), or by an admin.
+ * FAIL-CLOSED: an object with no owner row is refused to everyone but an admin and the caretaker.
  *
  * This replaced a Redis key per object with a 30-day TTL that failed OPEN: a missing key (expired,
  * evicted by allkeys-lru, never written by half the upload routes, or a Redis error) let any
@@ -94,6 +93,18 @@ export async function driveSubOf(bucketType, filename) {
   }
 }
 
+/** The Drive node id recorded for an object (null = none recorded): the delete's fallback when the ref no longer answers. */
+export async function driveNodeOf(bucketType, filename) {
+  try {
+    await ensureMediaOwnersTable();
+    const r = await getPool().query('SELECT drive_node FROM media_owners WHERE bucket_type = $1 AND filename = $2', [bucketType, filename]);
+    return (r.rows[0] && r.rows[0].drive_node) || null;
+  } catch (error) {
+    console.error('Failed to resolve the Drive node:', error.message);
+    return null;
+  }
+}
+
 /**
  * Legacy callback shape used by mediaStorage.upload(..., setMediaBookMapping): the owner is the
  * book's owner.
@@ -139,19 +150,16 @@ export async function canAccessMedia(user, bucketType, filename, mode = 'read') 
     return collab.rows.length > 0;
   }
 
-  // No owner row: an object from before ownership was recorded. Allow it only if one of the user's
-  // own books references the file, and record that so the search runs once per object.
-  const like = '%' + filename.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
-  const hit = (await pool.query(
-    `SELECT b.id FROM books b
-      WHERE b.owner_id = $1 AND b.deleted_at IS NULL
-        AND (b::text LIKE $2 OR EXISTS (SELECT 1 FROM chapters c WHERE c.book_id = b.id AND c::text LIKE $2))
-      LIMIT 1`,
-    [userId, like]
-  )).rows[0];
-  if (!hit) return false;
-  await recordMediaOwner(bucketType, filename, { ownerId: userId, bookId: hit.id });
-  return true;
+  /* No owner row. This used to fall back to "a book of yours mentions the file name" and then RECORD the
+     requester as the owner: any user who pasted a file name into their own book's text became able to
+     read AND delete an object that was not theirs. Every object Stories stores now gets its row when it
+     is written, and the migration gave every legacy object one, so a row-less object is refused for
+     everyone but the caretaker (whose Drive holds ownerless objects) and admins (above). Logged, with no
+     file name, so a real gap shows up. */
+  const caretaker = process.env.DRIVE_CARETAKER_SUB || '';
+  if (caretaker && user.portal_sub === caretaker) return true;
+  console.warn(`[media] refused ${mode} of a ${bucketType} object that has no ownership row (user ${userId})`);
+  return false;
 }
 
 export async function forgetMediaOwner(bucketType, filename) {

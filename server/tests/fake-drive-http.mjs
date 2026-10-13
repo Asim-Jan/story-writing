@@ -8,10 +8,12 @@ export const FAKE_DRIVE_SECRET = 'drive-test-secret-0123456789abcdef0123456789ab
 
 /* ── the fake Drive app API: just enough /app/v1 for the client ───────────────────────────── */
 
-export function fakeDrive({ failUploads = false, failGets = false, failDeletes = false } = {}) {
+export function fakeDrive({ failUploads = false, failGets = false, failDeletes = false, host = '127.0.0.1', port = 0, log = false } = {}) {
   // mutable: a test can take Drive down (and bring it back) while the server keeps running
-  const mode = { failUploads, failGets, failDeletes };
-  const objects = new Map();   // ref -> { bytes, contentType, path }
+  // closedSubs: accounts Drive has closed (pending_erase / erased): every call naming them is 403 gone
+  const mode = { failUploads, failGets, failDeletes, closedSubs: new Set() };
+  const objects = new Map();   // ref -> { bytes, contentType, path, node }
+  const detached = new Map();  // node -> rec: a file whose ref was let go (the person moved it) but is still in the project
   const requests = [];
   const server = http.createServer((req, res) => {
     res.setHeader('connection', 'close');   // never reuse a socket: a half-consumed stream must not leak its bytes into the next response
@@ -22,10 +24,15 @@ export function fakeDrive({ failUploads = false, failGets = false, failDeletes =
       const body = Buffer.concat(chunks);
       const url = new URL(req.url, 'http://x');
       const p = url.pathname;
+      if (log) console.log(`[fake-drive] ${req.method} ${decodeURIComponent(p)} sub=${req.headers['x-sub'] || '-'}`);
       requests.push({ method: req.method, path: p, sub: req.headers['x-sub'], app: req.headers['x-app-id'], stat: url.searchParams.has('stat'), range: req.headers.range || null });
       if (req.headers['x-app-id'] !== 'stories' || req.headers['x-app-secret'] !== FAKE_DRIVE_SECRET) {
         res.writeHead(403, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: { code: 'forbidden' } }));
+        return res.end(JSON.stringify({ error: 'forbidden', code: 'forbidden' }));
+      }
+      if (mode.closedSubs.has(req.headers['x-sub'])) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'gone', code: 'gone' }));   // the real API's error shape: { error, code, requestId }
       }
       if (p === '/app/v1/quota' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -37,12 +44,12 @@ export function fakeDrive({ failUploads = false, failGets = false, failDeletes =
         const o = objects.get(ref);
         if (url.searchParams.get('stat')) {
           // a stat is a JSON DTO, never the bytes (the real Drive answers the DTO; the client re-stats after a put)
-          if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'not_found' } })); }
+          if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'not_found', code: 'not_found' })); }
           res.writeHead(200, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ id: o.node, version: 1, size: o.bytes.length, ref, tag: 'source', path: o.path }));
         }
         if (mode.failGets) { res.writeHead(503); return res.end(); }
-        if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'not_found' } })); }
+        if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'not_found', code: 'not_found' })); }
         const range = req.headers.range;
         let start = 0, end = o.bytes.length - 1, status = 200;
         if (range) {
@@ -50,7 +57,11 @@ export function fakeDrive({ failUploads = false, failGets = false, failDeletes =
           if (mm) {
             status = 206;
             if (mm[1] !== '') start = Number(mm[1]);
-            if (mm[2] !== '') end = Number(mm[2]);
+            if (mm[2] !== '') end = Math.min(Number(mm[2]), o.bytes.length - 1);
+            if (start >= o.bytes.length || start > end) {   // the real Drive's 416
+              res.writeHead(416, { 'content-type': 'application/json', 'content-range': `bytes */${o.bytes.length}` });
+              return res.end(JSON.stringify({ error: 'bad_range', code: 'bad_range' }));
+            }
             res.setHeader('Content-Range', `bytes ${start}-${end}/${o.bytes.length}`);
           }
         }
@@ -59,7 +70,7 @@ export function fakeDrive({ failUploads = false, failGets = false, failDeletes =
       }
       m = /^\/app\/v1\/projects\/([^/]+)\/files$/.exec(p);
       if (m && req.method === 'PUT') {
-        if (mode.failUploads) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'unavailable' } })); }
+        if (mode.failUploads) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'unavailable', code: 'unavailable' })); }
         const ref = url.searchParams.get('ref');
         const prior = objects.get(ref);
         if (prior && prior.bytes.equals(body)) {
@@ -74,20 +85,31 @@ export function fakeDrive({ failUploads = false, failGets = false, failDeletes =
         return res.end(JSON.stringify({ id: node, version: 1, size: body.length, ref, path: rec.path }));
       }
       m = /^\/app\/v1\/projects\/([^/]+)\/files\/([^/]+)$/.exec(p);
+      if (m && req.method === 'GET' && url.searchParams.get('stat')) {
+        const id = decodeURIComponent(m[2]);
+        const o = [...objects.values()].find(x => x.node === id) || detached.get(id);
+        if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'not_found', code: 'not_found' })); }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ id, version: 1, size: o.bytes.length, ref: null, tag: 'source', path: o.path }));
+      }
       if (m && req.method === 'DELETE') {
-        if (mode.failDeletes) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'unavailable' } })); }
-        for (const [ref, o] of objects) if (o.node === decodeURIComponent(m[2])) { objects.delete(ref); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, mode: 'bin' })); }
+        if (mode.failDeletes) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'unavailable', code: 'unavailable' })); }
+        const id = decodeURIComponent(m[2]);
+        // Stories writes `source` files: the app API sends those to the Bin, never deletes them for good
+        if (detached.delete(id)) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, mode: 'bin' })); }
+        for (const [ref, o] of objects) if (o.node === id) { objects.delete(ref); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, mode: 'bin' })); }
         res.writeHead(404, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: { code: 'not_found' } }));
+        return res.end(JSON.stringify({ error: 'not_found', code: 'not_found' }));
       }
       res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 'not_found' } }));
+      res.end(JSON.stringify({ error: 'not_found', code: 'not_found' }));
       } catch (e) { console.log(`    [fake-drive] HANDLER ERROR: ${e.stack || e.message}`); try { res.destroy(); } catch {} }
     });
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
-    url: `http://127.0.0.1:${server.address().port}`,
+  return new Promise((resolve) => server.listen(port, host, () => resolve({
+    url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${server.address().port}`,
     objects,
+    detached,
     requests,
     mode,
     close: () => new Promise((r) => server.close(r)),

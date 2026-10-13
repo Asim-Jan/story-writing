@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { saiVideoStart, saiVideoStatus } from '../saiClient.js';
 import dotenv from 'dotenv';
-import { mediaStorage } from './mediaStorage.js';
+import { mediaStorage, JOB_RETRY } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
 import { driveStorage } from './driveStorage.js';
 
@@ -96,7 +96,7 @@ export class VideoGenerator {
         'x-amz-meta-title': scene.title,
         'x-amz-meta-duration': String(duration),
         bookId: this.bookId, // For access control
-      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId), bookId: this.bookId });
+      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId), bookId: this.bookId, retry: JOB_RETRY });
 
       // Cleanup temp file
       fs.unlinkSync(tempPath);

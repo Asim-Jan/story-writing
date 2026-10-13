@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
-import { mediaStorage } from './mediaStorage.js';
+import { mediaStorage, JOB_RETRY } from './mediaStorage.js';
 import { setMediaBookMapping } from '../utils/mediaMapping.js';
 import { driveStorage } from './driveStorage.js';
 import { TRANSITIONS, TRANSITION_IDS, transitionOf } from './filmShots.js';
@@ -262,7 +262,7 @@ export class VideoAssembler {
         'x-amz-meta-title': title,
         'x-amz-meta-scene-count': String(clips.length),
         bookId: this.bookId, // for access control
-      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId), bookId: this.bookId });
+      }, setMediaBookMapping, { driveUser: await driveStorage.ownerOfBook(this.bookId), bookId: this.bookId, retry: JOB_RETRY });
 
       return {
         success: true,

@@ -46,7 +46,7 @@ import { parsePDF } from './parsers/pdf-parser.js';
 import { parseDOCX } from './parsers/docx-parser.js';
 import { parseTXT } from './parsers/txt-parser.js';
 import { extractChapters, validateChapters, getChapterStats } from './parsers/chapter-extractor.js';
-import { mediaStorage, contentTypeOf } from './services/mediaStorage.js';
+import { mediaStorage, contentTypeOf, JOB_RETRY } from './services/mediaStorage.js';
 import { suiteScriptHandler } from './utils/suiteScript.js';
 import { VideoSceneParser } from './services/videoSceneParser.js';
 import { VideoGenerator } from './services/videoGenerator.js';
@@ -4352,7 +4352,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // One image for a book: optional prompt rewrite with the book's context, then
 // the SAI bridge (text-to-image, or an edit of one of the app's own images),
 // stored in the owner's SAI Drive. Used by POST /api/generate-image and the book media jobs.
-async function generateBookImage({ user, bookId, prompt, context, size, model, sourceImageUrl, bookStyle }) {
+async function generateBookImage({ user, bookId, prompt, context, size, model, sourceImageUrl, bookStyle, retry }) {
   if (!prompt) throw Object.assign(new Error('Prompt is required'), { status: 400 });
 
   // The bridge renders up to 1536 px a side. The old DALL-E sizes (1792 px)
@@ -4447,7 +4447,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
     'x-amz-meta-type': 'generated-visual',
     'x-amz-meta-prompt': (prompt || '').substring(0, 200),
     // Note: No bookId for standalone image generation - backward compatibility only
-  }, setMediaBookMapping, { driveUser: user, bookId });
+  }, setMediaBookMapping, { driveUser: user, bookId, retry });
   await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: uploadResult.drive });
 
   console.log('Image saved:', uploadResult.storageKey);
@@ -4785,6 +4785,8 @@ app.delete('/api/voices/:id', authenticateToken, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('Custom voice delete failed:', error.message);
+    // Drive unreachable: retryable, and nothing was deleted (the sample goes first)
+    if (error.status === 503) return res.status(503).json({ error: 'Storage temporarily unavailable — try again' });
     res.status(500).json({ error: 'Could not delete the voice' });
   }
 });
@@ -5007,6 +5009,7 @@ function mediaJobRunner(req) {
         return await generateReference({
           user, bookId, kind: params.kind, character: params.character, sourceImageUrl: params.sourceImageUrl,
           style: params.style, bookStyle: artStyleOf(req.mediaJobBook), prompt: params.prompt, onStage: (message) => report({ message }),
+          retry: JOB_RETRY,   // a job keeps its render through a Drive blip (mediaStorage)
         });
       } catch (error) {
         if (error.portrait) error.partial = { reference: null, portrait: error.portrait };
@@ -5020,6 +5023,7 @@ function mediaJobRunner(req) {
       const image = await generateBookImage({
         user, bookId, prompt: params.prompt, context: params.context, size: params.size,
         model: params.model, sourceImageUrl: params.sourceImageUrl, bookStyle: artStyleOf(req.mediaJobBook),
+        retry: JOB_RETRY,   // a job keeps its render through a Drive blip (mediaStorage)
       });
       return { imageUrl: image.imageUrl, prompt: image.prompt };
     };
@@ -5386,7 +5390,7 @@ app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeatu
       label: `${kind}: ${character.name}`,
       run: async (report) => {
         try {
-          return await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, bookStyle, prompt, onStage: (message) => report({ message }) });
+          return await generateReference({ user: req.user, bookId, kind, character, sourceImageUrl, style, bookStyle, prompt, onStage: (message) => report({ message }), retry: JOB_RETRY });
         } catch (error) {
           if (error.portrait) error.partial = { reference: null, portrait: error.portrait };
           throw error;
@@ -6796,6 +6800,11 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
   } catch (error) {
     if (error.code === 'NotFound') return res.status(404).json({ error: 'Media not found' });
     if (error.code === 'infected') return res.status(451).json({ error: 'This file failed the malware scan' });
+    if (error.code === 'bad_range') {
+      // the browser asked past the end: a 416 it can act on (not a retryable 503 it repeats forever)
+      if (Number.isFinite(error.size)) res.setHeader('Content-Range', `bytes */${error.size}`);
+      return res.status(416).json({ error: 'Range not satisfiable' });
+    }
     console.error('Media fetch error:', error && (error.stack || error.message));
     if (error.status === 503 || error.code === 'storage_unavailable') {
       // Drive unreachable or not configured: the browser retries a 503 — never a 500
@@ -6834,7 +6843,8 @@ app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('
     });
   } catch (error) {
     console.error('Media upload error:', error);
-    if (error.status === 413) {
+    if (error.code === 'quota') {
+      // the person's own upload: nothing generated, nothing to refund — the size is the problem
       res.status(413).json({ error: 'There is no room for that file in your SAI Drive' });
     } else if (error.status === 503 || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(error.code)) {
       // Drive unreachable (a restart, an outage) is transient: retryable

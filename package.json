@@ -13,14 +13,13 @@
     "docker:down": "docker-compose down",
     "test:regress": "node server/tests/regress.test.js",
     "test:drive": "node server/tests/drive.test.js",
+    "dev:drive": "node scripts/fake-drive.mjs",
     "test:media": "node --test server/tests/media-drive-only.test.js server/tests/suite-script.test.js",
     "test:portal": "node --test server/portalAuth/tests/*.test.js server/vendor/sai-auth-client/*.test.cjs",
     "test:drive-client": "node --test server/vendor/drive-client/tests/*.cjs",
     "sync:auth-client": "scripts/sync-auth-client.sh"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.970.0",
-    "@aws-sdk/s3-request-presigner": "^3.970.0",
     "@google/genai": "^1.22.0",
     "@lexical/code": "^0.37.0",
     "@lexical/link": "^0.37.0",
@@ -58,7 +57,6 @@
     "languagetool-api": "^1.1.2",
     "lexical": "^0.37.0",
     "lucide-react": "^0.294.0",
-    "minio": "^8.0.2",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^8.0.1",
     "openai": "^4.20.1",
