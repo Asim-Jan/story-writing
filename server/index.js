@@ -46,7 +46,8 @@ import { parsePDF } from './parsers/pdf-parser.js';
 import { parseDOCX } from './parsers/docx-parser.js';
 import { parseTXT } from './parsers/txt-parser.js';
 import { extractChapters, validateChapters, getChapterStats } from './parsers/chapter-extractor.js';
-import { mediaStorage } from './services/mediaStorage.js';
+import { mediaStorage, contentTypeOf } from './services/mediaStorage.js';
+import { suiteScriptHandler } from './utils/suiteScript.js';
 import { VideoSceneParser } from './services/videoSceneParser.js';
 import { VideoGenerator } from './services/videoGenerator.js';
 import { VideoAssembler, TRANSITIONS, TRANSITION_IDS } from './services/videoAssembler.js';
@@ -65,7 +66,7 @@ import { pgStore as portalStore } from './portalAuth/store.js';
 import { createOnceStore, reissueLifetimeS } from './portalAuth/session.js';
 import { createRequire as _createRequire } from 'module';
 import { ApiResponse } from './utils/responses.js';
-import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable, driveSubOf } from './utils/mediaMapping.js';
+import { setMediaBookMapping, recordMediaOwner, canAccessMedia, forgetMediaOwner, ensureMediaOwnersTable } from './utils/mediaMapping.js';
 import { driveStorage } from './services/driveStorage.js';
 import { requireAdmin, preventSelfModification } from './middleware/adminAuth.js';
 import {
@@ -680,23 +681,20 @@ app.use(session({
   }
 }));
 
-// Initialize MinIO storage
-let minioAvailable = false;
-try {
-  await mediaStorage.initialize();
-  minioAvailable = true;
-} catch (error) {
-  console.warn('⚠️  MinIO initialization failed. Media features will be disabled.');
-  console.warn('⚠️  Make sure MinIO is running: docker-compose up -d minio');
-  console.warn('⚠️  Error:', error.message);
+// Media storage = the person's SAI Drive, the ONLY store since 2.23.79 (MinIO retired). Nothing is
+// probed at boot: the Drive client is built from DRIVE_APP_API_SECRET on first use, and a Drive outage
+// is answered per request (503, retryable). 2.23.76 switched every media route off for the life of the
+// process after ONE failed MinIO lookup at boot (ENOTFOUND minio = 503 on all of them, Drive up).
+if (!mediaStorage.driveEnabled) {
+  console.warn('⚠️  Media storage (SAI Drive) is not configured: set DRIVE_APP_API_SECRET. Media routes answer 503.');
 }
 
-// Helper to check if MinIO is required for an operation
-const requireMinIO = (req, res, next) => {
-  if (!minioAvailable) {
+// Media routes need the store configured (a generation must not spend quota with nowhere to put it)
+const requireMediaStorage = (req, res, next) => {
+  if (!mediaStorage.driveEnabled) {
     return res.status(503).json({
       error: 'Media storage unavailable',
-      message: 'MinIO is not running. Start it with: docker-compose up -d minio'
+      message: 'Media storage is not configured right now. Please try again later.'
     });
   }
   next();
@@ -4353,7 +4351,7 @@ app.get('/api/jobs/can-queue', authenticateToken, async (req, res) => {
 // Image Generation endpoint using OpenAI DALL-E
 // One image for a book: optional prompt rewrite with the book's context, then
 // the SAI bridge (text-to-image, or an edit of one of the app's own images),
-// stored in MinIO. Used by POST /api/generate-image and the book media jobs.
+// stored in the owner's SAI Drive. Used by POST /api/generate-image and the book media jobs.
 async function generateBookImage({ user, bookId, prompt, context, size, model, sourceImageUrl, bookStyle }) {
   if (!prompt) throw Object.assign(new Error('Prompt is required'), { status: 400 });
 
@@ -4443,7 +4441,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
   });
   const buffer = imageResult.buffer;
 
-  // Upload to MinIO (and into the owner's SAI Drive — STORIES-ON-DRIVE)
+  // Store in the owner's SAI Drive (the only media store)
   const filename = `visual-${Date.now()}-${uuidv4().slice(0, 8)}.png`;
   const uploadResult = await mediaStorage.upload('images', buffer, filename, {
     'x-amz-meta-type': 'generated-visual',
@@ -4452,7 +4450,7 @@ Keep the prompt under 1000 characters. Respond with ONLY the enhanced prompt tex
   }, setMediaBookMapping, { driveUser: user, bookId });
   await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: uploadResult.drive });
 
-  console.log('Image saved to MinIO:', uploadResult.storageKey);
+  console.log('Image saved:', uploadResult.storageKey);
 
   return {
     imageUrl: `/api/media/images/${filename}`,
@@ -4475,7 +4473,7 @@ async function bookStyleFor(bookId, userId) {
   }
 }
 
-app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-image', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMediaStorage, consumeAIQuota, async (req, res) => {
   try {
     const { prompt, context, size, model, sourceImageUrl, bookId } = req.body;
     const bookStyle = await bookStyleFor(bookId, req.user.userId);
@@ -4761,7 +4759,7 @@ app.get('/api/voices', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/voices', authenticateToken, aiLimiter, requireMinIO, (req, res, next) => {
+app.post('/api/voices', authenticateToken, aiLimiter, requireMediaStorage, (req, res, next) => {
   voiceUpload.single('sample')(req, res, (err) => (err ? res.status(400).json({ error: err.message }) : next()));
 }, async (req, res) => {
   try {
@@ -4950,7 +4948,7 @@ async function validateMediaJob(req, res, next) {
     } else if (type === 'enhance' && !['book', 'missing'].includes(target.type) && !String(enhanceItem(params)?.name || '').trim()) {
       return res.status(400).json({ error: `The ${target.type} needs a name` });
     }
-    if (!minioAvailable && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
+    if (!mediaStorage.driveEnabled && !TEXT_JOBS.has(type)) return res.status(503).json({ error: 'Media storage is unavailable right now' });
     const book = await getBook(bookId);
     if (!book) return res.status(404).json({ error: 'Book not found' });
     if (type === 'enhance' && target.type === 'duplicates') {
@@ -5370,7 +5368,7 @@ app.post('/api/books/:bookId/media-jobs/:jobId/ack', authenticateToken, async (r
 });
 
 // Compatibility: the 2.23.34 reference routes, now on the same jobs.
-app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/characters/reference', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMediaStorage, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, kind, character, sourceImageUrl, style, prompt } = req.body || {};
     if (!REFERENCE_KINDS.includes(kind)) {
@@ -5430,7 +5428,7 @@ app.post('/api/characters/reference-prompt', authenticateToken, (req, res) => {
 // The Comic tab's original route: a turnaround sheet. It used to call the
 // character-sheet recipe with no picture, which the bridge refuses (500 on
 // every call).
-app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-character-reference', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMediaStorage, consumeAIQuota, async (req, res) => {
   try {
     const { bookId, characterId, character, style } = req.body || {};
     if (!(await checkReferenceRequest(req, res))) return;
@@ -5451,7 +5449,7 @@ app.post('/api/generate-character-reference', authenticateToken, requireFeature(
   }
 });
 
-app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_generation'), aiLimiter, requireMediaStorage, consumeAIQuota, async (req, res) => {
   try {
     const { sceneDescription, characters, location } = req.body;
     // the book's art style, drawn as a comic panel; a style sent with the
@@ -5535,7 +5533,7 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
       }, null, { driveUser: req.user, bookId: req.body?.bookId });
       await recordMediaOwner('comics', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
-      console.log('Comic panel saved to MinIO:', uploadResult.storageKey);
+      console.log('Comic panel saved:', uploadResult.storageKey);
 
       res.json({
         imageUrl: `/api/media/comics/${filename}`,
@@ -5557,7 +5555,7 @@ app.post('/api/generate-comic-panel', authenticateToken, requireFeature('media_g
 // Helper function to chunk text for TTS (OpenAI TTS has 4096 char limit)
 
 // Generate TTS audio for a chapter
-app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMinIO, consumeAIQuota, async (req, res) => {
+app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('media_generation'), requireMediaStorage, consumeAIQuota, async (req, res) => {
   try {
     const { text, chapterId, voice = 'alloy', speed = 1.0 } = req.body;
 
@@ -5577,7 +5575,7 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
     // Long text is spoken in pieces and merged into one valid WAV
     const { buffer: finalBuffer } = await speakLongText(text, { voice: selectedVoice, speed });
 
-    // Upload to MinIO (the bridge returns WAV)
+    // Store in the owner's SAI Drive (the bridge returns WAV)
     const filename = `chapter-${chapterId || Date.now()}-${selectedVoice}-${uuidv4().slice(0, 8)}.wav`;
     const uploadResult = await mediaStorage.upload('audio', finalBuffer, filename, {
       'x-amz-meta-type': 'tts-audio',
@@ -5586,7 +5584,7 @@ app.post('/api/generate-audio', authenticateToken, aiLimiter, requireFeature('me
     }, null, { driveUser: req.user, bookId: req.body?.bookId });
     await recordMediaOwner('audio', filename, { ownerId: req.user.id, bookId: req.body?.bookId, drive: uploadResult.drive });
 
-    console.log('Audio saved to MinIO:', uploadResult.storageKey);
+    console.log('Audio saved:', uploadResult.storageKey);
 
     res.json({
       audioUrl: `/api/media/audio/${filename}`,
@@ -5715,17 +5713,9 @@ app.get('/api/health', async (req, res) => {
     isHealthy = false;
   }
 
-  // Check MinIO
-  try {
-    if (minioAvailable) {
-      await mediaStorage.client.listBuckets();
-      health.services.minio = { status: 'connected', endpoint: process.env.MINIO_ENDPOINT };
-    } else {
-      health.services.minio = { status: 'unavailable' };
-    }
-  } catch (error) {
-    health.services.minio = { status: 'error', error: error.message };
-  }
+  // Media storage: the person's SAI Drive (MinIO retired in 2.23.79). Not part of isHealthy: a Drive
+  // outage is answered per request with a retryable 503, it must not take the pod out of service.
+  health.services.storage = { backend: 'sai-drive', status: mediaStorage.driveEnabled ? 'configured' : 'not configured' };
 
   // Check AI service (SAI gateway)
   health.services.ai = {
@@ -6778,125 +6768,44 @@ app.get('/api/media/:bucketType/:filename', authenticateToken, async (req, res) 
       return res.status(404).json({ error: 'Media not found' });
     }
 
-    // STORIES-ON-DRIVE: the bytes' system of record is the person's SAI Drive — the owner row's
-    // drive_ref decides (NULL = not migrated yet: MinIO serves it, as before). The person the app
-    // API call NAMES is the asset's Drive OWNER (resolved from media_owners), not the requester.
-    // A Drive transport error is a 503 (the browser retries); a missing Drive copy falls back to
-    // MinIO (the ref can only be stale or written ahead of the bytes during the migration).
-    if (mediaStorage.driveEnabled) {
-      const ownerSub = await driveSubOf(bucketType, filename);
-      if (ownerSub) {
-        try {
-          const g = await driveStorage.streamFor(ownerSub, bucketType, filename, req.headers.range);
-          if (g) {
-            /* Touch g.stream ONCE: each access of the client's `stream` getter wraps the SAME web
-               ReadableStream again and the second fromWeb throws ERR_INVALID_STATE (locked). */
-            const st = g.stream;
-            const h = {
-              'Content-Type': g.contentType || 'application/octet-stream',
-              'Cache-Control': 'private, max-age=86400',
-              'X-Content-Type-Options': 'nosniff',
-              'Accept-Ranges': 'bytes',
-            };
-            if (g.contentRange) h['Content-Range'] = g.contentRange;
-            res.writeHead(g.status || (g.contentRange ? 206 : 200), h);
-            let closed = false;
-            res.on('close', () => { closed = true; try { st.destroy(); } catch {} });
-            st.on('error', (err) => {
-              console.error('Drive media stream error:', err.message);
-              if (!closed && !res.headersSent) res.status(502).json({ error: 'Failed to fetch media' });
-              else if (!closed) res.destroy(err);
-            });
-            st.pipe(res);
-            return;
-          }
-        } catch (error) {
-          console.error('Drive media fetch error:', error && (error.stack || error.message));
-          if (error && error.code === 'infected') {
-            // the scanner marked the Drive copy: never serve it (the same rule MinIO's read path has)
-            return res.status(451).json({ error: 'This file failed the malware scan' });
-          }
-          return res.status(503).json({ error: 'Storage temporarily unavailable' });
-        }
-      }
-    }
-
-    // Audio and video answer Range requests: Safari and iOS will not play or
-    // seek a media file without them. These files are small (an MP3 chapter is
-    // a few MB), so the range is cut from the whole object.
-    if ((bucketType === 'audio' || bucketType === 'videos') && req.headers.range) {
-      const buf = await mediaStorage.getFile(bucketType, filename);
-      const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range).trim());
-      const ext0 = path.extname(filename).toLowerCase();
-      const type0 = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime' }[ext0] || 'application/octet-stream';
-      let start = m && m[1] !== '' ? Number(m[1]) : null;
-      let end = m && m[2] !== '' ? Number(m[2]) : null;
-      if (start === null && end !== null) { start = Math.max(0, buf.length - end); end = buf.length - 1; }
-      if (start === null) start = 0;
-      if (end === null || end >= buf.length) end = buf.length - 1;
-      if (!m || start > end || start >= buf.length) {
-        res.setHeader('Content-Range', `bytes */${buf.length}`);
-        return res.status(416).end();
-      }
-      res.status(206);
-      res.setHeader('Content-Type', type0);
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${buf.length}`);
-      res.setHeader('Content-Length', String(end - start + 1));
-      res.setHeader('Cache-Control', 'private, max-age=86400');
-      return res.end(buf.subarray(start, end + 1));
-    }
-    if (bucketType === 'audio' || bucketType === 'videos') res.setHeader('Accept-Ranges', 'bytes');
-
-    // Get file stream from storage
-    const stream = await mediaStorage.getStream(
-      mediaStorage.buckets[bucketType],
-      filename
-    );
-
-    // Set appropriate content type
-    const ext = path.extname(filename).toLowerCase();
-    const contentTypeMap = {
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp',
-      '.mp3': 'audio/mpeg',
-      '.wav': 'audio/wav',
-      '.ogg': 'audio/ogg',
-      '.mp4': 'video/mp4',
-      '.webm': 'video/webm',
-      '.mov': 'video/quicktime',
+    // The bytes live in the person's SAI Drive (the only media store): the Drive OWNER resolved from
+    // media_owners is the person the app API call names, not the requester. Range passes through
+    // (Safari and iOS will not play or seek audio/video without it); nothing is buffered here.
+    const g = await mediaStorage.open(bucketType, filename, { range: req.headers.range });
+    /* Touch g.stream ONCE: each access of the client's `stream` getter wraps the SAME web
+       ReadableStream again and the second fromWeb throws ERR_INVALID_STATE (locked). */
+    const st = g.stream;
+    const h = {
+      'Content-Type': g.contentType || contentTypeOf(filename),
+      // private: per-user files behind auth, so Cloudflare and other shared caches never keep a copy
+      'Cache-Control': 'private, max-age=86400',
+      'X-Content-Type-Options': 'nosniff',
+      'Accept-Ranges': 'bytes',
     };
-    const contentType = contentTypeMap[ext] || 'application/octet-stream';
-
-    res.setHeader('Content-Type', contentType);
-    // private: these are per-user files behind auth, so Cloudflare and other shared caches must
-    // never keep a copy (it was `public` for a year, a .png the CDN could hand to anyone).
-    res.setHeader('Cache-Control', 'private, max-age=86400');
-
-    // Without an error listener a MinIO hiccup mid-stream is an uncaught exception: the API dies.
-    stream.on('error', (err) => {
-      console.error('Media stream error:', err.message);
-      if (!res.headersSent) res.status(502).json({ error: 'Failed to fetch media' });
-      else res.destroy(err);
+    if (g.contentRange) h['Content-Range'] = g.contentRange;
+    res.writeHead(g.status || (g.contentRange ? 206 : 200), h);
+    let closed = false;
+    res.on('close', () => { closed = true; try { st.destroy(); } catch {} });
+    // Without an error listener a hiccup mid-stream is an uncaught exception: the API dies.
+    st.on('error', (err) => {
+      console.error('Drive media stream error:', err.message);
+      if (!closed && !res.headersSent) res.status(502).json({ error: 'Failed to fetch media' });
+      else if (!closed) res.destroy(err);
     });
-    stream.pipe(res);
+    st.pipe(res);
   } catch (error) {
-    console.error('Media fetch error:', error);
-    if (error.code === 'NotFound' || error.code === 'NoSuchKey' || error.name === 'NoSuchKey') {
-      res.status(404).json({ error: 'Media not found' });
-    } else if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(error.code) || error.code === 'EAGAIN') {
-      // the backing store is unreachable (post-teardown MinIO, a restart): the browser retries a 503 — never a 500
-      res.status(503).json({ error: 'Storage temporarily unavailable' });
-    } else {
-      res.status(500).json({ error: 'Failed to fetch media' });
+    if (error.code === 'NotFound') return res.status(404).json({ error: 'Media not found' });
+    if (error.code === 'infected') return res.status(451).json({ error: 'This file failed the malware scan' });
+    console.error('Media fetch error:', error && (error.stack || error.message));
+    if (error.status === 503 || error.code === 'storage_unavailable') {
+      // Drive unreachable or not configured: the browser retries a 503 — never a 500
+      return res.status(503).json({ error: 'Storage temporarily unavailable' });
     }
+    res.status(500).json({ error: 'Failed to fetch media' });
   }
 });
 
-// Upload media file to MinIO
+// Upload a media file (into the uploader's SAI Drive)
 app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -6918,14 +6827,17 @@ app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('
     const result = await mediaStorage.upload(bucketType, req.file.buffer, filename, { originalName: req.file.originalname }, null, { driveUser: req.user, bookId });
     await recordMediaOwner(bucketType, filename, { ownerId: req.user.id, bookId, drive: result.drive });
 
+    const { drive: _drive, ...publicResult } = result; // the browser never sees a Drive ref, node or path
     res.json({
-      ...result,
+      ...publicResult,
       url: `/api/media/${bucketType}/${filename}`,
     });
   } catch (error) {
     console.error('Media upload error:', error);
-    if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(error.code) || (error.message || '').includes('Failed to upload to storage')) {
-      // both stores unreachable is transient (a restart, post-teardown MinIO with Drive down): retryable
+    if (error.status === 413) {
+      res.status(413).json({ error: 'There is no room for that file in your SAI Drive' });
+    } else if (error.status === 503 || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(error.code)) {
+      // Drive unreachable (a restart, an outage) is transient: retryable
       res.status(503).json({ error: 'Storage temporarily unavailable — try again' });
     } else {
       res.status(500).json({ error: 'Failed to upload media' });
@@ -6933,7 +6845,7 @@ app.post('/api/media/upload', authenticateToken, aiLimiter, mediaUpload.single('
   }
 });
 
-// Delete media file from MinIO
+// Delete a media file (its Drive copy, then the owner row)
 app.delete('/api/media/:bucketType/:filename', authenticateToken, async (req, res) => {
   try {
     const { bucketType, filename } = req.params;
@@ -6948,27 +6860,13 @@ app.delete('/api/media/:bucketType/:filename', authenticateToken, async (req, re
       return res.status(404).json({ error: 'Media not found' });
     }
 
-    /* STORIES-ON-DRIVE: the Drive copy is deleted FIRST (while the owner row still names the
-       Drive owner + node), then the MinIO copy, then the row. The Drive copy goes to the person's
-       Bin (undoable by them); a Drive problem here answers 503 and deletes NOTHING (the next
-       attempt retries the whole delete — idempotent on both stores). */
-    if (mediaStorage.driveEnabled) {
-      const ownerSub = await driveSubOf(bucketType, filename);
-      if (ownerSub) {
-        try { await driveStorage.removeFor(ownerSub, bucketType, filename); }
-        catch (error) {
-          console.error('Drive media delete error:', error && error.message);
-          return res.status(503).json({ error: 'Storage temporarily unavailable — try again' });
-        }
-      }
-    }
-
-    try {
-      await mediaStorage.delete(bucketType, filename);
-    } catch (mErr) {
-      // the MinIO copy is the FALLBACK, not the record (post-teardown the store may be gone
-      // entirely): a failed legacy-copy delete never blocks the person's deletion — log and move on
-      console.warn(`[media] MinIO copy delete skipped (${mErr.code || mErr.message})`);
+    /* The Drive copy is deleted FIRST (while the owner row still names the Drive owner + node),
+       then the row. It goes to the person's Bin (undoable by them); a Drive problem answers 503 and
+       deletes NOTHING (the next attempt retries the whole delete — idempotent). */
+    try { await mediaStorage.delete(bucketType, filename); }
+    catch (error) {
+      console.error('Drive media delete error:', error && error.message);
+      return res.status(503).json({ error: 'Storage temporarily unavailable — try again' });
     }
     await forgetMediaOwner(bucketType, filename);
 
@@ -9514,6 +9412,8 @@ app.delete('/api/ai-generations/:id', authenticateToken, async (req, res) => {
 // (Vite fingerprints them) while index.html stays no-store so deploys go live
 // on the next reload without a cache-bust dance.
 const distDir = path.join(__dirname, '..', 'public', 'dist');
+// The SAI Cloud switcher: JavaScript or a 404, never the SPA fallback below (utils/suiteScript.js)
+app.get('/sai-suite.js', suiteScriptHandler([path.join(distDir, 'sai-suite.js'), path.join(__dirname, '..', 'public', 'sai-suite.js')]));
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir, {
     index: false,
@@ -9775,16 +9675,7 @@ const httpServer = app.listen(PORT, () => {
   console.log(`\n📦 Services:`);
   console.log(`  ✓ Redis: ${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`);
 
-  const storageEndpoint = process.env.AWS_S3_BUCKET
-    ? `S3 Bucket: ${process.env.AWS_S3_BUCKET}`
-    : `MinIO: http://${process.env.MINIO_ENDPOINT || 'localhost'}:${process.env.MINIO_PORT || '9000'}`;
-  console.log(`  ${minioAvailable ? '✓' : '✗'} ${storageEndpoint}`);
-
-  if (minioAvailable && !process.env.AWS_S3_BUCKET) {
-    console.log(`    MinIO Console: http://${process.env.MINIO_ENDPOINT || 'localhost'}:9001`);
-    // development convenience only: production logs never carry an access key (or a default one)
-    if (process.env.NODE_ENV !== 'production') console.log(`    Username: ${process.env.MINIO_ACCESS_KEY || 'minioadmin'}`);
-  }
+  console.log(`  ${mediaStorage.driveEnabled ? '✓' : '✗'} Media storage: SAI Drive (project story-writing)`);
 
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
   const apiUrl = process.env.API_URL || `http://localhost:${PORT}`;

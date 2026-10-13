@@ -1,17 +1,19 @@
 // STORIES-ON-DRIVE: the storage seam against the REAL server over HTTP.
 //
-// Boots server/index.js against a throwaway PostgreSQL + Redis (like test:regress), a fake MinIO
-// is NOT needed — the media read tests exercise the DRIVE path only, which is what this suite
-// exists to pin. A FAKE Drive app API (http.createServer) answers the /app/v1 subset the app's
-// own vendored _drive-client speaks; the server is pointed at it with DRIVE_APP_API_URL.
+// Boots server/index.js against a throwaway PostgreSQL + Redis (like test:regress) and a FAKE
+// Drive app API (fake-drive-http.mjs: the /app/v1 subset the vendored _drive-client speaks; the
+// server is pointed at it with DRIVE_APP_API_URL). Since 2.23.79 Drive is the ONLY media store:
+// NO MinIO variable is set anywhere in this suite and none may be needed.
 //
 // Pins:
-//   - upload() with driveUser puts the bytes in the owner's Drive (idempotent by ref) and
-//     records media_owners.drive_ref/drive_node/drive_size; a Drive outage leaves the upload
-//     SUCCESSFUL with no drive_ref (the MinIO copy is the fallback, never a failed generation).
-//   - GET /api/media/:bucketType/:filename streams from DRIVE when drive_ref is recorded (the
-//     Drive owner is the asset's owner, not the requester), from MinIO when it is not, and
-//     answers 503 when Drive is down mid-migration (no silent fallback to possibly-stale bytes).
+//   - the server boots and serves media with no MINIO_* at all (2.23.76 gated every media route
+//     on a MinIO bucket check at boot).
+//   - POST /api/media/upload puts the bytes in the uploader's Drive and records media_owners.
+//     drive_ref/drive_node/drive_size; a Drive outage is a retryable 503 (there is no fallback).
+//   - GET /api/media/:bucketType/:filename streams from DRIVE (the Drive owner is the asset's
+//     owner, not the requester), Range passes through; an object Drive does not hold is 404;
+//     Drive down is 503; Drive not configured is 503.
+//   - DELETE removes the Drive copy and the row; Drive down = 503 and NOTHING is deleted.
 //   - ACL still rules: another user's file 404s regardless of where the bytes live.
 //   - the caretaker: an uploader with no portal_sub lands under the caretaker's sub path.
 //
@@ -27,8 +29,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
 import { createClient } from 'redis';
+import { fakeDrive, FAKE_DRIVE_SECRET } from './fake-drive-http.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.join(__dirname, '..');
@@ -43,6 +45,7 @@ const PG = {
 const REDIS = { host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT || 6379) };
 
 Object.assign(process.env, { USE_POSTGRES: 'true', READ_FROM_POSTGRES: 'true', DUAL_WRITE: 'false' });
+for (const k of Object.keys(process.env)) if (/^(MINIO_|AWS_S3_|REGRESS_MINIO_)/.test(k)) delete process.env[k];   // no MinIO anywhere
 
 if (!['127.0.0.1', 'localhost'].includes(PG.host) || !['127.0.0.1', 'localhost'].includes(REDIS.host)) {
   console.error('Refusing to run: POSTGRES_HOST and REDIS_HOST must be localhost (this suite drops databases and flushes Redis).');
@@ -68,90 +71,6 @@ function freePort() {
   });
 }
 
-/* ── the fake Drive app API: just enough /app/v1 for the client ───────────────────────────── */
-
-function fakeDrive({ failUploads = false, failGets = false } = {}) {
-  const objects = new Map();   // ref -> { bytes, contentType, path }
-  const requests = [];
-  const server = http.createServer((req, res) => {
-    res.setHeader('connection', 'close');   // never reuse a socket: a half-consumed stream must not leak its bytes into the next response
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', async () => {
-      try {
-      const body = Buffer.concat(chunks);
-      const url = new URL(req.url, 'http://x');
-      const p = url.pathname;
-      requests.push({ method: req.method, path: p, sub: req.headers['x-sub'], app: req.headers['x-app-id'] });
-      if (req.headers['x-app-id'] !== 'stories' || req.headers['x-app-secret'] !== 'drive-test-secret-0123456789abcdef0123456789abcdef') {
-        res.writeHead(403, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: { code: 'forbidden' } }));
-      }
-      if (p === '/app/v1/quota' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ used: 0, quota: 1000, cap: 900 }));
-      }
-      let m = /^\/app\/v1\/projects\/([^/]+)\/by-ref\/(.+)$/.exec(p);
-      if (m && (req.method === 'GET' || req.method === 'HEAD')) {
-        const ref = decodeURIComponent(m[2]);
-        const o = objects.get(ref);
-        if (url.searchParams.get('stat')) {
-          // a stat is a JSON DTO, never the bytes (the real Drive answers the DTO; the client re-stats after a put)
-          if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'not_found' } })); }
-          res.writeHead(200, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ id: o.node, version: 1, size: o.bytes.length, ref, tag: 'source', path: o.path }));
-        }
-        if (failGets) { res.writeHead(503); return res.end(); }
-        if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'not_found' } })); }
-        const range = req.headers.range;
-        let start = 0, end = o.bytes.length - 1, status = 200;
-        if (range) {
-          const mm = /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
-          if (mm) {
-            status = 206;
-            if (mm[1] !== '') start = Number(mm[1]);
-            if (mm[2] !== '') end = Number(mm[2]);
-            res.setHeader('Content-Range', `bytes ${start}-${end}/${o.bytes.length}`);
-          }
-        }
-        res.writeHead(status, { 'content-type': o.contentType, 'accept-ranges': 'bytes' });
-        return res.end(o.bytes.subarray(start, end + 1));
-      }
-      m = /^\/app\/v1\/projects\/([^/]+)\/files$/.exec(p);
-      if (m && req.method === 'PUT') {
-        if (failUploads) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'unavailable' } })); }
-        const ref = url.searchParams.get('ref');
-        const prior = objects.get(ref);
-        if (prior && prior.bytes.equals(body)) {
-          // the REAL Drive's idempotency: the same ref + the same bytes is a no-op (the same node)
-          res.writeHead(200, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ id: prior.node, version: 1, size: prior.bytes.length, ref, path: prior.path }));
-        }
-        const node = `n_${crypto.randomBytes(6).toString('hex')}`;
-        const rec = { bytes: body, contentType: req.headers['content-type'] || 'application/octet-stream', path: url.searchParams.get('path'), node };
-        objects.set(ref, rec);
-        res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ id: node, version: 1, size: body.length, ref, path: rec.path }));
-      }
-      m = /^\/app\/v1\/projects\/([^/]+)\/files\/([^/]+)$/.exec(p);
-      if (m && req.method === 'DELETE') {
-        for (const [ref, o] of objects) if (o.node === decodeURIComponent(m[2])) { objects.delete(ref); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, mode: 'bin' })); }
-        res.writeHead(404, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: { code: 'not_found' } }));
-      }
-      res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 'not_found' } }));
-      } catch (e) { console.log(`    [fake-drive] HANDLER ERROR: ${e.stack || e.message}`); try { res.destroy(); } catch {} }
-    });
-  });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
-    url: `http://127.0.0.1:${server.address().port}`,
-    objects,
-    requests,
-    close: () => new Promise((r) => server.close(r)),
-  })));
-}
-
 /* ── boot the real server ─────────────────────────────────────────────────────────────────── */
 
 async function bootServer(database, extraEnv = {}) {
@@ -170,11 +89,6 @@ async function bootServer(database, extraEnv = {}) {
     REDIS_HOST: REDIS.host,
     REDIS_PORT: String(REDIS.port),
     REDIS_PASSWORD: '',
-    MINIO_ENDPOINT: process.env.REGRESS_MINIO_HOST || '127.0.0.1',
-    MINIO_PORT: process.env.REGRESS_MINIO_PORT || '1',
-    MINIO_ACCESS_KEY: process.env.REGRESS_MINIO_USER || 'unused',
-    MINIO_SECRET_KEY: process.env.REGRESS_MINIO_PASSWORD || 'unused',
-    MINIO_USE_SSL: 'false',
     ...extraEnv,
   };
   console.log(`    [boot] spawning the server on :${port}`);
@@ -239,7 +153,7 @@ async function main() {
   const caretaker = 'u_f37d34dea1d20271';
   const srv = await bootServer('rg_drive', {
     DRIVE_APP_API_URL: drive.url,
-    DRIVE_APP_API_SECRET: 'drive-test-secret-0123456789abcdef0123456789abcdef',
+    DRIVE_APP_API_SECRET: FAKE_DRIVE_SECRET,
     DRIVE_CARETAKER_SUB: caretaker,
   });
   const srvLog = typeof srv.log === 'function' ? srv.log() : String(srv.log || '');
@@ -292,17 +206,40 @@ async function main() {
   const rangeBuf = Buffer.from(await rangeR.arrayBuffer());
   check('Range is honoured on the Drive stream', rangeR.status === 206 && rangeBuf.equals(PNG.subarray(0, 10)));
 
-  console.log('\n== an asset with no drive_ref falls back to MinIO (the migration window)');
+  console.log('\n== an object Drive does not hold is a 404 (MinIO is gone: no fallback, no 500)');
   const { rows: u2 } = await db.query(`INSERT INTO users (email, password_hash, name, tier, portal_sub) VALUES ('u2-x@drive.local', 'x', 'u2', 'free', 'u_2222222222222222') RETURNING id`);
   const legacyOwner = { id: u2[0].id, token: jwt.sign({ userId: u2[0].id, email: 'u2-x@drive.local', tokenVersion: 1 }, JWT_SECRET, { expiresIn: '1h' }) };
   await db.query(`INSERT INTO media_owners (bucket_type, filename, owner_id) VALUES ('images', 'legacy.png', $1)`, [legacyOwner.id]);
   const r2 = await apiH('GET', '/api/media/images/legacy.png', legacyOwner.token);
-  check('not migrated = the MinIO path (the object is absent there: 404, not a Drive attempt)', r2.status === 404, `status ${r2.status}`);
-  check('no Drive call for the legacy asset', !drive.requests.some(q => q.path.includes('legacy')));
+  check('a MinIO-era row with no bytes anywhere = 404 (not 503 forever, not 500)', r2.status === 404, `status ${r2.status}`);
+  check('...looked up in the caretaker\'s Drive (where an ownerless upload lands), the only other place', drive.requests.some(q => q.sub === caretaker && q.path.includes('legacy')));
+  check('the boot log never mentions a MinIO initialisation', !/MinIO initialization failed|minio/i.test(srvLog), srvLog.match(/.*minio.*/i)?.[0] || '');
 
-  // the store UNREACHABLE (post-teardown MinIO): a retryable 503, never a 500 — the browser retries 503
-  const rDown = await apiH('GET', '/api/media/images/legacy.png', legacyOwner.token);
-  check('MinIO unreachable = 503 (retryable), not a 500', rDown.status === 503 || rDown.status === 404, `status ${rDown.status}`);
+  console.log('\n== POST /api/media/upload with NO MinIO configured: the bytes go to the uploader\'s Drive');
+  const up = async (token, buf, name, type = 'image/png') => {
+    const fd = new FormData();
+    fd.append('bucketType', 'images');
+    fd.append('file', new Blob([buf], { type }), name);
+    const r = await fetch(`${srv.base}/api/media/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+    return { status: r.status, json: await r.json().catch(() => null) };
+  };
+  const u1 = await up(asim.token, PNG, 'cover.png');
+  const upName = u1.json?.filename || '';
+  check('upload = 200 with a media URL', u1.status === 200 && /^\/api\/media\/images\/upload-.*\.png$/.test(u1.json?.url || ''), `status ${u1.status} ${JSON.stringify(u1.json)}`);
+  check('...the response carries no Drive ref, node or path', u1.json && !('drive' in u1.json) && !JSON.stringify(u1.json).includes('story:'));
+  check('...the bytes are in the UPLOADER\'s Drive', drive.objects.get(`story:images:${upName}`)?.bytes.equals(PNG) && drive.objects.get(`story:images:${upName}`)?.path.startsWith(`${asim.sub}/`));
+  const upRow = (await db.query(`SELECT drive_ref, drive_owner, drive_size FROM media_owners WHERE bucket_type = 'images' AND filename = $1`, [upName])).rows[0];
+  check('...and media_owners records the ref + owner + size', upRow?.drive_ref === `story:images:${upName}` && upRow?.drive_owner === asim.sub && Number(upRow?.drive_size) === PNG.length, JSON.stringify(upRow));
+  const back = await fetch(`${srv.base}${u1.json?.url}`, { headers: { Authorization: `Bearer ${asim.token}` } });
+  check('...and reads back byte-for-byte', back.status === 200 && Buffer.from(await back.arrayBuffer()).equals(PNG));
+  drive.mode.failUploads = true;
+  const u2r = await up(asim.token, PNG, 'cover2.png');
+  drive.mode.failUploads = false;
+  check('Drive down during an upload = 503 (retryable), never a 500 and never a half-stored file', u2r.status === 503, `status ${u2r.status}`);
+
+  console.log('\n== a storage-guarded route is no longer gated on MinIO (2.23.76: 503 for the life of the pod)');
+  const vo = await fetch(`${srv.base}/api/voices`, { method: 'POST', headers: { Authorization: `Bearer ${asim.token}` }, body: new FormData() });
+  check('POST /api/voices (one of the formerly MinIO-gated routes) reaches its own validation, not a storage 503', vo.status === 400, `status ${vo.status}`);
 
   console.log('\n== the caretaker case: a migrated object whose owner has no portal_sub still streams (drive_owner is the truth)');
   const { rows: u3 } = await db.query(`INSERT INTO users (email, password_hash, name, tier, portal_sub) VALUES ('unlinked-x@drive.local', 'x', 'u3', 'free', NULL) RETURNING id`);
@@ -332,8 +269,18 @@ async function main() {
   check('the delete answers ok', rd.status === 200, `status ${rd.status}`);
   check('the Drive copy is gone', !drive.objects.has('story:images:deleteme.png'));
   check('the owner row is gone', (await db.query(`SELECT 1 FROM media_owners WHERE filename = 'deleteme.png'`)).rowCount === 0);
+  await db.query(
+    `INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref, drive_node, drive_size, drive_owner)
+     VALUES ('images', 'keepme.png', $1, 'story:images:keepme.png', 'n_keep001', $2, 'u_1111111111111111')`,
+    [asim.id, PNG.length]);
+  drive.objects.set('story:images:keepme.png', { bytes: PNG, contentType: 'image/png', path: 'u_1111111111111111/Covers/keepme.png', node: 'n_keep001' });
+  drive.mode.failDeletes = true;
+  const rdDown = await apiH('DELETE', '/api/media/images/keepme.png', asim.token);
+  drive.mode.failDeletes = false;
+  check('Drive down during a delete = 503 and NOTHING is deleted (the retry redoes it)', rdDown.status === 503 &&
+    drive.objects.has('story:images:keepme.png') && (await db.query(`SELECT 1 FROM media_owners WHERE filename = 'keepme.png'`)).rowCount === 1, `status ${rdDown.status}`);
 
-  console.log('\n== Drive down mid-migration = 503, no silent MinIO fallback');
+  console.log('\n== Drive down = 503 (the browser retries)');
   const { rows: own2 } = await db.query(
     `INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref) VALUES ('images', 'down.png', $1, 'story:images:down.png')`, [asim.id]);
   drive.objects.set('story:images:down.png', { bytes: PNG, contentType: 'image/png', path: 'x', node: 'n_seed0002' });
@@ -341,7 +288,7 @@ async function main() {
   await srv.stop();
   const srvDown = await bootServer('rg_drive', {
     DRIVE_APP_API_URL: failingDrive.url,
-    DRIVE_APP_API_SECRET: 'drive-test-secret-0123456789abcdef0123456789abcdef',
+    DRIVE_APP_API_SECRET: FAKE_DRIVE_SECRET,
     DRIVE_CARETAKER_SUB: caretaker,
   });
   const r4b = await fetch(`${srvDown.base}/api/media/images/down.png`, { headers: { Authorization: `Bearer ${asim.token}` } });
@@ -350,12 +297,16 @@ async function main() {
   failingDrive.close();
 
 
-  console.log('\n== storage off = exactly the old behaviour (no Drive calls at all)');
+  console.log('\n== Drive not configured = media answers 503 (there is no other store), the rest of the app runs');
   const srvOff = await bootServer('rg_drive', { DRIVE_APP_API_SECRET: '' });
   const before = drive.requests.length;
   const r5b = await fetch(`${srvOff.base}/api/media/images/driven.png`, { headers: { Authorization: `Bearer ${asim.token}` } });
-  check('with storage off the read goes to MinIO (absent: 404, NOT a Drive attempt)', r5b.status === 404, `status ${r5b.status}`);
+  check('a read with storage unconfigured = 503 (retryable), not a 500', r5b.status === 503, `status ${r5b.status}`);
+  const vo2 = await fetch(`${srvOff.base}/api/voices`, { method: 'POST', headers: { Authorization: `Bearer ${asim.token}` }, body: new FormData() });
+  check('a storage-guarded route with storage unconfigured = 503 before any work', vo2.status === 503, `status ${vo2.status}`);
   check('no Drive call was made', drive.requests.length === before);
+  const h = await (await fetch(`${srvOff.base}/api/health`)).json();
+  check('health reports the store, and the pod stays healthy', h?.services?.storage?.backend === 'sai-drive' && h?.services?.storage?.status === 'not configured' && !('minio' in (h?.services || {})), JSON.stringify(h?.services?.storage));
   await srvOff.stop();
 
   console.log('\n== driveStorage unit behaviours (the client, for real)');
@@ -364,7 +315,7 @@ async function main() {
   const mod = await import('../services/driveStorage.js');
   const ds = Object.create(Object.getPrototypeOf(mod.driveStorage));
   Object.assign(ds, { client: null, enabled: false, caretaker: caretaker });
-  process.env.DRIVE_APP_API_SECRET = 'drive-test-secret-0123456789abcdef0123456789abcdef';
+  process.env.DRIVE_APP_API_SECRET = FAKE_DRIVE_SECRET;
   process.env.DRIVE_APP_API_URL = drive.url;
   process.env.DRIVE_CARETAKER_SUB = caretaker;
   const c = ds.initialize();

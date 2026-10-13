@@ -88,7 +88,7 @@ export class VideoGenerator {
       fs.writeFileSync(tempPath, videoBuffer);
       console.log(`Video downloaded: ${videoBuffer.length} bytes`);
 
-      // Upload to MinIO
+      // Store in the book owner's SAI Drive
       const filename = `scene-${scene.sceneNumber}-${uuidv4()}.mp4`;
       const uploadResult = await mediaStorage.upload('videos', videoBuffer, filename, {
         'x-amz-meta-type': 'animation-scene',

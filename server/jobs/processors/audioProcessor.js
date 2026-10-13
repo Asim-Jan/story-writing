@@ -20,7 +20,7 @@ export async function processAudioGeneration(job) {
       }),
     });
 
-    // Upload to MinIO with access control mapping (the bridge returns WAV)
+    // Store in the owner's SAI Drive with access control mapping (the bridge returns WAV)
     const filename = `chapter-${chapterId}-${Date.now()}.wav`;
     const uploadResult = await mediaStorage.upload('audio', buffer, filename, {
       bookId,

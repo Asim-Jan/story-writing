@@ -38,7 +38,7 @@ export async function processImageGeneration(job) {
 
     await updateJobStatus(job, { status: 'active', progress: 70, message: 'Uploading image...' });
 
-    // Upload to MinIO with access control mapping
+    // Store in the owner's SAI Drive with access control mapping
     // unguessable, and never overwrites an earlier image of the same item
     const filename = `${imageType}-${uuidv4()}.png`;
     const imageUrl = `/api/media/images/${filename}`;
@@ -87,7 +87,7 @@ export async function processImageGeneration(job) {
         return updates;
       });
     } catch (err) {
-      // The image itself is safe in MinIO; the book-reference update failing
+      // The image itself is safe in Drive; the book-reference update failing
       // must not fail the job — but it must be LOUD.
       console.error('Image generated but book update failed:', err.message);
       await updateJobStatus(job, {

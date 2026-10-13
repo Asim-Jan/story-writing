@@ -6,6 +6,7 @@ import ffmpegPath from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/postgres.js';
 import { mediaStorage } from './mediaStorage.js';
+import { driveStorage } from './driveStorage.js';
 import { recordMediaOwner } from '../utils/mediaMapping.js';
 import { saiSpeech, saiTranscribe, saiVoices, VOICE_MAP } from '../saiClient.js';
 import { chunkText, mergeWav } from '../utils/speech.js';
@@ -125,8 +126,9 @@ export async function createCustomVoice({ userId, name, sample, transcript, cons
     }
   }
   const filename = `voice-sample-${uuidv4()}.wav`;
-  await mediaStorage.upload('audio', wav, filename, { 'x-amz-meta-type': 'voice-sample' });
-  await recordMediaOwner('audio', filename, { ownerId: userId });
+  const stored = await mediaStorage.upload('audio', wav, filename, { 'x-amz-meta-type': 'voice-sample' }, null,
+    { driveUser: (await driveStorage.userFromId(userId)) || { id: userId } });
+  await recordMediaOwner('audio', filename, { ownerId: userId, drive: stored.drive });
   const { rows } = await query(
     `INSERT INTO custom_voices (owner_id, name, sample_filename, transcript, duration_sec, consent_at)
      VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING *`,
@@ -151,7 +153,8 @@ export async function speechOptions(userId, spec) {
   if (s.customVoiceId) {
     const row = await getCustomVoice(userId, s.customVoiceId);
     if (!row) throw Object.assign(new Error('That custom voice no longer exists'), { status: 404 });
-    const sample = await mediaStorage.getFile('audio', row.sample_filename);
+    // a sample is at most ~30 s of mono 24 kHz WAV (~1.5 MB): small enough to hold
+    const sample = await mediaStorage.getFile('audio', row.sample_filename, { maxBytes: 16 * 1024 * 1024 });
     return {
       model: ENGINES.qwen,
       voice: 'Ryan',
@@ -187,8 +190,9 @@ export async function speak(userId, spec, text, { onChunk, speed } = {}) {
 
 export async function storeAudio(userId, bookId, mp3, label) {
   const filename = `${label}-${uuidv4()}.mp3`;
-  await mediaStorage.upload('audio', mp3, filename, { 'x-amz-meta-type': 'audiobook' });
-  await recordMediaOwner('audio', filename, { ownerId: userId, bookId });
+  const stored = await mediaStorage.upload('audio', mp3, filename, { 'x-amz-meta-type': 'audiobook' }, null,
+    { driveUser: (await driveStorage.userFromId(userId)) || { id: userId }, bookId });
+  await recordMediaOwner('audio', filename, { ownerId: userId, bookId, drive: stored.drive });
   return { filename, audioUrl: `/api/media/audio/${filename}` };
 }
 

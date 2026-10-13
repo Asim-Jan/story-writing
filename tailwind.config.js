@@ -52,6 +52,14 @@ export default {
                           700: '120ms', 1000: '120ms' },
     transitionTimingFunction: { DEFAULT: 'cubic-bezier(.4,0,.2,1)' },
     extend: {
+      /* The SAI Cloud switcher bar (/sai-suite.js, 45px, sticky, first child of <body>) sets
+         --sai-suite-h on <html> (0 when it is absent or printing). Every "full screen" utility
+         takes it off, so h-screen / min-h-screen / max-h-screen screens fit UNDER the bar instead
+         of being pushed 45px off the bottom (the editor is a fixed h-screen flex with overflow
+         hidden: its last 45px would be unreachable). */
+      height: { screen: 'calc(100vh - var(--sai-suite-h, 0px))' },
+      minHeight: { screen: 'calc(100vh - var(--sai-suite-h, 0px))' },
+      maxHeight: { screen: 'calc(100vh - var(--sai-suite-h, 0px))' },
       colors: {
         blue, gray, slate: gray, zinc: gray, neutral: gray, stone: gray,
         purple: blue, indigo: blue, violet: blue, fuchsia: blue, pink: blue, rose: oxide,

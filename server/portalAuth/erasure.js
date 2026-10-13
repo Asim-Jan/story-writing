@@ -71,20 +71,35 @@ export function createEraser({ pool, storage, redis, log = console }) {
     }
   }
 
-  /* MinIO: every object the user owns (media_owners is the ONLY ownership record — the objects carry no user
-   * prefix), then the rows. One failed object aborts the whole erase: the caller answers 503 and the portal's
-   * next delivery attempt retries it; removal is idempotent. */
-  async function eraseMediaObjects(userId) {
+  /* Media: every object the user owns (media_owners is the ONLY ownership record — the objects carry no user
+   * prefix), then the rows. The bytes live in SAI Drive (the only media store since 2.23.79; MinIO is retired):
+   *   - a copy held in the person's OWN Drive (drive_owner = their sub, or no drive_owner + a drive_ref: the
+   *     fallback is their portal_sub) is erased by DRIVE's own account lifecycle: Drive receives the same
+   *     account-deleted event, makes the account pending_erase at once (unreachable to everyone, app calls
+   *     answer 403 gone) and deletes the bytes at day 30 (sai-drive/APPS-INTEGRATION.md section 7). It is
+   *     left to that contract and counted (once Drive has the event, a call here would only meet 403 gone);
+   *   - a copy held in ANOTHER account's Drive (the caretaker's, for objects migrated before their owner
+   *     linked) is NOT reached by that erasure: it is removed here (a source file goes to the holder's Bin,
+   *     which Drive empties after 30 days: the same tail as the person's own Drive).
+   * A copy that is already gone counts as removed. A Drive transport problem stops the whole erase: the caller
+   * answers 503 and the portal's next delivery retries it; every step is idempotent. Nothing here can fail
+   * because a retired store (MinIO) no longer resolves: no MinIO call is made at all. */
+  async function eraseMediaObjects(userId, personSub) {
     const { rows } = await pool.query(
-      'SELECT bucket_type, filename FROM media_owners WHERE owner_id = $1 ORDER BY created_at', [userId]);
-    let removed = 0;
+      'SELECT bucket_type, filename, drive_ref, drive_owner FROM media_owners WHERE owner_id = $1 ORDER BY created_at', [userId]);
+    let removed = 0, leftToDrive = 0;
+    const SUB = /^u_[a-f0-9]{16}$/;
     for (const r of rows) {
+      const holder = SUB.test(r.drive_owner || '') ? r.drive_owner : (r.drive_ref ? personSub : null);
+      if (holder && holder === personSub) { leftToDrive++; continue; }
+      if (!storage) throw new Error('eraser: a media object needs the storage to remove it');
       try {
-        await storage.delete(r.bucket_type, r.filename);
+        await storage.delete(r.bucket_type, r.filename, { sub: holder || undefined, permanent: true });
         removed++;
       } catch (e) {
         // an object that is already gone is fine; anything else stops the erase (retry later)
-        if (!/NoSuchKey|not exist|404/i.test(String((e && (e.message || e.code)) || e))) {
+        const code = e && e.code;
+        if (!(code === 'NotFound' || code === 'not_found' || code === 'gone' || /NoSuchKey|not exist|404/i.test(String((e && e.message) || e)))) {
           log.error && log.error('[identity-events] an object could not be removed; the erase will be retried');
           throw e;
         }
@@ -92,7 +107,7 @@ export function createEraser({ pool, storage, redis, log = console }) {
       }
     }
     await pool.query('DELETE FROM media_owners WHERE owner_id = $1', [userId]);
-    return { objects: removed };
+    return { objects: removed, leftToDrive };
   }
 
   /* Redis. The keys a user owns here (dataAdapter.js, jobs/queue.js, services/mediaJobs.js):
@@ -150,11 +165,11 @@ export function createEraser({ pool, storage, redis, log = console }) {
     const user = u.rows[0];
     if (user.status === 'erased') return { done: true, counts: { note: 'already erased' } };
 
-    const media = await eraseMediaObjects(user.id);
+    const media = await eraseMediaObjects(user.id, sub);
     const rd = await eraseRedis(user.id);
     const pg = await eraseUserRows(user.id);
-    log.info && log.info(`[identity-events] erased an account (${media.objects} objects, ${rd.keys} redis keys, ${pg.users_tombstoned} tombstoned, ${pg.money_rows_kept} money rows kept)`);
-    return { done: true, counts: { media: media.objects, redis: rd.keys, pg } };
+    log.info && log.info(`[identity-events] erased an account (${media.objects} objects removed, ${media.leftToDrive} left to Drive's own account erasure, ${rd.keys} redis keys, ${pg.users_tombstoned} tombstoned, ${pg.money_rows_kept} money rows kept)`);
+    return { done: true, counts: { media: media.objects, mediaLeftToDrive: media.leftToDrive, redis: rd.keys, pg } };
   }
 
   return { eraseBySub, USER_TABLES, CASCADE_CHILDREN };

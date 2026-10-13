@@ -372,7 +372,7 @@ const ImportReview = ({ importId, onBack, onOpenBook }) => {
 
   return (
     <div className="min-h-screen bg-[var(--bg)]" data-testid="import-review">
-      <header className="sticky top-0 z-30 bg-[var(--bg2)] border-b border-[var(--line)] px-4 sm:px-6 py-3 flex items-center gap-3">
+      <header className="sticky top-[var(--sai-suite-h,0px)] z-30 bg-[var(--bg2)] border-b border-[var(--line)] px-4 sm:px-6 py-3 flex items-center gap-3">
         <button type="button" onClick={onBack} className="btn ghost sm" title="Back to library (the review is kept)"><ArrowLeft size={16} />Library</button>
         <div className="flex-1 min-w-0">
           <p className="lbl">Review import</p>

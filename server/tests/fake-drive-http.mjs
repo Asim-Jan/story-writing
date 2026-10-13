@@ -1,0 +1,96 @@
+// A FAKE SAI Drive app API over HTTP (just enough /app/v1 for the vendored _drive-client): the
+// server under test is a separate process, so it is pointed here with DRIVE_APP_API_URL.
+// Shared by drive.test.js and regress.test.js (Drive is the only media store since 2.23.79).
+import http from 'http';
+import crypto from 'crypto';
+
+export const FAKE_DRIVE_SECRET = 'drive-test-secret-0123456789abcdef0123456789abcdef';
+
+/* ── the fake Drive app API: just enough /app/v1 for the client ───────────────────────────── */
+
+export function fakeDrive({ failUploads = false, failGets = false, failDeletes = false } = {}) {
+  // mutable: a test can take Drive down (and bring it back) while the server keeps running
+  const mode = { failUploads, failGets, failDeletes };
+  const objects = new Map();   // ref -> { bytes, contentType, path }
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    res.setHeader('connection', 'close');   // never reuse a socket: a half-consumed stream must not leak its bytes into the next response
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      try {
+      const body = Buffer.concat(chunks);
+      const url = new URL(req.url, 'http://x');
+      const p = url.pathname;
+      requests.push({ method: req.method, path: p, sub: req.headers['x-sub'], app: req.headers['x-app-id'], stat: url.searchParams.has('stat'), range: req.headers.range || null });
+      if (req.headers['x-app-id'] !== 'stories' || req.headers['x-app-secret'] !== FAKE_DRIVE_SECRET) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { code: 'forbidden' } }));
+      }
+      if (p === '/app/v1/quota' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ used: 0, quota: 1000, cap: 900 }));
+      }
+      let m = /^\/app\/v1\/projects\/([^/]+)\/by-ref\/(.+)$/.exec(p);
+      if (m && (req.method === 'GET' || req.method === 'HEAD')) {
+        const ref = decodeURIComponent(m[2]);
+        const o = objects.get(ref);
+        if (url.searchParams.get('stat')) {
+          // a stat is a JSON DTO, never the bytes (the real Drive answers the DTO; the client re-stats after a put)
+          if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'not_found' } })); }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ id: o.node, version: 1, size: o.bytes.length, ref, tag: 'source', path: o.path }));
+        }
+        if (mode.failGets) { res.writeHead(503); return res.end(); }
+        if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'not_found' } })); }
+        const range = req.headers.range;
+        let start = 0, end = o.bytes.length - 1, status = 200;
+        if (range) {
+          const mm = /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+          if (mm) {
+            status = 206;
+            if (mm[1] !== '') start = Number(mm[1]);
+            if (mm[2] !== '') end = Number(mm[2]);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${o.bytes.length}`);
+          }
+        }
+        res.writeHead(status, { 'content-type': o.contentType, 'accept-ranges': 'bytes' });
+        return res.end(o.bytes.subarray(start, end + 1));
+      }
+      m = /^\/app\/v1\/projects\/([^/]+)\/files$/.exec(p);
+      if (m && req.method === 'PUT') {
+        if (mode.failUploads) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'unavailable' } })); }
+        const ref = url.searchParams.get('ref');
+        const prior = objects.get(ref);
+        if (prior && prior.bytes.equals(body)) {
+          // the REAL Drive's idempotency: the same ref + the same bytes is a no-op (the same node)
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ id: prior.node, version: 1, size: prior.bytes.length, ref, path: prior.path }));
+        }
+        const node = `n_${crypto.randomBytes(6).toString('hex')}`;
+        const rec = { bytes: body, contentType: req.headers['content-type'] || 'application/octet-stream', path: url.searchParams.get('path'), node };
+        objects.set(ref, rec);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ id: node, version: 1, size: body.length, ref, path: rec.path }));
+      }
+      m = /^\/app\/v1\/projects\/([^/]+)\/files\/([^/]+)$/.exec(p);
+      if (m && req.method === 'DELETE') {
+        if (mode.failDeletes) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 'unavailable' } })); }
+        for (const [ref, o] of objects) if (o.node === decodeURIComponent(m[2])) { objects.delete(ref); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, mode: 'bin' })); }
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { code: 'not_found' } }));
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'not_found' } }));
+      } catch (e) { console.log(`    [fake-drive] HANDLER ERROR: ${e.stack || e.message}`); try { res.destroy(); } catch {} }
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
+    url: `http://127.0.0.1:${server.address().port}`,
+    objects,
+    requests,
+    mode,
+    close: () => new Promise((r) => server.close(r)),
+  })));
+}
+

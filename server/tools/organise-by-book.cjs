@@ -4,13 +4,12 @@
  * Asim's call (2026-10-11): a book's files live in "<safe title> (<id8>)/<Folder>/<file>" so a whole
  * book is one grab; the readable name + the short id are both stable-enough (a title rename is just a
  * move — the ref, not the path, is the address). The 13 bookless objects (standalone generations) are
- * DELETED on his explicit say-so (Drive copy to the Bin, MinIO copy removed, the row forgotten).
+ * DELETED on his explicit say-so (Drive copy to the Bin, the row forgotten; MinIO is retired since 2.23.79).
  *
  *   DRY RUN (default):  counts + the per-book breakdown, no Drive call, no delete.
  *   --apply             per book-bound row: stat by ref -> PATCH parentPath to the book folder
  *                       (intermediates auto-create; a node already in place is left alone).
- *                       Per bookless row: remove the Drive copy (to the Bin), delete the MinIO
- *                       object, forget the row.
+ *                       Per bookless row: remove the Drive copy (to the Bin), forget the row.
  *   A Drive-wide problem stops the run (exit 2, nothing lost, resumable).
  *
  * Run in the backend pod:
@@ -55,7 +54,6 @@ async function main() {
         const owner = r.drive_owner || caretaker;
         const st = await driveStorage.statFor(owner, r.bucket_type, r.filename);
         if (st) await driveStorage.client.forUser(owner).remove('story-writing', st.id, { bin: true });
-        await mediaStorage.delete(r.bucket_type, r.filename).catch(() => {});
         await getPool().query(`DELETE FROM media_owners WHERE bucket_type = $1 AND filename = $2`, [r.bucket_type, r.filename]);
         counts.deleted++;
       } catch (e) {

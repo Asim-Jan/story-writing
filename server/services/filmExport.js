@@ -41,7 +41,7 @@ async function convert({ user, bookId, filename, format }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'film-export-'));
   try {
     const src = path.join(dir, 'film.mp4');
-    fs.writeFileSync(src, await mediaStorage.getFile('videos', filename));
+    await mediaStorage.downloadTo('videos', filename, src); // streamed from Drive to disk, never held in memory
     const out = path.join(dir, `out${spec.ext}`);
     if (format === 'whatsapp') {
       await run(['-threads', '2', '-i', src, '-vf', "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(iw,ih),-2,min(720,ih))'",
@@ -52,8 +52,8 @@ async function convert({ user, bookId, filename, format }) {
     }
     const buffer = fs.readFileSync(out);
     const name = `film-${format}-${uuidv4()}${spec.ext}`;
-    await mediaStorage.upload(spec.bucket, buffer, name, { 'x-amz-meta-type': `film-export-${format}` });
-    await recordMediaOwner(spec.bucket, name, { ownerId: user.id || user.userId, bookId });
+    const stored = await mediaStorage.upload(spec.bucket, buffer, name, { 'x-amz-meta-type': `film-export-${format}` }, null, { driveUser: user, bookId });
+    await recordMediaOwner(spec.bucket, name, { ownerId: user.id || user.userId, bookId, drive: stored.drive });
     return { format, url: `/api/media/${spec.bucket}/${name}`, filename: name, size: buffer.length };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

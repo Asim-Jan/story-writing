@@ -821,7 +821,7 @@ const AnimationStudioTab = ({ data, bookId, setData, saveBook }) => {
           <li>• <strong>Native Audio:</strong> clips come with generated sound</li>
           <li>• <strong>Professional Assembly:</strong> FFmpeg stitches scenes into complete films</li>
           <li>• <strong>Smooth joins:</strong> each scene begins with a continue, cut, dissolve or fade, and the sound is evened out and blended at every change</li>
-          <li>• <strong>Cloud Storage:</strong> All videos stored in MinIO, accessible from any device</li>
+          <li>• <strong>Cloud Storage:</strong> All videos are stored in your SAI Drive, accessible from any device</li>
         </ul>
       </div>
     </div>
