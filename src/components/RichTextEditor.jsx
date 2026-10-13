@@ -388,7 +388,7 @@ export default function RichTextEditor({
   };
 
   return (
-    <div className={`${focusMode ? 'fixed inset-0 z-50 bg-white dark:bg-gray-900' : ''} ${className}`}>
+    <div className={`${focusMode ? 'fixed inset-x-0 bottom-0 top-[var(--sai-suite-h,0px)] z-50 bg-white dark:bg-gray-900' : ''} ${className}`}>
       <LexicalComposer initialConfig={initialConfig}>
         <div className="relative flex flex-col border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden bg-white dark:bg-gray-900 shadow-sm">
           <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">

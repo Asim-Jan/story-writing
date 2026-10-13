@@ -251,7 +251,7 @@ const WorldMapBuilder = ({ locations, onUpdateLocations, bookId }) => {
   };
 
   return (
-    <div className="flex h-[calc(100vh-300px)] gap-4">
+    <div className="flex h-[calc(100vh_-_300px_-_var(--sai-suite-h,_0px))] gap-4">
       {/* Toolbar */}
       <div className="w-64 bg-white border border-gray-200 rounded-lg p-4 space-y-4">
         <h3 className="font-semibold text-lg mb-4">World Map Tools</h3>

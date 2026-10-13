@@ -1,7 +1,7 @@
 /**
  * Media ownership
  *
- * Who may read or delete an object in MinIO. Durable, in Postgres (`media_owners`), and checked
+ * Who may read or delete a stored media object (the bytes live in the owner's SAI Drive). Durable, in Postgres (`media_owners`), and checked
  * FAIL-CLOSED: an object with no owner row is readable only by a user whose own book references it
  * (the row is then backfilled), or by an admin.
  *

@@ -334,3 +334,36 @@ test('disabled then enabled: sign-in blocks, sessions die, an erased account is 
   const { rows: [u5] } = await pool.query(`SELECT status, portal_sub FROM users WHERE id = $1`, [A.user.id]);
   assert.equal(u5.status, 'erased', 'an enabled event must not resurrect an erased account');
 });
+
+test('erasure with NO MinIO (2.23.79, SAI Drive only): the REAL MediaStorage over a fake Drive — own-Drive copies are left to Drive\'s account erasure, caretaker-held copies removed, the erase completes', { skip }, async () => {
+  await seed();
+  for (const k of Object.keys(process.env)) if (/^MINIO_/.test(k)) delete process.env[k];
+  const { createRequire } = await import('module');
+  const { createFakeDrive } = createRequire(import.meta.url)('../../vendor/drive-client/fake.cjs');
+  const { MediaStorage } = await import('../../services/mediaStorage.js');
+  const { driveStorage } = await import('../../services/driveStorage.js');
+  const { createEraser } = await import('../erasure.js');
+  const CARETAKER = 'u_f37d34dea1d20271';
+  const fake = createFakeDrive({ apps: { version: 1, apps: [{ id: 'stories', name: 'Stories', projects: ['story-writing'], secretEnv: 'APPS_SECRET_STORIES', trusted: true, capBytes: 1 << 24, maxFileBytes: 1 << 22, allowTags: ['final', 'intermediate', 'source'] }] } });
+  const ds = Object.create(Object.getPrototypeOf(driveStorage));
+  Object.assign(ds, { client: fake.client({ appId: 'stories' }), enabled: true, caretaker: CARETAKER });
+  const media = new MediaStorage({ drive: ds, deps: { ownerSubOf: async () => null } });
+  // A: one copy in A's OWN Drive, one migrated copy held by the caretaker; B: a copy in B's Drive (must survive)
+  await ds.put('images', Buffer.from('a-own'), 'a-own.png', { portal_sub: A.key });
+  await ds.put('videos', Buffer.from('a-migrated'), 'a-migrated.mp4', null);
+  await ds.put('images', Buffer.from('b-own'), 'b-own.png', { portal_sub: B.key });
+  const row = (bt, fn, owner, ref, holder) => pool.query(
+    `INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref, drive_owner) VALUES ($1, $2, $3, $4, $5)`, [bt, fn, owner, ref, holder]);
+  await row('images', 'a-own.png', A.user.id, 'story:images:a-own.png', A.key);
+  await row('videos', 'a-migrated.mp4', A.user.id, 'story:videos:a-migrated.mp4', CARETAKER);
+  await row('images', 'b-own.png', B.user.id, 'story:images:b-own.png', B.key);
+  const logs = [];
+  const r = await createEraser({ pool, storage: media, redis: null, log: { info: (m) => logs.push(m), error: (m) => logs.push(m) } }).eraseBySub(A.key);
+  assert.equal(r.done, true, 'the erase completes with no MinIO anywhere');
+  assert.equal(r.counts.mediaLeftToDrive, 1, "A's own Drive copy is Drive's to erase (pending_erase, then day 30)");
+  assert.equal(await ds.statFor(CARETAKER, 'videos', 'a-migrated.mp4'), null, "the caretaker-held copy of A's film is removed");
+  assert.ok(await ds.statFor(B.key, 'images', 'b-own.png'), "B's copy is untouched");
+  const { rows } = await pool.query(`SELECT owner_id FROM media_owners`);
+  assert.ok(rows.length >= 2 && rows.every(x => x.owner_id === B.user.id), "only B's rows remain");
+  assert.ok(!logs.some(l => /a-own|a-migrated/.test(l)), 'no file name is logged');
+});

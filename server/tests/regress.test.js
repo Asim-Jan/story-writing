@@ -23,6 +23,7 @@ import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import { createClient } from 'redis';
 import { accountKey } from '../portalAuth/loginBudget.js';
+import { fakeDrive, FAKE_DRIVE_SECRET } from './fake-drive-http.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.join(__dirname, '..');
@@ -38,6 +39,11 @@ const REDIS = { host: process.env.REDIS_HOST, port: Number(process.env.REDIS_POR
 
 // the data-layer mode prod runs (manifests configmap): Postgres only
 Object.assign(process.env, { USE_POSTGRES: 'true', READ_FROM_POSTGRES: 'true', DUAL_WRITE: 'false' });
+// Media lives in SAI Drive only (2.23.79): a FAKE Drive app API (fake-drive-http.mjs) is the store.
+// No MinIO is configured or reachable anywhere in this suite — the server must not need one.
+for (const k of Object.keys(process.env)) if (/^(MINIO_|AWS_S3_|REGRESS_MINIO_)/.test(k)) delete process.env[k];
+const DRIVE_CARETAKER = 'u_f37d34dea1d20271';
+let DRIVE = null;   // the fake Drive, started by the runner
 
 if (!['127.0.0.1', 'localhost'].includes(PG.host) || !['127.0.0.1', 'localhost'].includes(REDIS.host)) {
   console.error('Refusing to run: POSTGRES_HOST and REDIS_HOST must be localhost (this suite drops databases and flushes Redis).');
@@ -321,11 +327,7 @@ async function bootServer(database, extraEnv = {}) {
     REDIS_HOST: REDIS.host,
     REDIS_PORT: String(REDIS.port),
     REDIS_PASSWORD: '',
-    MINIO_ENDPOINT: '127.0.0.1',
-    MINIO_PORT: process.env.REGRESS_MINIO_PORT || '1',
-    MINIO_ACCESS_KEY: process.env.REGRESS_MINIO_USER || 'unused',
-    MINIO_SECRET_KEY: process.env.REGRESS_MINIO_PASSWORD || 'unused',
-    MINIO_USE_SSL: 'false',
+    ...(DRIVE ? { DRIVE_APP_API_URL: DRIVE.url, DRIVE_APP_API_SECRET: FAKE_DRIVE_SECRET, DRIVE_CARETAKER_SUB: DRIVE_CARETAKER } : {}),
     ...extraEnv,
   };
   const child = spawn(process.execPath, ['index.js'], { cwd: SERVER_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1027,11 +1029,10 @@ async function mainSuite(gateway) {
 
 // ─── media wiring: images, character references, speech ─────────────────
 async function mediaChecks({ call, db, gateway, owner, editor, stranger, book }) {
-  console.log('\n== media wiring');
-  if (!process.env.REGRESS_MINIO_PORT) {
-    console.log('  (skipped: set REGRESS_MINIO_PORT/USER/PASSWORD to a throwaway MinIO)');
-    return;
-  }
+  console.log('\n== media wiring (bytes in the fake SAI Drive; no MinIO exists)');
+  // did the server READ this object's bytes from Drive (a by-ref GET, not a stat)?
+  const readFromDrive = (bucketType, filename, since = 0) => !!filename && DRIVE.requests.slice(since).some(q =>
+    q.method === 'GET' && !q.stat && decodeURIComponent(q.path).endsWith(`/by-ref/story:${bucketType}:${filename}`));
   const imageCalls = () => gateway.requests.filter(q => q.path.endsWith('/images/generations'));
   const usedQuota = async () => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [owner.id])).rows[0].ai_requests_today;
   const character = { id: 'c1', name: 'Mira', gender: 'woman', age: 30, hairColor: 'copper', eyeColor: 'grey', build: 'wiry' };
@@ -1056,6 +1057,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   check('reference-prompt: unknown kind = 400', r.status === 400);
 
   // turnaround with no portrait: a portrait first, then the sheet as an EDIT of it
+  const driveMarkRef = DRIVE.requests.length;
   const before = imageCalls().length;
   const q0 = await usedQuota();
   r = await refJob(owner.token, { bookId: book.id, kind: 'turnaround', character });
@@ -1065,6 +1067,12 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   check('...the portrait is text-to-image (qwen-image-2.1 on Premium, no input image)', made[0]?.body?.model === 'qwen-image-2.1' && !made[0]?.body?.image);
   check('...the sheet is character-sheet WITH the portrait as a data URL, at 1536x1024',
     made[1]?.body?.model === 'character-sheet' && /^data:image\/png;base64,/.test(made[1]?.body?.image || '') && made[1]?.body?.size === '1536x1024');
+  {
+    const portraitFile = (r.json?.portrait?.imageUrl || '').split('/').pop();
+    check('read site characterReferences: the portrait the sheet edits was READ FROM DRIVE (no MinIO exists)', readFromDrive('images', portraitFile, driveMarkRef), portraitFile);
+    const row = (await db.query('SELECT drive_ref, drive_owner FROM media_owners WHERE bucket_type = $1 AND filename = $2', ['images', portraitFile])).rows[0];
+    check('...and the stored portrait carries its drive_ref (recorded by the upload itself)', row?.drive_ref === `story:images:${portraitFile}`, JSON.stringify(row));
+  }
   await new Promise(res => setTimeout(res, 300));
   check('...one request = one quota slot', (await usedQuota()) === q0 + 1, `${q0} -> ${await usedQuota()}`);
   const refUrl = r.json?.reference?.imageUrl;
@@ -1387,6 +1395,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     // scene 2 continues scene 1's KEPT take: scene 1 is not rendered again, scene 2 starts from its last frame
     const take1 = tk?.result?.takes?.[0] || {};
     mark = gateway.requests.length;
+    const driveMarkTake = DRIVE.requests.length;
     r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't3' }, params: { scenes: [
       { ...sbScenes[0], reuseTake: { filename: take1.filename, videoUrl: take1.videoUrl, keyframeUrl: take1.keyframeUrl } },
       { ...sbScenes[1], still: sb?.result?.stills?.[1]?.url }], options: { style: 'animated', takesOnly: true } } });
@@ -1397,6 +1406,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       tk2Calls.filter(q => q.path.endsWith('/video/generations')).length === 1 && !tk2Calls.some(q => q.path.endsWith('/images/generations')) &&
       /^\/api\/media\/images\/keyframe-/.test(tk2.result.takes[0].keyframeUrl || '') && tk2.result.takes[0].keyframeUrl !== sb?.result?.stills?.[1]?.url,
       `${tk2?.status} ${tk2?.error || ''} ${JSON.stringify(tk2?.result).slice(0, 300)}`);
+    check('read site filmDirector: the kept take was READ FROM DRIVE for its last frame', readFromDrive('videos', take1.filename, driveMarkTake), take1.filename);
     await call('POST', `${jobsUrl}/${tk2?.jobId}/ack`, editor.token);
     r = await call('POST', jobsUrl, editor.token, { type: 'animation', target: { type: 'animation', id: 't3' }, params: { scenes: [
       { ...sbScenes[0], reuseTake: { filename: 'scene-1-not-yours.mp4' } }, sbScenes[1]], options: { takesOnly: true } } });
@@ -1474,6 +1484,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       `${mu?.status} ${mu?.error || ''} ${JSON.stringify(mu?.result)}`);
     await call('POST', `${jobsUrl}/${mu?.jobId}/ack`, editor.token);
 
+    const driveMarkJoin = DRIVE.requests.length;
     const sound = { voiceover: { filename: voFile?.filename, volume: 1, offset: 0.3 }, music: { filename: mu?.result?.music?.filename, volume: 0.8 } };
     r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { title: 'With sound', scenes: [
       { sceneNumber: 1, filename: take1.filename, clipVolume: 0 }, { sceneNumber: 2, filename: take2.filename, transition: 'dissolve', clipVolume: 1.2 }], sound } } });
@@ -1492,6 +1503,13 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       sc?.status === 'done' && scp?.finalVideo?.sound?.voiceover === true && scp.finalVideo.sound.music === true && scp.sound?.music?.volume === 0.8 &&
       scp.scenes[0].clipVolume === 0 && scp.scenes[1].clipVolume === 1.2 && scLevel > -40,
       `${sc?.status} ${sc?.error || ''} sound ${JSON.stringify(scp?.finalVideo?.sound)} level ${scLevel}`);
+    check('read site videoAssembler: both clips, the voice-over AND the music were READ FROM DRIVE (streamed to disk)',
+      readFromDrive('videos', take1.filename, driveMarkJoin) && readFromDrive('videos', take2.filename, driveMarkJoin) &&
+      readFromDrive('audio', voFile?.filename, driveMarkJoin) && readFromDrive('audio', mu?.result?.music?.filename, driveMarkJoin));
+    {
+      const row = scp?.finalVideo?.filename ? (await db.query('SELECT drive_ref FROM media_owners WHERE bucket_type = $1 AND filename = $2', ['videos', scp.finalVideo.filename])).rows[0] : null;
+      check('...the stitched film is in Drive WITH an owner row + drive_ref (2.23.76 left joined films with none)', row?.drive_ref === `story:videos:${scp?.finalVideo?.filename}`, JSON.stringify(row));
+    }
     await call('POST', `${jobsUrl}/${sc?.jobId}/ack`, editor.token);
     r = await call('POST', jobsUrl, editor.token, { type: 'film-join', target: { type: 'animation', id: 't3' }, params: { cut: { scenes: [{ filename: take1.filename }], sound: { music: { filename: 'upload-not-yours.mp3' } } } } });
     check('cut with sound: music that is not the user\'s = 404', r.status === 404, `status ${r.status}`);
@@ -1545,6 +1563,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
 
     await db.query('UPDATE books SET animation_projects = $2 WHERE id = $1', [book.id, JSON.stringify([cp])]);
     const eq4 = await editorQuota();
+    const driveMarkExport = DRIVE.requests.length;
     const exports = {};
     for (const format of ['whatsapp', 'gif']) {
       r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: cp?.id, format } });
@@ -1559,6 +1578,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       exports.gif?.status === 'done' && /^\/api\/media\/images\/film-gif-.*\.gif$/.test(gif?.url || '') && gifRes?.status === 200 &&
       /image\/gif/.test(gifRes.headers.get('content-type') || '') && (await editorQuota()) === eq4,
       `${exports.whatsapp?.status} ${exports.whatsapp?.error || ''} ${JSON.stringify(wa)} | ${exports.gif?.status} ${exports.gif?.error || ''} ${gifRes?.status} ${gifRes?.headers.get('content-type')}`);
+    check('read site filmExport: the saved film was READ FROM DRIVE for both formats', readFromDrive('videos', cp?.finalVideo?.filename, driveMarkExport), cp?.finalVideo?.filename);
     // a film cut a moment ago (not saved in the book yet) exports by its file
     r = await call('POST', jobsUrl, editor.token, { type: 'film-export', target: { type: 'animation', id: 't3' }, params: { projectId: 'anim-unsaved', filename: trimmed?.result?.project?.finalVideo?.filename, format: 'gif' } });
     const unsaved = await waitJob(editor.token, r.json?.job?.jobId);
@@ -1633,6 +1653,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
     const other = await fetch(`${call.base}${voice?.sampleUrl}`, { headers: { Authorization: `Bearer ${stranger.token}` } });
     check('custom voice: the sample is private', other.status === 404);
 
+    const driveMarkVoice = DRIVE.requests.length;
     const before = gateway.requests.length;
     const pv = await fetch(`${call.base}/api/audiobook/preview`, { method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ voice: { engine: 'qwen', customVoiceId: voice?.id } }) });
     const pvSpeech = gateway.requests.slice(before).find(q => q.path.endsWith('/audio/speech'));
@@ -1640,6 +1661,7 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
       pv.status === 200 && pv.headers.get('content-type') === 'audio/mpeg' && pvSpeech?.body?.model === 'qwen3-tts' &&
       /^data:audio\/wav;base64,/.test(pvSpeech?.body?.ref_audio || '') && pvSpeech?.body?.ref_text === 'hello from the sample',
       `status ${pv.status} model ${pvSpeech?.body?.model}`);
+    check('read site voices: the cloned voice\'s sample was READ FROM DRIVE', readFromDrive('audio', (voice?.sampleUrl || '').split('/').pop(), driveMarkVoice));
     const strangerPv = await fetch(`${call.base}/api/audiobook/preview`, { method: 'POST', headers: { Authorization: `Bearer ${stranger.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ voice: { engine: 'qwen', customVoiceId: voice?.id } }) });
     check('another user cannot speak with someone else\'s cloned voice', strangerPv.status === 404, `got ${strangerPv.status}`);
 
@@ -2242,6 +2264,7 @@ async function failingMigrationSuite() {
   await redis.flushDb();
   await redis.quit();
   const gateway = await fakeGateway();
+  DRIVE = await fakeDrive();
   try {
     await mainSuite(gateway);
     await prodShapedSuite();
@@ -2251,6 +2274,7 @@ async function failingMigrationSuite() {
     console.error(err);
   } finally {
     gateway.close();
+    await DRIVE.close();
     for (const d of ['rg_main', 'rg_prod', 'rg_fail']) await admin(`DROP DATABASE IF EXISTS ${d} WITH (FORCE)`).catch(() => {});
   }
   console.log(`\n${pass} passed, ${failures.length} failed`);

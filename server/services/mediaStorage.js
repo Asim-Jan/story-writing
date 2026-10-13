@@ -1,498 +1,252 @@
-import * as Minio from 'minio';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { pipeline } from 'stream/promises';
 import { driveStorage } from './driveStorage.js';
 
 dotenv.config();
 
 /**
- * Media Storage Service - Supports both AWS S3 and MinIO
- * Provides centralized, cross-device media storage
+ * Media Storage: the person's SAI Drive is the ONLY store (MinIO retired in 2.23.79).
+ *
+ * Until 2.23.76 this class spoke MinIO (or S3) and Drive was layered on top. The migration is
+ * finished (every media_owners row with bytes carries a drive_ref, MinIO's buckets are empty and
+ * its StatefulSet is at 0), so MinIO and S3 are gone from the code: no client, no bucket check at
+ * boot, no MINIO_* requirement. Every byte goes through driveStorage (the app API client the app
+ * already used for its Drive-first uploads).
+ *
+ *   upload()      put into the owner's Drive and record media_owners.drive_ref (+ node, size, owner)
+ *   open()        the Drive read for the HTTP route (Range pass-through, content type, status)
+ *   getStream()   a Node Readable of the whole object (never buffered here)
+ *   downloadTo()  stream an object to a local file (films, clips, music: never held in memory)
+ *   getFile()     a Buffer, for SMALL objects only (a reference image, a voice sample), size-capped
+ *   delete()      the Drive copy (to the holder's Bin; the erasure flow passes the holder it resolved)
+ *
+ * Whose Drive holds an object: media_owners.drive_owner, else the uploader's portal_sub (driveSubOf),
+ * else the CARETAKER (DRIVE_CARETAKER_SUB: where an ownerless upload lands, driveStorage.subOf).
+ * The ref (story:<bucketType>:<filename>) is the address; the browser never sees a Drive id or path.
+ *
+ * Errors carry `code` and `status`: NotFound/404 (no copy anywhere), storage_unavailable/503 (Drive
+ * down or not configured: retry), infected/451 (the scanner flagged it), quota/413 (Drive refused the
+ * size). Never a MinIO error, never ENOTFOUND for a host that no longer exists.
  */
-/* Object metadata travels as HTTP headers (x-amz-meta-*), which must be ASCII with no newlines.
-   Callers pass user prompts and model-written titles, so a newline, an em-dash or an undefined
-   value threw ERR_INVALID_CHAR / ERR_HTTP_INVALID_HEADER_VALUE after a paid generation had already
-   run. Keep plain keys, drop empties, percent-encode values, cap the length. */
-function safeMetadata(metadata = {}) {
-  const out = {};
-  for (const [k, v] of Object.entries(metadata || {})) {
-    if (v === undefined || v === null || typeof v === 'object') continue;
-    const key = String(k).replace(/[^A-Za-z0-9-]/g, '');
-    if (!key || /^content-type$/i.test(key)) continue;
-    out[key] = encodeURIComponent(String(v)).slice(0, 512);
-  }
-  return out;
+
+export const BUCKET_TYPES = ['images', 'audio', 'comics', 'videos'];
+
+const CONTENT_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+};
+export const contentTypeOf = (filename) => CONTENT_TYPES[path.extname(String(filename)).toLowerCase()] || 'application/octet-stream';
+
+const TOO_BIG = new Set(['quota', 'app_cap', 'file_too_large']);
+
+/** A storage error the routes can map without knowing Drive: { code, status, retryable }. */
+export function storageError(message, { code = 'storage_unavailable', status = 503, cause } = {}) {
+  return Object.assign(new Error(message), { code, status, retryable: status === 503, ...(cause ? { cause } : {}) });
 }
 
-export class MediaStorage {
-  constructor() {
-    // Determine storage backend based on environment variables
-    this.useS3 = !!process.env.AWS_S3_BUCKET;
+/* A Drive client error -> a storage error (NotFound / infected / too big / unavailable). */
+function fromDrive(error, what) {
+  if (error && error.status && ['NotFound', 'infected', 'quota', 'storage_unavailable', 'too_large'].includes(error.code)) return error;
+  const c = error && error.code;
+  if (c === 'not_found') return storageError(`${what}: not found`, { code: 'NotFound', status: 404, cause: error });
+  if (c === 'infected') return storageError(`${what}: failed the malware scan`, { code: 'infected', status: 451, cause: error });
+  if (TOO_BIG.has(c)) return storageError(`${what}: the store refused the size (${c})`, { code: 'quota', status: 413, cause: error });
+  return storageError(`${what}: storage temporarily unavailable (${c || (error && error.message) || 'error'})`, { cause: error });
+}
 
-    if (this.useS3) {
-      // AWS S3 Configuration
-      this.s3Client = new S3Client({
-        region: process.env.AWS_REGION || 'us-east-1',
-        credentials: process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY ? {
-          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        } : undefined, // Use IAM role if credentials not provided
-      });
+const isUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
-      // Single bucket with prefixes for different media types
-      this.s3Bucket = process.env.AWS_S3_BUCKET;
-      this.buckets = {
-        images: 'images',    // These become prefixes in S3
-        audio: 'audio',
-        comics: 'comics',
-        videos: 'videos',
-      };
-    } else {
-      // MinIO Configuration. Production must name its own credentials: the built-in development pair is public knowledge
-      // (it is what a stock MinIO ships with), so it is used only when NODE_ENV is not "production".
-      const isProd = process.env.NODE_ENV === 'production';
-      if (isProd && (!process.env.MINIO_ACCESS_KEY || !process.env.MINIO_SECRET_KEY)) {
-        throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set in production (or set AWS_S3_BUCKET to use S3)');
-      }
-      this.client = new Minio.Client({
-        endPoint: process.env.MINIO_ENDPOINT || 'localhost',
-        port: parseInt(process.env.MINIO_PORT) || 9000,
-        useSSL: process.env.MINIO_USE_SSL === 'true',
-        accessKey: process.env.MINIO_ACCESS_KEY || (isProd ? '' : 'minioadmin'),
-        secretKey: process.env.MINIO_SECRET_KEY || (isProd ? '' : 'minioadmin123'),
-      });
-
-      this.buckets = {
-        images: process.env.MINIO_BUCKET_IMAGES || 'book-images',
-        audio: process.env.MINIO_BUCKET_AUDIO || 'book-audio',
-        comics: process.env.MINIO_BUCKET_COMICS || 'book-comics',
-        videos: process.env.MINIO_BUCKET_VIDEOS || 'book-videos',
-      };
-    }
-
-    this.initialized = false;
-  }
-
-  /**
-   * Initialize buckets (create if they don't exist)
-   */
-  async initialize() {
-    if (this.initialized) return;
-
+/* The database-backed lookups, loaded lazily so a unit test (or a tool) can inject its own. */
+const defaultDeps = {
+  async ownerSubOf(bucketType, filename) {
+    const { driveSubOf } = await import('../utils/mediaMapping.js');
+    return driveSubOf(bucketType, filename);
+  },
+  async recordOwner(bucketType, filename, rec) {
+    const { recordMediaOwner } = await import('../utils/mediaMapping.js');
+    return recordMediaOwner(bucketType, filename, rec);
+  },
+  async bookOf(bookId) {
+    if (!isUuid(bookId)) return null;
     try {
-      if (this.useS3) {
-        // For S3, assume bucket already exists and has proper permissions
-        // Buckets should be created via Terraform/CloudFormation/AWS Console
-        console.log(`✓ Using AWS S3 bucket: ${this.s3Bucket}`);
-        this.initialized = true;
-      } else {
-        // MinIO bucket creation
-        for (const [key, bucketName] of Object.entries(this.buckets)) {
-          const exists = await this.client.bucketExists(bucketName);
-          if (!exists) {
-            await this.client.makeBucket(bucketName, 'us-east-1');
-            console.log(`✓ Created MinIO bucket: ${bucketName}`);
-
-            // Set public read policy for easier access
-            const policy = {
-              Version: '2012-10-17',
-              Statement: [
-                {
-                  Effect: 'Allow',
-                  Principal: { AWS: ['*'] },
-                  Action: ['s3:GetObject'],
-                  Resource: [`arn:aws:s3:::${bucketName}/*`],
-                },
-              ],
-            };
-            await this.client.setBucketPolicy(bucketName, JSON.stringify(policy));
-          } else {
-            console.log(`✓ MinIO bucket exists: ${bucketName}`);
-          }
-        }
-
-        this.initialized = true;
-        console.log('✓ MinIO initialized successfully');
-      }
-    } catch (error) {
-      console.error('Storage initialization error:', error);
-      throw error;
+      const { getPool } = await import('../db/postgres.js');
+      const r = await getPool().query('SELECT id, title FROM books WHERE id = $1', [bookId]);
+      return r.rows[0] || null;
+    } catch (e) {
+      console.warn('[media] book lookup failed:', e.message);
+      return null;
     }
+  },
+};
+
+export class MediaStorage {
+  /** No configuration is required to construct (the Drive client is built on first use). */
+  constructor({ drive = driveStorage, deps = {} } = {}) {
+    this.drive = drive;
+    this.deps = { ...defaultDeps, ...deps };
+    // Kept for callers that index by bucket type: the "bucket" is the bucket type now (Drive has no buckets).
+    this.buckets = Object.fromEntries(BUCKET_TYPES.map(t => [t, t]));
+  }
+
+  /** Drive storage is configured (DRIVE_APP_API_SECRET set, STORY_DRIVE not "0"). */
+  get driveEnabled() {
+    return this.drive.initialize() !== null && !!this.drive.enabled;
+  }
+
+  /** Nothing to create at boot (kept so an older caller keeps working). Never touches the network. */
+  async initialize() {}
+
+  _type(bucketType) {
+    if (!BUCKET_TYPES.includes(bucketType)) throw storageError(`Invalid bucket type: ${bucketType}`, { code: 'bad_request', status: 400 });
   }
 
   /**
-   * Upload file buffer to storage (S3 or MinIO)
-   * @param {string} bucketType - Bucket type ('images', 'audio', 'comics', 'videos')
-   * @param {Buffer} buffer - File buffer
-   * @param {string} filename - File name
-   * @param {Object} metadata - Optional metadata (should include bookId for access control)
-   * @param {Function} setMapping - Optional callback to store media-to-book mapping for access control
-   * @param {Object} opts - Optional extras. opts.driveUser: the uploader's user row (needs
-   *   portal_sub) — when set and Drive storage is on, the bytes ALSO go into that person's
-   *   SAI Drive (STORIES-ON-DRIVE) and the result carries `drive` for recordMediaOwner.
-   * @returns {Promise<Object>} Upload result with storageKey and url
+   * Store a buffer in the owner's SAI Drive.
+   * @param {string} bucketType  'images' | 'audio' | 'comics' | 'videos'
+   * @param {Buffer} buffer
+   * @param {string} filename    the server-chosen name (the ref is story:<bucketType>:<filename>)
+   * @param {Object} metadata    legacy object metadata; only metadata.bookId is still read
+   * @param {Function} setMapping legacy owner callback, used only when the owner cannot be resolved
+   * @param {Object} opts        { driveUser (a user row with portal_sub: the OWNER), bookId, driveBook }
+   *   No driveUser: the book's owner when a bookId is known, else the caretaker's Drive.
+   * The media_owners row (owner + drive_ref) is recorded HERE whenever the owner is known, so a
+   * caller that forgets to record the ref can never leave an unreadable object behind.
+   * Throws a storage error (503 retryable, 413 too big); there is no other store to fall back to.
    */
   async upload(bucketType, buffer, filename, metadata = {}, setMapping = null, opts = {}) {
-    await this.initialize();
-
-    const bucket = this.buckets[bucketType];
-    if (!bucket) {
-      throw new Error(`Invalid bucket type: ${bucketType}`);
+    this._type(bucketType);
+    if (!this.driveEnabled) throw storageError('Failed to upload to storage: media storage (SAI Drive) is not configured');
+    const contentType = contentTypeOf(filename);
+    const bookId = opts.bookId || (metadata && metadata.bookId) || null;
+    const book = opts.driveBook || (bookId ? await this.deps.bookOf(bookId) : null);
+    let owner = opts.driveUser || (bookId && this.drive.ownerOfBook ? await this.drive.ownerOfBook(bookId) : null);
+    // a caller that knows only the user's id (an API-key request: { userId }) still writes into THAT
+    // person's Drive, not the caretaker's: the row carries the portal_sub
+    if (owner && !owner.portal_sub && !owner.sub && (owner.id || owner.userId) && this.drive.userFromId) {
+      owner = (await this.drive.userFromId(owner.id || owner.userId)) || owner;
     }
 
-    // Determine content type
-    const ext = path.extname(filename).toLowerCase();
-    const contentTypeMap = {
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp',
-      '.mp3': 'audio/mpeg',
-      '.wav': 'audio/wav',
-      '.ogg': 'audio/ogg',
-      '.mp4': 'video/mp4',
-      '.webm': 'video/webm',
-    };
-    const contentType = contentTypeMap[ext] || 'application/octet-stream';
-
-    /* STORIES-ON-DRIVE, post-soak: the person's Drive is the SYSTEM OF RECORD. When Drive is on,
-     * the bytes go THERE and no MinIO/S3 copy is made (the ref decides reads; drive_ref is
-     * recorded by the caller via recordMediaOwner). A Drive failure falls back to the MinIO
-     * write below, exactly as before — an upload never fails because of Drive. */
-    if (!this.useS3 && this.driveEnabled && opts.driveUser) {
-      try {
-        let book = opts.driveBook || null;
-        if (!book && opts.bookId) {
-          try {
-            const { getPool } = await import('../db/postgres.js');
-            const r = await getPool().query('SELECT id, title FROM books WHERE id = $1', [opts.bookId]);
-            book = r.rows[0] || null;
-          } catch (e) { console.warn('[drive-storage] book lookup failed:', e.message); }
-        }
-        const drive = await driveStorage.put(bucketType, buffer, filename, opts.driveUser, book);
-        if (drive.ok) {
-          console.log(`✓ Stored in SAI Drive (system of record, no MinIO copy): ${drive.path}`);
-          return { storageKey: `${bucketType}/${filename}`, bucket: this.buckets[bucketType], filename, size: buffer.length, contentType, drive };
-        }
-        console.warn(`[drive-storage] put failed (${drive.reason}) — falling back to MinIO`);
-      } catch (error) {
-        console.warn(`[drive-storage] put threw (${error.message}) — falling back to MinIO`);
-      }
+    const drive = await this.drive.put(bucketType, buffer, filename, owner, book);
+    if (!drive || !drive.ok) {
+      const reason = (drive && drive.reason) || 'error';
+      const tooBig = TOO_BIG.has(reason);
+      throw storageError(`Failed to upload to storage: SAI Drive refused the file (${reason})`,
+        { code: tooBig ? 'quota' : 'storage_unavailable', status: tooBig ? 413 : 503 });
     }
+    console.log(`✓ Stored in SAI Drive: ${drive.path}`);
 
+    const ownerId = owner && (owner.id || owner.userId);
+    if (ownerId) {
+      await this.deps.recordOwner(bucketType, filename, { ownerId, bookId: isUuid(bookId) ? bookId : null, drive });
+    } else if (bookId && typeof setMapping === 'function') {
+      await setMapping(bucketType, filename, bookId);
+    }
+    return { storageKey: `${bucketType}/${filename}`, bucket: bucketType, filename, size: buffer.length, contentType, drive };
+  }
+
+  /** The sub whose Drive holds the object: the recorded owner, else the caretaker (null = nobody). */
+  async holderOf(bucketType, filename) {
+    return (await this.deps.ownerSubOf(bucketType, filename)) || this.drive.caretaker || null;
+  }
+
+  /**
+   * Open an object for reading: { stream, contentType, size, contentRange, status }.
+   * `range` is passed through to Drive (a 206 comes back with contentRange). Touch `.stream` ONCE.
+   */
+  async open(bucketType, filename, { range } = {}) {
+    this._type(bucketType);
+    if (!this.driveEnabled) throw storageError('Media storage (SAI Drive) is not configured');
+    const holder = await this.holderOf(bucketType, filename);
+    if (!holder) throw storageError(`${bucketType}/${filename}: not found`, { code: 'NotFound', status: 404 });
+    let g;
     try {
-      if (this.useS3) {
-        // AWS S3 Upload
-        const key = `${bucket}/${filename}`; // e.g., "images/myfile.png"
-        const command = new PutObjectCommand({
-          Bucket: this.s3Bucket,
-          Key: key,
-          Body: buffer,
-          ContentType: contentType,
-          Metadata: metadata,
-        });
+      g = await this.drive.streamFor(holder, bucketType, filename, range);
+    } catch (error) {
+      throw fromDrive(error, `${bucketType}/${filename}`);
+    }
+    if (!g) throw storageError(`${bucketType}/${filename}: not found`, { code: 'NotFound', status: 404 });
+    return g;
+  }
 
-        await this.s3Client.send(command);
-        const storageKey = `${bucketType}/${filename}`;
+  /** The whole object as a Node Readable (streamed from Drive, never buffered here). */
+  async getStream(bucketType, filename) {
+    const g = await this.open(bucketType, filename);
+    return g.stream;
+  }
 
-        console.log(`✓ Uploaded to S3: ${storageKey}`);
+  /** Stream an object into a local file (videos, music, voice-overs: never held in memory). */
+  async downloadTo(bucketType, filename, destPath) {
+    const stream = await this.getStream(bucketType, filename);
+    try {
+      await pipeline(stream, fs.createWriteStream(destPath));
+    } catch (error) {
+      throw fromDrive(error, `${bucketType}/${filename}`);
+    }
+    return destPath;
+  }
 
-        // SECURITY: Store media-to-book mapping if bookId provided and setMapping callback available
-        if (metadata.bookId && setMapping) {
-          await setMapping(bucketType, filename, metadata.bookId);
+  /**
+   * A SMALL object as a Buffer (a reference picture, a voice sample). maxBytes (default 64 MiB)
+   * stops reading past the cap, so a mistaken call on a film can never fill the heap.
+   */
+  async getFile(bucketType, filename, { maxBytes = 64 * 1024 * 1024 } = {}) {
+    const stream = await this.getStream(bucketType, filename);
+    const chunks = [];
+    let size = 0;
+    try {
+      for await (const chunk of stream) {
+        size += chunk.length;
+        if (size > maxBytes) {
+          stream.destroy();
+          throw storageError(`${bucketType}/${filename} is larger than ${maxBytes} bytes`, { code: 'too_large', status: 413 });
         }
-
-        const result = {
-          storageKey,
-          bucket: this.s3Bucket,
-          filename,
-          size: buffer.length,
-          contentType,
-        };
-        return await this._driveAfter(bucketType, buffer, filename, opts, result);
-      } else {
-        // MinIO Upload
-        await this.client.putObject(bucket, filename, buffer, buffer.length, {
-          ...safeMetadata(metadata),
-          'Content-Type': contentType,
-        });
-
-        const storageKey = `${bucketType}/${filename}`;
-
-        console.log(`✓ Uploaded to MinIO: ${storageKey}`);
-
-        // SECURITY: Store media-to-book mapping if bookId provided and setMapping callback available
-        if (metadata.bookId && setMapping) {
-          await setMapping(bucketType, filename, metadata.bookId);
-        }
-
-        const result = {
-          storageKey,
-          bucket,
-          filename,
-          size: buffer.length,
-          contentType,
-        };
-        return await this._driveAfter(bucketType, buffer, filename, opts, result);
+        chunks.push(chunk);
       }
     } catch (error) {
-      console.error('Storage upload error:', error);
-      throw new Error(`Failed to upload to storage: ${error.message}`);
+      throw fromDrive(error, `${bucketType}/${filename}`);
     }
+    return Buffer.concat(chunks);
   }
 
-  /* After a successful MinIO/S3 upload: also put the bytes in the owner's Drive when asked
-     (STORIES-ON-DRIVE). The MinIO copy stays during the migration window (the read path falls
-     back to it while a file's drive_ref is not recorded). A Drive outage never fails the upload:
-     the file is in MinIO and its drive_ref stays NULL. */
-  async _driveAfter(bucketType, buffer, filename, opts, result) {
-    if (!opts.driveUser) return result;
-    try {
-      /* The book folder: resolve {id, title} from the bookId the caller passed (metadata.bookId
-         rides through opts for the job sites; index.js sites pass it explicitly). A failed lookup
-         is not an error — the file just skips the book segment. */
-      let book = opts.driveBook || null;
-      if (!book && opts.bookId) {
-        try {
-          const { getPool } = await import('../db/postgres.js');
-          const r = await getPool().query('SELECT id, title FROM books WHERE id = $1', [opts.bookId]);
-          book = r.rows[0] || null;
-        } catch (e) { console.warn('[drive-storage] book lookup failed:', e.message); }
-      }
-      const drive = await driveStorage.put(bucketType, buffer, filename, opts.driveUser, book);
-      if (drive.ok) console.log(`✓ Stored in SAI Drive: ${drive.path}`);
-      else if (drive.reason !== 'disabled') console.warn(`[drive-storage] kept in MinIO only (${drive.reason})`);
-      return { ...result, drive };
-    } catch (error) {
-      console.error('[drive-storage] unexpected put error:', error.message);
-      return { ...result, drive: { ok: false, reason: 'error', retry: false } };
-    }
-  }
-
-  /**
-   * Upload file from filesystem to MinIO
-   * @param {string} bucketType - Bucket type
-   * @param {string} filePath - Path to file
-   * @param {string} filename - Target filename (optional, uses original if not provided)
-   * @param {Object} metadata - Optional metadata
-   * @returns {Promise<Object>} Upload result
-   */
-  async uploadFile(bucketType, filePath, filename = null, metadata = {}) {
-    const buffer = fs.readFileSync(filePath);
-    const targetFilename = filename || path.basename(filePath);
-    return await this.upload(bucketType, buffer, targetFilename, metadata);
-  }
-
-  /**
-   * Get file stream from storage (S3 or MinIO)
-   * @param {string} bucket - Bucket name
-   * @param {string} objectName - Object name
-   * @returns {Promise<Stream>} File stream
-   */
-  async getStream(bucket, objectName) {
-    await this.initialize();
-
-    if (this.useS3) {
-      // AWS S3 Get Stream
-      const key = `${bucket}/${objectName}`;
-      const command = new GetObjectCommand({
-        Bucket: this.s3Bucket,
-        Key: key,
-      });
-
-      const response = await this.s3Client.send(command);
-      return response.Body;
-    } else {
-      // MinIO Get Stream
-      return await this.client.getObject(bucket, objectName);
-    }
-  }
-
-  /**
-   * Get file buffer from storage
-   * @param {string} bucketType - Bucket type
-   * @param {string} filename - File name
-   * @returns {Promise<Buffer>} File buffer
-   */
-  async getFile(bucketType, filename) {
-    await this.initialize();
-
-    const bucket = this.buckets[bucketType];
-
-    if (this.useS3) {
-      // AWS S3 Get
-      const key = `${bucket}/${filename}`;
-      const command = new GetObjectCommand({
-        Bucket: this.s3Bucket,
-        Key: key,
-      });
-
-      const response = await this.s3Client.send(command);
-      const chunks = [];
-
-      return new Promise((resolve, reject) => {
-        response.Body.on('data', (chunk) => chunks.push(chunk));
-        response.Body.on('end', () => resolve(Buffer.concat(chunks)));
-        response.Body.on('error', reject);
-      });
-    } else {
-      // MinIO Get
-      const chunks = [];
-
-      return new Promise((resolve, reject) => {
-        this.client.getObject(bucket, filename, (err, stream) => {
-          if (err) return reject(err);
-
-          stream.on('data', (chunk) => chunks.push(chunk));
-          stream.on('end', () => resolve(Buffer.concat(chunks)));
-          stream.on('error', reject);
-        });
-      });
-    }
-  }
-
-  /**
-   * Delete file from storage
-   * @param {string} bucketType - Bucket type
-   * @param {string} filename - File name
-   * @returns {Promise<void>}
-   */
-  async delete(bucketType, filename) {
-    await this.initialize();
-
-    const bucket = this.buckets[bucketType];
-
-    if (this.useS3) {
-      const key = `${bucket}/${filename}`;
-      const command = new DeleteObjectCommand({
-        Bucket: this.s3Bucket,
-        Key: key,
-      });
-
-      await this.s3Client.send(command);
-      console.log(`✓ Deleted from S3: ${bucketType}/${filename}`);
-    } else {
-      await this.client.removeObject(bucket, filename);
-      console.log(`✓ Deleted from MinIO: ${bucketType}/${filename}`);
-    }
-  }
-
-  /**
-   * List files in bucket
-   * @param {string} bucketType - Bucket type
-   * @param {string} prefix - Optional prefix filter
-   * @returns {Promise<Array>} List of objects
-   */
-  async list(bucketType, prefix = '') {
-    await this.initialize();
-
-    const bucket = this.buckets[bucketType];
-    const objects = [];
-
-    return new Promise((resolve, reject) => {
-      const stream = this.client.listObjects(bucket, prefix, true);
-
-      stream.on('data', (obj) => objects.push(obj));
-      stream.on('end', () => resolve(objects));
-      stream.on('error', reject);
-    });
-  }
-
-  /**
-   * Check if file exists
-   * @param {string} bucketType - Bucket type
-   * @param {string} filename - File name
-   * @returns {Promise<boolean>}
-   */
+  /** Does Drive hold the object? */
   async exists(bucketType, filename) {
+    this._type(bucketType);
+    if (!this.driveEnabled) return false;
+    const holder = await this.holderOf(bucketType, filename);
+    if (!holder) return false;
     try {
-      await this.initialize();
-      const bucket = this.buckets[bucketType];
-
-      if (this.useS3) {
-        const key = `${bucket}/${filename}`;
-        const command = new HeadObjectCommand({
-          Bucket: this.s3Bucket,
-          Key: key,
-        });
-
-        await this.s3Client.send(command);
-        return true;
-      } else {
-        await this.client.statObject(bucket, filename);
-        return true;
-      }
+      return !!(await this.drive.statFor(holder, bucketType, filename));
     } catch (error) {
-      if (error.code === 'NotFound' || error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
-        return false;
-      }
-      throw error;
+      throw fromDrive(error, `${bucketType}/${filename}`);
     }
   }
 
   /**
-   * Get object metadata
-   * @param {string} bucketType - Bucket type
-   * @param {string} filename - File name
-   * @returns {Promise<Object>} Object stats
+   * Delete the Drive copy. → { removed: true, mode } | { gone: true } (no copy: nothing to do).
+   * opts.sub: the holder the caller already resolved (the erasure flow reads its rows itself).
+   * opts.permanent: the erasure flow (an untouched intermediate goes for good; every other file goes
+   * to the holder's Bin, which Drive empties after 30 days). A transport error THROWS (a delete must
+   * not lie about what it deleted); a missing or already-gone copy does not.
    */
-  async getMetadata(bucketType, filename) {
-    await this.initialize();
-    const bucket = this.buckets[bucketType];
-    return await this.client.statObject(bucket, filename);
-  }
-
-  /**
-   * Generate pre-signed URL (temporary access)
-   * @param {string} bucketType - Bucket type
-   * @param {string} filename - File name
-   * @param {number} expirySeconds - URL expiry time in seconds (default: 7 days)
-   * @returns {Promise<string>} Pre-signed URL
-   */
-  async getPresignedUrl(bucketType, filename, expirySeconds = 7 * 24 * 60 * 60) {
-    await this.initialize();
-    const bucket = this.buckets[bucketType];
-
-    if (this.useS3) {
-      const key = `${bucket}/${filename}`;
-      const command = new GetObjectCommand({
-        Bucket: this.s3Bucket,
-        Key: key,
-      });
-
-      return await getSignedUrl(this.s3Client, command, { expiresIn: expirySeconds });
-    } else {
-      return await this.client.presignedGetObject(bucket, filename, expirySeconds);
-    }
-  }
-
-  /**
-   * Get public URL for object (if bucket is public)
-   * @param {string} bucketType - Bucket type
-   * @param {string} filename - File name
-   * @returns {string} Public URL
-   */
-  getPublicUrl(bucketType, filename) {
-    const bucket = this.buckets[bucketType];
-
-    if (this.useS3) {
-      const region = process.env.AWS_REGION || 'us-east-1';
-      return `https://${this.s3Bucket}.s3.${region}.amazonaws.com/${bucket}/${filename}`;
-    } else {
-      const protocol = this.client.useSSL ? 'https' : 'http';
-      const endpoint = this.client.host;
-      const port = this.client.port === 80 || this.client.port === 443 ? '' : `:${this.client.port}`;
-
-      return `${protocol}://${endpoint}${port}/${bucket}/${filename}`;
+  async delete(bucketType, filename, { sub, permanent = false } = {}) {
+    this._type(bucketType);
+    if (!this.driveEnabled) throw storageError('Media storage (SAI Drive) is not configured');
+    const holder = sub || await this.holderOf(bucketType, filename);
+    if (!holder) return { gone: true };
+    try {
+      const r = await this.drive.removeFor(holder, bucketType, filename, { permanent });
+      if (!r) return { gone: true };
+      console.log(`✓ Deleted from SAI Drive: ${bucketType}/${filename}`);
+      return { removed: true, mode: r.mode || null };
+    } catch (error) {
+      if (error && (error.code === 'not_found' || error.code === 'gone')) return { gone: true };
+      throw fromDrive(error, `${bucketType}/${filename}`);
     }
   }
 }
 
 // Singleton instance
 export const mediaStorage = new MediaStorage();
-/* The read path asks this (not the singleton's private field) so a read never touches a half-built client. */
-Object.defineProperty(mediaStorage, 'driveEnabled', { get: () => driveStorage.initialize() !== null && driveStorage.enabled });

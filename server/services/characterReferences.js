@@ -97,11 +97,15 @@ export async function mediaUrlToDataUrl(user, url) {
   if (!(await canAccessMedia(user, bucketType, filename, 'read'))) {
     throw Object.assign(new Error('Reference image not found'), { status: 404 });
   }
-  const stream = await mediaStorage.getStream(mediaStorage.buckets[bucketType], filename);
-  const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  const buffer = Buffer.concat(chunks);
-  if (buffer.length > 12 * 1024 * 1024) throw Object.assign(new Error('Reference image is larger than 12 MB'), { status: 400 });
+  // from the owner's SAI Drive; the cap stops the read at 12 MB instead of after it
+  let buffer;
+  try {
+    buffer = await mediaStorage.getFile(bucketType, filename, { maxBytes: 12 * 1024 * 1024 });
+  } catch (error) {
+    if (error.code === 'too_large') throw Object.assign(new Error('Reference image is larger than 12 MB'), { status: 400 });
+    if (error.code === 'NotFound') throw Object.assign(new Error('Reference image not found'), { status: 404 });
+    throw error;
+  }
   return `data:${mime};base64,${buffer.toString('base64')}`;
 }
 
@@ -118,11 +122,11 @@ async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUr
     negative: spec.negative ? joinNegatives(spec.negative, styleNegative || '') : undefined,
   });
   const filename = `charref-${spec.kind}-${uuidv4()}.png`;
-  await mediaStorage.upload('images', result.buffer, filename, {
+  const stored = await mediaStorage.upload('images', result.buffer, filename, {
     'x-amz-meta-type': `character-${spec.kind}`,
     'x-amz-meta-character-id': String(characterId || ''),
-  });
-  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
+  }, null, { driveUser: user, bookId });
+  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: stored.drive });
   return {
     id: `ref-${uuidv4()}`,
     kind: spec.kind,

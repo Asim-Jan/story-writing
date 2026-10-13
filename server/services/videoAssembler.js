@@ -151,7 +151,7 @@ export class VideoAssembler {
         const usable = scene?.filename && !scene.error && (scene.status === 'completed' || scene.status === undefined);
         if (!usable) { gap = clips.length > 0; continue; }
         const file = at(`src-${clips.length}.mp4`);
-        fs.writeFileSync(file, await mediaStorage.getFile('videos', scene.filename));
+        await mediaStorage.downloadTo('videos', scene.filename, file); // Drive -> disk, streamed
         const info = await probe(file);
         if (!info.length) { gap = clips.length > 0; continue; }
         clips.push({ scene, file, ...info, gapBefore: gap, head: 0, gainDb: 0 });
@@ -241,7 +241,7 @@ export class VideoAssembler {
         const volume = Number.isFinite(Number(part?.volume)) ? Math.max(0, Math.min(1.5, Number(part.volume))) : 1;
         if (!part?.filename || volume === 0) continue;
         const file = at(`${kind}${path.extname(part.filename) || '.mp3'}`);
-        fs.writeFileSync(file, await mediaStorage.getFile('audio', part.filename));
+        await mediaStorage.downloadTo('audio', part.filename, file); // Drive -> disk, streamed
         const mean = await meanVolume(file);
         if (mean === null || mean < -60) continue; // silent: nothing to mix
         const gainDb = Math.max(-20, Math.min(24, (kind === 'voice' ? VOICE_DB : MUSIC_DB) - mean)) + dbOf(volume);

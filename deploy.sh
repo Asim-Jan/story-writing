@@ -162,9 +162,25 @@ k3s_rollout() {
     fi
 }
 
+# The SAI Cloud app switcher (/sai-suite.js): the CUSTOMER bundle of sai-cluster/manifests/_suite,
+# built into public/ so Vite ships it in dist (git-ignored, never committed). Use a CLEAN checkout of
+# sai-cluster main (a feature branch would bake its own catalogue). The suite build FAILS on a broken
+# catalogue or on any staff-only hostname in the output, and then so does this deploy.
+SAI_CLUSTER_DIR="${SAI_CLUSTER_DIR:-$HOME/Projects/sai-cluster}"
+build_suite() {
+    local kit="$SAI_CLUSTER_DIR/manifests/_suite/build.js"
+    if [ ! -f "$kit" ]; then
+        echo -e "${RED}No sai-cluster checkout at $SAI_CLUSTER_DIR (needs manifests/_suite/build.js): set SAI_CLUSTER_DIR${NC}"
+        exit 1
+    fi
+    node "$kit" public/sai-suite.js --variant customer
+    grep -q '"stories"' public/sai-suite.js || { echo -e "${RED}✗ the customer suite bundle does not list Stories${NC}"; exit 1; }
+}
+
 # Build and push the ONE app image (backend + the built frontend it serves;
 # the nginx frontend deployment is gone — SAI-Cloud shape)
 deploy_app() {
+    build_suite
     echo -e "${GREEN}Building app v$NEW_VERSION (VITE_API_URL=$VITE_API_URL)...${NC}"
     build_and_push \
         --build-arg VITE_API_URL=$VITE_API_URL \

@@ -6,7 +6,8 @@
  * pattern the portal's film studio uses (portal mediastore.js). Stories keeps only REFERENCES
  * (ref + node id + size) in `media_owners`; Drive holds the bytes and is the system of record.
  * Asim's decisions 2026-10-11: everything migrates into HIS Drive now, ownership sorted later;
- * new uploads are Drive-primary immediately; MinIO serves the not-yet-migrated reads.
+ * new uploads are Drive-primary immediately. 2.23.79: the migration is done and MinIO is retired —
+ * Drive is the ONLY media store (services/mediaStorage.js is a thin layer over this module).
  *
  * Layout inside the project:
  *   <owner segment>/<folder>/<filename>     owner segment = the Drive owner's sub (u_<16 hex>).
@@ -18,11 +19,11 @@
  * Folder per bucket type: images→Covers, comics→Comics, audio→Audio, videos→Films.
  *
  * Reads stream from Drive with Range pass-through; the browser never sees a Drive id, ref or path.
- * An asset without a recorded drive_ref is MinIO's — the ref decides, never a flag.
+ * The holder: media_owners.drive_owner, else the uploader's portal_sub, else the caretaker.
  *
- * OFF (no DRIVE_APP_API_SECRET, or STORY_DRIVE=0): every call answers null / {ok:false} and the
- * MinIO path behaves exactly as before. Never throws from a Drive outage: a generation that
- * already succeeded must not fail because its Drive put did not.
+ * OFF (no DRIVE_APP_API_SECRET, or STORY_DRIVE=0): every call answers null / {ok:false}, and media
+ * routes answer 503 (there is no other store). put() never throws from a Drive outage: it answers
+ * {ok:false, retry} and the caller decides.
  */
 
 import { createRequire as _driveRequire } from 'module';
@@ -146,7 +147,7 @@ class DriveStorage {
   /**
    * Upload a buffer into the owner's Drive. Returns
    *   { ok: true, ref, node, path, size }                   — stored (idempotent by ref),
-   *   { ok: false, reason, retry, userMessage? }            — not stored; the caller keeps the MinIO copy.
+   *   { ok: false, reason, retry, userMessage? }            — not stored (the upload fails with a retryable 503).
    * Never throws.
    */
   async put(bucketType, buffer, filename, user, book = null) {
@@ -202,9 +203,8 @@ class DriveStorage {
    * Stream an asset out of Drive by ref, for the owner sub the CALLER resolved from media_owners
    * (the person named by X-Sub must be the Drive owner, not the requester). Returns
    *   { stream, contentType, size, contentRange, status } — a Drive copy exists,
-   *   null                                                 — Stories holds no Drive copy (fall back to MinIO).
-   * A Drive transport error THROWS (the caller answers 502; it must not silently serve MinIO
-   * bytes that may be older than the Drive copy).
+   *   null                                                 — Stories holds no Drive copy (404).
+   * A Drive transport error THROWS (the caller answers a retryable 503).
    */
   async streamFor(sub, bucketType, filename, range = undefined) {
     if (!this.initialize()) return null;

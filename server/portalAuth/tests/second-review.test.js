@@ -163,21 +163,16 @@ test('5. the scripts carry no fallback literal after a POSTGRES_* variable, and 
   }
 });
 
-test('5. MinIO: production REQUIRES its own credentials (no built-in pair); development keeps its convenience default', () => {
+test('5. Media storage is SAI Drive only: no MinIO/S3 configuration is required (or read) in any environment', () => {
   const keep = { ...process.env };
-  const restore = () => { for (const k of ['NODE_ENV', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY', 'AWS_S3_BUCKET']) { if (k in keep) process.env[k] = keep[k]; else delete process.env[k]; } };
+  const restore = () => { for (const k of ['NODE_ENV', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY', 'MINIO_ENDPOINT', 'AWS_S3_BUCKET']) { if (k in keep) process.env[k] = keep[k]; else delete process.env[k]; } };
   try {
-    delete process.env.AWS_S3_BUCKET; delete process.env.MINIO_ACCESS_KEY; delete process.env.MINIO_SECRET_KEY;
-    process.env.NODE_ENV = 'production';
-    assert.throws(() => new MediaStorage(), /MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set in production/);
-    process.env.MINIO_ACCESS_KEY = 'only-one';
-    assert.throws(() => new MediaStorage(), /must be set in production/);
-    process.env.MINIO_SECRET_KEY = 'both-present';
-    assert.doesNotThrow(() => new MediaStorage());
-    delete process.env.MINIO_ACCESS_KEY; delete process.env.MINIO_SECRET_KEY;
-    process.env.NODE_ENV = 'development';
-    assert.doesNotThrow(() => new MediaStorage(), 'development still works with nothing set');
-    process.env.NODE_ENV = 'production'; process.env.AWS_S3_BUCKET = 'b';
-    assert.doesNotThrow(() => new MediaStorage(), 'S3 mode needs no MinIO keys');
+    for (const k of ['AWS_S3_BUCKET', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY', 'MINIO_ENDPOINT']) delete process.env[k];
+    for (const env of ['production', 'development', 'test']) {
+      process.env.NODE_ENV = env;
+      assert.doesNotThrow(() => new MediaStorage(), `${env}: constructs with no MINIO_* at all (2.23.76 threw in production)`);
+    }
+    const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'services', 'mediaStorage.js'), 'utf8');
+    assert.doesNotMatch(src, /from 'minio'|@aws-sdk|process\.env\.(MINIO_|AWS_)/, 'mediaStorage.js has no MinIO/S3 client or config left');
   } finally { restore(); }
 });

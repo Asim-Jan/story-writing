@@ -140,13 +140,14 @@ const luma = (file) => new Promise((resolve) => {
  * that is dark too, null (the caller falls back to the keyframe). A faded
  * black frame was being handed on as "the previous shot".
  */
-async function closingFrame(videoBuffer) {
+async function closingFrame(video) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'film-'));
   try {
-    const clip = path.join(dir, 'clip.mp4');
+    // a Buffer (a clip just rendered) or the path of a clip already on disk (a reused take)
+    const clip = typeof video === 'string' ? video : path.join(dir, 'clip.mp4');
     const last = path.join(dir, 'last.png');
     const earlier = path.join(dir, 'earlier.png');
-    fs.writeFileSync(clip, videoBuffer);
+    if (typeof video !== 'string') fs.writeFileSync(clip, video);
     // -update 1 keeps overwriting, so the file ends as the final frame
     await run(ffmpegPath, ['-y', '-loglevel', 'error', '-sseof', '-0.5', '-i', clip, '-update', '1', last]);
     const dataUrl = (f) => `data:image/png;base64,${fs.readFileSync(f).toString('base64')}`;
@@ -248,8 +249,8 @@ async function preparePlace(user, book, scene, withPicture) {
 
 const storeImage = async (user, bookId, buffer) => {
   const filename = `keyframe-${uuidv4()}.png`;
-  await mediaStorage.upload('images', buffer, filename, { 'x-amz-meta-type': 'film-keyframe' });
-  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId });
+  const stored = await mediaStorage.upload('images', buffer, filename, { 'x-amz-meta-type': 'film-keyframe' }, null, { driveUser: user, bookId });
+  await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: stored.drive });
   return `/api/media/images/${filename}`;
 };
 
@@ -418,8 +419,14 @@ export async function directFilm({ user, bookId, book, scenes, styleKey, onProgr
     if (reuseTake?.filename) {
       try {
         if (!(await canAccessMedia(user, 'videos', reuseTake.filename, 'read'))) throw new Error('That clip is not one of yours');
-        const buffer = await mediaStorage.getFile('videos', reuseTake.filename);
-        await carryOn(buffer, null);
+        // streamed from Drive to a temp file (a take is never held in memory), its last frame taken there
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'film-take-'));
+        try {
+          const file = await mediaStorage.downloadTo('videos', reuseTake.filename, path.join(dir, 'take.mp4'));
+          await carryOn(file, null);
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
         const transition = transitionOf(scene, previousScene);
         continues = transition === 'continue' ? continues + 1 : 0;
         previousScene = scene;

@@ -108,7 +108,7 @@ const WarningToast = ({ warning, onDismiss, onNavigate }) => {
 
   return (
     <div
-      className={`fixed top-4 right-4 z-50 transition-all duration-300 transform ${
+      className={`fixed top-[calc(1rem_+_var(--sai-suite-h,_0px))] right-4 z-50 transition-all duration-300 transform ${
         isVisible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'
       }`}
       style={{ maxWidth: '400px' }}
