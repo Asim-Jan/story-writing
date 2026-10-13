@@ -76,7 +76,8 @@ A comprehensive AI-powered platform for writing, managing, and publishing fictio
 
 3. **Start services:**
    ```bash
-   docker-compose up -d  # Starts Redis + MinIO
+   docker-compose up -d redis fake-drive  # Redis + an in-memory fake SAI Drive (the media store)
+   # or, without Docker for the store: npm run dev:drive
    npm run dev           # Starts frontend (port 5173)
    cd server && npm start  # Starts backend (port 3001)
    ```
@@ -84,7 +85,7 @@ A comprehensive AI-powered platform for writing, managing, and publishing fictio
 4. **Access application:**
    - Frontend: http://localhost:5173
    - Backend API: http://localhost:3001
-   - MinIO Console: http://localhost:9001
+   - Fake SAI Drive (app API): http://localhost:8150 (in memory, empty after a restart)
 
 ## 🏗️ Architecture
 
@@ -92,7 +93,7 @@ A comprehensive AI-powered platform for writing, managing, and publishing fictio
 - **Frontend:** React 18, Vite, Tailwind CSS, Lucide Icons
 - **Backend:** Node.js, Express.js
 - **Database:** Redis (sessions, book data, user data)
-- **Storage:** MinIO (images, audio, files)
+- **Storage:** SAI Drive: every image, audio file and film lives in the owner's Drive (`docs/STORIES-ON-DRIVE.md`)
 - **AI Services:** OpenAI GPT-4, Google Gemini
 - **Video:** FFmpeg (assembly), Veo 3 (generation)
 
@@ -157,12 +158,10 @@ JWT_SECRET=your-secret-key-change-this
 REDIS_HOST=localhost
 REDIS_PORT=6379
 
-# MinIO Storage
-MINIO_ENDPOINT=localhost
-MINIO_PORT=9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_USE_SSL=false
+# Media storage: SAI Drive's app API (locally: npm run dev:drive)
+DRIVE_APP_API_URL=http://127.0.0.1:8150
+DRIVE_APP_API_SECRET=drive-test-secret-0123456789abcdef0123456789abcdef
+DRIVE_CARETAKER_SUB=u_0000000000000001
 
 # AI - System defaults (optional, users provide their own)
 OPENAI_API_KEY=sk-...

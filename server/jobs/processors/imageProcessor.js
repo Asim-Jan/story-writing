@@ -1,5 +1,5 @@
 import { saiImage } from '../../saiClient.js';
-import { mediaStorage } from '../../services/mediaStorage.js';
+import { mediaStorage, JOB_RETRY } from '../../services/mediaStorage.js';
 import { updateJobStatus } from '../queue.js';
 import { v4 as uuidv4 } from 'uuid';
 import { setMediaBookMapping, recordMediaOwner } from '../../utils/mediaMapping.js';
@@ -48,7 +48,7 @@ export async function processImageGeneration(job) {
       userId,
       imageType,
       itemId,
-    }, setMediaBookMapping, { driveUser: await driveStorage.userFromId(userId), bookId });
+    }, setMediaBookMapping, { driveUser: await driveStorage.userFromId(userId), bookId, retry: JOB_RETRY });
     await recordMediaOwner('images', filename, { ownerId: userId, bookId, drive: uploadResult.drive });
 
     await updateJobStatus(job, { status: 'active', progress: 90, message: 'Updating book data...' });

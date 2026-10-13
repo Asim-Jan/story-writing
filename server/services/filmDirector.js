@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
 import { saiImage } from '../saiClient.js';
-import { mediaStorage } from './mediaStorage.js';
+import { mediaStorage, JOB_RETRY } from './mediaStorage.js';
 import { recordMediaOwner, canAccessMedia } from '../utils/mediaMapping.js';
 import { describeCharacter, mediaUrlToDataUrl } from './characterReferences.js';
 import { VideoGenerator } from './videoGenerator.js';
@@ -249,7 +249,7 @@ async function preparePlace(user, book, scene, withPicture) {
 
 const storeImage = async (user, bookId, buffer) => {
   const filename = `keyframe-${uuidv4()}.png`;
-  const stored = await mediaStorage.upload('images', buffer, filename, { 'x-amz-meta-type': 'film-keyframe' }, null, { driveUser: user, bookId });
+  const stored = await mediaStorage.upload('images', buffer, filename, { 'x-amz-meta-type': 'film-keyframe' }, null, { driveUser: user, bookId, retry: JOB_RETRY });
   await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: stored.drive });
   return `/api/media/images/${filename}`;
 };

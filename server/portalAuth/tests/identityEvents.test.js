@@ -347,7 +347,7 @@ test('erasure with NO MinIO (2.23.79, SAI Drive only): the REAL MediaStorage ove
   const fake = createFakeDrive({ apps: { version: 1, apps: [{ id: 'stories', name: 'Stories', projects: ['story-writing'], secretEnv: 'APPS_SECRET_STORIES', trusted: true, capBytes: 1 << 24, maxFileBytes: 1 << 22, allowTags: ['final', 'intermediate', 'source'] }] } });
   const ds = Object.create(Object.getPrototypeOf(driveStorage));
   Object.assign(ds, { client: fake.client({ appId: 'stories' }), enabled: true, caretaker: CARETAKER });
-  const media = new MediaStorage({ drive: ds, deps: { ownerSubOf: async () => null } });
+  const media = new MediaStorage({ drive: ds, deps: { ownerSubOf: async () => null, nodeOf: async () => null } });
   // A: one copy in A's OWN Drive, one migrated copy held by the caretaker; B: a copy in B's Drive (must survive)
   await ds.put('images', Buffer.from('a-own'), 'a-own.png', { portal_sub: A.key });
   await ds.put('videos', Buffer.from('a-migrated'), 'a-migrated.mp4', null);

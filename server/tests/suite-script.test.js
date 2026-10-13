@@ -85,3 +85,44 @@ test('deploy.sh builds the CUSTOMER variant into public/ and the output is git-i
   assert.match(sh, /deploy_app\(\) \{\n\s+build_suite/, 'the suite is built before the image');
   assert.match(fs.readFileSync(path.join(REPO, '.gitignore'), 'utf8'), /^public\/sai-suite\.js$/m);
 });
+
+/* deploy.sh's guard: the switcher is baked only from a CLEAN sai-cluster checkout at origin/main. */
+test('scripts/check-sai-cluster.sh accepts only a clean checkout at origin/main', async () => {
+  const { execFileSync, spawnSync } = await import('child_process');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'saicl-'));
+  const git = (cwd, ...a) => execFileSync('git', a, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).toString();
+  const check = (dir, env = { SAI_CLUSTER_ORIGIN_OK: '*' }) => spawnSync(path.join(REPO, 'scripts', 'check-sai-cluster.sh'), [dir], { env: { ...process.env, ...env } });
+  try {
+    const seed = path.join(tmp, 'seed');
+    fs.mkdirSync(path.join(seed, 'manifests', '_suite'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'manifests', '_suite', 'build.js'), '// kit\n');
+    git(seed, 'init', '-q', '-b', 'main'); git(seed, 'add', '.'); git(seed, 'commit', '-qm', 'kit');
+    const origin = path.join(tmp, 'origin.git');
+    git(tmp, 'clone', '-q', '--bare', seed, origin);
+    const wt = path.join(tmp, 'wt');
+    git(tmp, 'clone', '-q', origin, wt);
+
+    assert.equal(check(wt).status, 0, 'clean at origin/main: OK');
+    assert.notEqual(check(wt, {}).status, 0, 'an origin that is not Solutions-AI-LTD/sai-cluster is refused');
+    assert.notEqual(check(path.join(tmp, 'nope')).status, 0, 'no checkout: refused');
+
+    fs.writeFileSync(path.join(wt, 'manifests', '_suite', 'catalog.json'), '{}');
+    assert.notEqual(check(wt).status, 0, 'an untracked file in manifests/_suite: refused');
+    fs.rmSync(path.join(wt, 'manifests', '_suite', 'catalog.json'));
+
+    fs.writeFileSync(path.join(wt, 'manifests', '_suite', 'build.js'), '// edited\n');
+    assert.notEqual(check(wt).status, 0, 'an uncommitted edit: refused');
+    git(wt, 'commit', '-qam', 'local');
+    const r = check(wt);
+    assert.notEqual(r.status, 0, 'a local commit (HEAD is not origin/main): refused');
+    assert.match(r.stderr.toString(), /is not origin\/main/);
+    git(wt, 'reset', '-q', '--hard', 'origin/main');
+    assert.equal(check(wt).status, 0, 'back at origin/main: OK');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('deploy.sh runs the checkout guard before VERSION is touched', () => {
+  const sh = fs.readFileSync(path.join(REPO, 'deploy.sh'), 'utf8');
+  const guard = sh.indexOf('scripts/check-sai-cluster.sh');
+  assert.ok(guard > 0 && guard < sh.indexOf('echo "$NEW_VERSION" > VERSION'));
+});

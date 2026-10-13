@@ -89,6 +89,7 @@ async function bootServer(database, extraEnv = {}) {
     REDIS_HOST: REDIS.host,
     REDIS_PORT: String(REDIS.port),
     REDIS_PASSWORD: '',
+    STORY_DRIVE_PUT_BASE_MS: '20',   // the upload retry's backoff, shortened so an outage test is quick
     ...extraEnv,
   };
   console.log(`    [boot] spawning the server on :${port}`);
@@ -279,6 +280,54 @@ async function main() {
   drive.mode.failDeletes = false;
   check('Drive down during a delete = 503 and NOTHING is deleted (the retry redoes it)', rdDown.status === 503 &&
     drive.objects.has('story:images:keepme.png') && (await db.query(`SELECT 1 FROM media_owners WHERE filename = 'keepme.png'`)).rowCount === 1, `status ${rdDown.status}`);
+
+  console.log('\n== review fixes (follow-up to 2.23.79): 416, closed accounts, row-less objects, node-id deletes, voice deletes');
+  {
+    // 1. a Range past the end is the browser's error: 416 with the size, not a retryable 503
+    const r416 = await fetch(`${srv.base}/api/media/images/driven.png`, { headers: { Authorization: `Bearer ${asim.token}`, Range: 'bytes=99999-' } });
+    check('a Range past the end = 416 with Content-Range bytes */<size>', r416.status === 416 && r416.headers.get('content-range') === `bytes */${PNG.length}`, `status ${r416.status} ${r416.headers.get('content-range')}`);
+
+    // 7. the holder's Drive account is closed (403 gone): 404, not a 503 the browser retries forever
+    drive.mode.closedSubs.add(asim.sub);
+    const rGone = await fetch(`${srv.base}/api/media/images/driven.png`, { headers: { Authorization: `Bearer ${asim.token}` } });
+    drive.mode.closedSubs.delete(asim.sub);
+    check('a read from an account Drive already closed (403 gone) = 404', rGone.status === 404, `status ${rGone.status}`);
+
+    // 4. an object with NO ownership row: a book that merely MENTIONS its name no longer grants access
+    drive.objects.set('story:images:orphan.png', { bytes: PNG, contentType: 'image/png', path: 'Covers/orphan.png', node: 'n_orphan01' });
+    await db.query(`INSERT INTO books (owner_id, title, description) VALUES ($1, 'Mentions', 'see /api/media/images/orphan.png')`, [legacyOwner.id]);
+    const rOrphan = await apiH('GET', '/api/media/images/orphan.png', legacyOwner.token);
+    const dOrphan = await apiH('DELETE', '/api/media/images/orphan.png', legacyOwner.token);
+    check('a row-less object is NOT readable or deletable by a user whose book text names it', rOrphan.status === 404 && dOrphan.status === 404 && drive.objects.has('story:images:orphan.png'), `${rOrphan.status} ${dOrphan.status}`);
+    check('...and the refusal does not record that user as its owner', (await db.query(`SELECT 1 FROM media_owners WHERE filename = 'orphan.png'`)).rowCount === 0);
+    const { rows: ct } = await db.query(`INSERT INTO users (email, password_hash, name, tier, portal_sub) VALUES ('caretaker-x@drive.local', 'x', 'ct', 'free', $1) RETURNING id`, [caretaker]);
+    const ctToken = jwt.sign({ userId: ct[0].id, email: 'caretaker-x@drive.local', tokenVersion: 1 }, JWT_SECRET, { expiresIn: '1h' });
+    const rCt = await fetch(`${srv.base}/api/media/images/orphan.png`, { headers: { Authorization: `Bearer ${ctToken}` } });
+    check('...the caretaker (whose Drive holds ownerless objects) still can', rCt.status === 200, `status ${rCt.status}`);
+
+    // 2. the delete route: the ref was let go but the recorded node is still in the project
+    await db.query(`INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref, drive_node, drive_size, drive_owner)
+      VALUES ('images', 'detached.png', $1, 'story:images:detached.png', 'n_det0001', $2, $3)`, [asim.id, PNG.length, asim.sub]);
+    drive.detached.set('n_det0001', { bytes: PNG, contentType: 'image/png', path: `${asim.sub}/Covers/moved-by-person.png`, node: 'n_det0001' });
+    const rDet = await apiH('DELETE', '/api/media/images/detached.png', asim.token);
+    check('delete: a copy whose ref was let go is found by its node id and removed (not reported gone while it exists)', rDet.status === 200 && !drive.detached.has('n_det0001'), `status ${rDet.status}`);
+
+    // 5. deleting a cloned voice: Drive errors surface (503, nothing deleted); success clears the owner row
+    await db.query(`INSERT INTO media_owners (bucket_type, filename, owner_id, drive_ref, drive_node, drive_size, drive_owner)
+      VALUES ('audio', 'voice-sample-x.wav', $1, 'story:audio:voice-sample-x.wav', 'n_voice001', 4, $2)`, [asim.id, asim.sub]);
+    drive.objects.set('story:audio:voice-sample-x.wav', { bytes: Buffer.from('RIFF'), contentType: 'audio/wav', path: 'x', node: 'n_voice001' });
+    const { rows: [v] } = await db.query(`INSERT INTO custom_voices (owner_id, name, sample_filename, duration_sec, consent_at) VALUES ($1, 'Me', 'voice-sample-x.wav', 5, NOW()) RETURNING id`, [asim.id]);
+    drive.mode.failDeletes = true;
+    const vDown = await apiH('DELETE', `/api/voices/${v.id}`, asim.token);
+    drive.mode.failDeletes = false;
+    const kept = (await db.query(`SELECT 1 FROM custom_voices WHERE id = $1`, [v.id])).rowCount === 1 && drive.objects.has('story:audio:voice-sample-x.wav');
+    check('voice delete with Drive down = 503 and NOTHING deleted (it was swallowed: the recording stayed in Drive with no row)', vDown.status === 503 && kept, `status ${vDown.status}`);
+    const vOk = await apiH('DELETE', `/api/voices/${v.id}`, asim.token);
+    check('voice delete: the sample leaves Drive, the voice row AND its media_owners row go',
+      vOk.status === 200 && !drive.objects.has('story:audio:voice-sample-x.wav') &&
+      (await db.query(`SELECT 1 FROM custom_voices WHERE id = $1`, [v.id])).rowCount === 0 &&
+      (await db.query(`SELECT 1 FROM media_owners WHERE filename = 'voice-sample-x.wav'`)).rowCount === 0, `status ${vOk.status}`);
+  }
 
   console.log('\n== Drive down = 503 (the browser retries)');
   const { rows: own2 } = await db.query(

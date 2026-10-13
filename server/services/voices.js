@@ -5,9 +5,9 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/postgres.js';
-import { mediaStorage } from './mediaStorage.js';
+import { mediaStorage, JOB_RETRY } from './mediaStorage.js';
 import { driveStorage } from './driveStorage.js';
-import { recordMediaOwner } from '../utils/mediaMapping.js';
+import { recordMediaOwner, forgetMediaOwner } from '../utils/mediaMapping.js';
 import { saiSpeech, saiTranscribe, saiVoices, VOICE_MAP } from '../saiClient.js';
 import { chunkText, mergeWav } from '../utils/speech.js';
 
@@ -137,11 +137,18 @@ export async function createCustomVoice({ userId, name, sample, transcript, cons
   return toVoice(rows[0]);
 }
 
+/**
+ * Delete a cloned voice: its sample's Drive copy FIRST (a Drive problem THROWS — status 503 — and
+ * nothing is deleted, so the person's retry redoes the whole thing; it was swallowed, which left
+ * the recording of someone's voice in Drive with no row pointing at it), then the voice row and the
+ * sample's media_owners row.
+ */
 export async function deleteCustomVoice(userId, id) {
   const row = await getCustomVoice(userId, id);
   if (!row) return false;
+  await mediaStorage.delete('audio', row.sample_filename);
   await query('DELETE FROM custom_voices WHERE id = $1', [id]);
-  await mediaStorage.delete('audio', row.sample_filename).catch(() => {});
+  await forgetMediaOwner('audio', row.sample_filename);
   return true;
 }
 
@@ -191,7 +198,7 @@ export async function speak(userId, spec, text, { onChunk, speed } = {}) {
 export async function storeAudio(userId, bookId, mp3, label) {
   const filename = `${label}-${uuidv4()}.mp3`;
   const stored = await mediaStorage.upload('audio', mp3, filename, { 'x-amz-meta-type': 'audiobook' }, null,
-    { driveUser: (await driveStorage.userFromId(userId)) || { id: userId }, bookId });
+    { driveUser: (await driveStorage.userFromId(userId)) || { id: userId }, bookId, retry: JOB_RETRY });
   await recordMediaOwner('audio', filename, { ownerId: userId, bookId, drive: stored.drive });
   return { filename, audioUrl: `/api/media/audio/${filename}` };
 }

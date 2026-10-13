@@ -128,7 +128,7 @@ aws ecr describe-images \
 - `GEMINI_API_KEY` - System default Gemini key
 - `JWT_SECRET` - JWT signing secret
 - `REDIS_URL` - Redis connection URL
-- `MINIO_*` - MinIO storage credentials
+- `DRIVE_APP_API_URL`, `DRIVE_APP_API_SECRET`, `DRIVE_CARETAKER_SUB` - SAI Drive app API (the only media store)
 
 ### Frontend (build args)
 - `VITE_API_URL` - Backend API URL (https://story-writing.com)

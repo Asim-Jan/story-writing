@@ -109,7 +109,7 @@ export async function mediaUrlToDataUrl(user, url) {
   return `data:${mime};base64,${buffer.toString('base64')}`;
 }
 
-async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUrl, characterId, styleNegative }) {
+async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUrl, characterId, styleNegative, retry }) {
   // the general picture models follow the plan (Qwen Image 2.1 on Premium, FLUX.2 klein otherwise); the
   // character-sheet LoRA recipes are the same for everyone
   const model = spec.model === FLUX_DRAW || spec.model === QWEN_IMAGE ? imageModelFor(user, { fromPicture: Boolean(image) }) : spec.model;
@@ -125,7 +125,7 @@ async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUr
   const stored = await mediaStorage.upload('images', result.buffer, filename, {
     'x-amz-meta-type': `character-${spec.kind}`,
     'x-amz-meta-character-id': String(characterId || ''),
-  }, null, { driveUser: user, bookId });
+  }, null, { driveUser: user, bookId, retry });
   await recordMediaOwner('images', filename, { ownerId: user.id || user.userId, bookId, drive: stored.drive });
   return {
     id: `ref-${uuidv4()}`,
@@ -144,7 +144,7 @@ async function renderAndStore({ user, bookId, spec, prompt, image, sourceImageUr
  * too (the caller stores both). bookStyle (services/artStyles.js) is the
  * book's art style: used when the request names no style of its own.
  */
-export async function generateReference({ user, bookId, kind, character, sourceImageUrl, style: requested, bookStyle, prompt: promptOverride, onStage = () => {} }) {
+export async function generateReference({ user, bookId, kind, character, sourceImageUrl, style: requested, bookStyle, prompt: promptOverride, onStage = () => {}, retry }) {
   const own = String(requested || '').trim();
   const style = own || bookStyle?.prompt || undefined;
   const styleNegative = own ? '' : bookStyle?.negative || '';
@@ -155,7 +155,7 @@ export async function generateReference({ user, bookId, kind, character, sourceI
   if (spec.needsSourceImage && !source) {
     const portraitSpec = buildReferencePrompt('portrait', character, style);
     await onStage('Drawing the base portrait (needed for the sheet)...');
-    portrait = await renderAndStore({ user, bookId, spec: portraitSpec, prompt: portraitSpec.prompt, characterId: character.id, styleNegative });
+    portrait = await renderAndStore({ user, bookId, spec: portraitSpec, prompt: portraitSpec.prompt, characterId: character.id, styleNegative, retry });
     source = portrait.imageUrl;
     spec = buildReferencePrompt(kind, character, style, true);
   }
@@ -174,6 +174,7 @@ export async function generateReference({ user, bookId, kind, character, sourceI
       sourceImageUrl: image ? source : null,
       characterId: character.id,
       styleNegative,
+      retry,
     });
     return { reference, portrait };
   } catch (error) {

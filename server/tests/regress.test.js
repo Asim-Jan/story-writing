@@ -327,6 +327,7 @@ async function bootServer(database, extraEnv = {}) {
     REDIS_HOST: REDIS.host,
     REDIS_PORT: String(REDIS.port),
     REDIS_PASSWORD: '',
+    STORY_DRIVE_PUT_BASE_MS: '20',   // the upload retry's backoff, shortened so the outage checks are quick
     ...(DRIVE ? { DRIVE_APP_API_URL: DRIVE.url, DRIVE_APP_API_SECRET: FAKE_DRIVE_SECRET, DRIVE_CARETAKER_SUB: DRIVE_CARETAKER } : {}),
     ...extraEnv,
   };
@@ -1166,6 +1167,34 @@ async function mediaChecks({ call, db, gateway, owner, editor, stranger, book })
   r = await call('POST', `${jobsUrl}/${imageJobId}/ack`, owner.token);
   listed = await call('GET', jobsUrl, owner.token);
   check('media job: ack removes it from the list', r.status === 200 && !(listed.json?.jobs || []).some(j => j.jobId === imageJobId));
+
+  // ── no MinIO fallback any more: generated output is KEPT until a Drive put succeeds ──
+  {
+    // a user of its own (the AI rate limit is per user: the owner's budget belongs to the checks below)
+    const blipUser = await makeUser(db, 'drive-blip');
+    await addCollaborator(db, book.id, blipUser, 'editor');
+    const quotaOf = async (u) => (await db.query('SELECT ai_requests_today FROM quotas WHERE user_id = $1', [u.id])).rows[0].ai_requests_today;
+    const putsSoFar = () => DRIVE.requests.filter(q => q.method === 'PUT').length;
+    const gen0 = imageCalls().length;
+    DRIVE.mode.failUploads = true;
+    r = await call('POST', jobsUrl, blipUser.token, { type: 'image', target: { type: 'location', id: 'loc1' }, params: { prompt: 'a lighthouse in fog' } });
+    setTimeout(() => { DRIVE.mode.failUploads = false; }, 800);
+    const blip = await waitJob(blipUser.token, r.json?.job?.jobId);
+    check('a Drive blip during a job: the render is kept and stored once Drive is back (ONE generation, job done)',
+      blip?.status === 'done' && imageCalls().length === gen0 + 1 &&
+      (await fetch(`${call.base}${blip?.result?.imageUrl}`, { headers: { Authorization: `Bearer ${blipUser.token}` } })).status === 200,
+      `${blip?.status} ${blip?.error || ''} generations ${imageCalls().length - gen0}`);
+    await call('POST', `${jobsUrl}/${blip?.jobId}/ack`, blipUser.token);
+
+    const q0 = await quotaOf(blipUser);
+    const p0 = putsSoFar();
+    DRIVE.mode.failUploads = true;
+    const g = await call('POST', '/api/generate-image', blipUser.token, { prompt: 'a lighthouse', bookId: book.id });
+    DRIVE.mode.failUploads = false;
+    await new Promise(res => setTimeout(res, 300));
+    check('a direct generation with Drive down for the whole retry window: 503 after re-sending the put, and the AI quota slot is refunded',
+      g.status === 503 && (await quotaOf(blipUser)) === q0 && putsSoFar() - p0 >= 5, `status ${g.status} quota ${q0}->${await quotaOf(blipUser)} puts ${putsSoFar() - p0}`);
+  }
 
   r = await call('POST', jobsUrl, owner.token, { type: 'reference', target: { type: 'character', id: 'c1' }, params: { kind: 'turnaround', character } });
   done = await waitJob(owner.token, r.json?.job?.jobId);

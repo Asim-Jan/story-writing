@@ -173,14 +173,26 @@ class DriveStorage {
    * Delete an asset's Drive copy (the person named by X-Sub is the DRIVE owner — resolve from
    * media_owners' drive_owner first, the uploader's portal_sub as fallback). The copy goes to the
    * person's Drive BIN by default (undoable by them); { permanent: true } is only for the erasure
-   * flow. Returns { ok } | null when Stories holds no Drive copy for it. A transport error
+   * flow, and even then the app API deletes for good ONLY an untouched `intermediate` file
+   * (APP-API.md section 3: "the person's work is never deleted for good"). Stories writes every
+   * file as `source`, so those go to the holder's Bin (mode 'bin'), which Drive purges after 30 days.
+   * o.node: the recorded node id, tried when the ref no longer answers.
+   * Returns { ok, mode } | { ok:false, missing:true } | null when Stories holds no Drive copy. A transport error
    * THROWS — a delete must not lie about what it deleted.
    */
   async removeFor(sub, bucketType, filename, o = {}) {
     if (!this.initialize()) return null;
-    const ref = this.refOf(bucketType, filename);
     // resolve the node id: the ref alone cannot DELETE (the API's remove takes an id)
-    const stat = await this.statFor(sub, bucketType, filename);
+    let stat = await this.statFor(sub, bucketType, filename);
+    if (!stat && o.node) {
+      /* The ref no longer answers, but a node was recorded: look it up BY ID before calling the copy
+         gone (a ref is let go when the person moves a file; the node may still be in the project).
+         Not reachable by id either = deleted, or moved OUT of the project folder (out of this app's
+         reach by design): { missing: true }, which callers must not count as removed. */
+      try { stat = await this.client.forUser(sub).stat(PROJECT, { id: o.node }); }
+      catch (error) { if (!(error && error.code === 'not_found')) throw error; stat = null; }
+      if (!stat) return { ok: false, missing: true };
+    }
     if (!stat) return null;
     /* Only the CLIENT's retried-404 counts as already-gone; a first-404 throws (the caller
        retries the whole delete — the row still names the node, so a concurrent delete is the

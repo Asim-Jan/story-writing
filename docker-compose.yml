@@ -9,24 +9,19 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
 
-  minio:
-    image: minio/minio:latest
-    container_name: story-writing-minio
-    ports:
-      - "9000:9000"  # API
-      - "9001:9001"  # Console UI
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
+  # Media lives in SAI Drive (no object store of our own). Locally: an in-memory FAKE of Drive's
+  # app API (scripts/fake-drive.mjs, the same fake the test suites use). Empty after every restart.
+  fake-drive:
+    image: node:20-alpine
+    container_name: story-writing-fake-drive
+    working_dir: /app
+    command: ["node", "scripts/fake-drive.mjs", "--host", "0.0.0.0", "--port", "8150", "--quiet"]
     volumes:
-      - minio-data:/data
-    command: server /data --console-address ":9001"
+      - ./scripts:/app/scripts:ro
+      - ./server/tests/fake-drive-http.mjs:/app/server/tests/fake-drive-http.mjs:ro
+    ports:
+      - "8150:8150"
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
 
   backend:
     build:
@@ -40,16 +35,16 @@ services:
       - PORT=3001
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - MINIO_ENDPOINT=minio
-      - MINIO_PORT=9000
-      - MINIO_USE_SSL=false
+      - DRIVE_APP_API_URL=http://fake-drive:8150
+      - DRIVE_APP_API_SECRET=drive-test-secret-0123456789abcdef0123456789abcdef
+      - DRIVE_CARETAKER_SUB=u_0000000000000001
     env_file:
       - .env
     volumes:
       - ./uploads:/app/uploads
     depends_on:
       - redis
-      - minio
+      - fake-drive
     restart: unless-stopped
 
   worker:
@@ -62,16 +57,16 @@ services:
       - NODE_ENV=production
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - MINIO_ENDPOINT=minio
-      - MINIO_PORT=9000
-      - MINIO_USE_SSL=false
+      - DRIVE_APP_API_URL=http://fake-drive:8150
+      - DRIVE_APP_API_SECRET=drive-test-secret-0123456789abcdef0123456789abcdef
+      - DRIVE_CARETAKER_SUB=u_0000000000000001
     env_file:
       - .env
     volumes:
       - ./uploads:/app/uploads
     depends_on:
       - redis
-      - minio
+      - fake-drive
     restart: unless-stopped
 
   frontend:
@@ -87,4 +82,3 @@ services:
 
 volumes:
   redis-data:
-  minio-data:

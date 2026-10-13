@@ -48,8 +48,6 @@ public/comics/*
 dump.rdb
 appendonly.aof
 
-# MinIO data (handled by Docker volumes)
-minio-data/
 
 # Test coverage
 coverage/

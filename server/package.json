@@ -9,7 +9,6 @@
     "iconv-lite": "^0.6.3",
     "jszip": "^3.10.2",
     "mammoth": "^1.11.0",
-    "minio": "^8.0.6",
     "multer": "^2.0.2",
     "pdf-parse": "^2.1.7",
     "uuid": "^13.0.0"

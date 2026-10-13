@@ -4,7 +4,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
-import { mediaStorage } from './mediaStorage.js';
+import { mediaStorage, JOB_RETRY } from './mediaStorage.js';
 import { recordMediaOwner } from '../utils/mediaMapping.js';
 
 // A finished film in another format, as the SAI Cloud Film Studio offers:
@@ -52,7 +52,7 @@ async function convert({ user, bookId, filename, format }) {
     }
     const buffer = fs.readFileSync(out);
     const name = `film-${format}-${uuidv4()}${spec.ext}`;
-    const stored = await mediaStorage.upload(spec.bucket, buffer, name, { 'x-amz-meta-type': `film-export-${format}` }, null, { driveUser: user, bookId });
+    const stored = await mediaStorage.upload(spec.bucket, buffer, name, { 'x-amz-meta-type': `film-export-${format}` }, null, { driveUser: user, bookId, retry: JOB_RETRY });
     await recordMediaOwner(spec.bucket, name, { ownerId: user.id || user.userId, bookId, drive: stored.drive });
     return { format, url: `/api/media/${spec.bucket}/${name}`, filename: name, size: buffer.length };
   } finally {

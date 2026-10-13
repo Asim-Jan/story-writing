@@ -56,6 +56,14 @@ INCREMENT=${2:-patch}
 NEW_VERSION=$(increment_version "$CURRENT_VERSION" "$INCREMENT")
 echo -e "${GREEN}New version: $NEW_VERSION${NC}"
 
+# The switcher is baked from a sai-cluster checkout: check it BEFORE anything (VERSION included) changes
+if ! "$(dirname "$0")/scripts/check-sai-cluster.sh" "${SAI_CLUSTER_DIR:-$HOME/Projects/sai-cluster}"; then
+    echo -e "${RED}Set SAI_CLUSTER_DIR to a clean sai-cluster worktree at origin/main:${NC}"
+    echo "  git -C ~/Projects/sai-cluster fetch origin && git -C ~/Projects/sai-cluster worktree add --detach /tmp/sai-cluster-main origin/main"
+    echo "  SAI_CLUSTER_DIR=/tmp/sai-cluster-main ./deploy.sh app"
+    exit 1
+fi
+
 # Confirm deployment
 read -p "Deploy v$NEW_VERSION ($SERVICE) to k3s? (y/N) " -n 1 -r
 echo
@@ -169,8 +177,9 @@ k3s_rollout() {
 SAI_CLUSTER_DIR="${SAI_CLUSTER_DIR:-$HOME/Projects/sai-cluster}"
 build_suite() {
     local kit="$SAI_CLUSTER_DIR/manifests/_suite/build.js"
-    if [ ! -f "$kit" ]; then
-        echo -e "${RED}No sai-cluster checkout at $SAI_CLUSTER_DIR (needs manifests/_suite/build.js): set SAI_CLUSTER_DIR${NC}"
+    # a CLEAN checkout at origin/main, or no deploy (scripts/check-sai-cluster.sh says why)
+    if ! "$(dirname "$0")/scripts/check-sai-cluster.sh" "$SAI_CLUSTER_DIR"; then
+        echo -e "${RED}✗ SAI_CLUSTER_DIR=$SAI_CLUSTER_DIR is not a clean sai-cluster checkout at origin/main — refusing to bake its switcher${NC}"
         exit 1
     fi
     node "$kit" public/sai-suite.js --variant customer
